@@ -1,21 +1,23 @@
 # Social Discovery and Platform Compliance
 
-Social discoveries are candidate signals, not proof of an event. The original post URL must be preserved and linked. Store the minimum metadata needed; show a short factual summary rather than republishing full post text. If an official event/registration page exists, link it separately.
+Every social connector must use the platform's official API or an approved/user-authorized integration. Preserve the original post/video permalink, store only permitted metadata, comply with API scopes, quotas, display and retention rules, and keep credentials server-side.
 
-| Platform | Allowed integration pattern | Launch state |
+| Platform | Permitted integration pattern | Current package status |
 |---|---|---|
-| X | Official X API with approved tier/scopes and display/retention compliance | Not configured |
-| LinkedIn | Approved official API product or authorized organizer integration | Not configured |
-| Instagram | Meta Graph API where the account/use case is permitted | Not configured |
-| Facebook | Meta Graph API for permitted Pages/content | Not configured |
-| Reddit | Official Reddit API under current developer terms | Not configured |
-| Discord | Official bot/API in servers where installed with permission | Not configured |
-| Telegram | Official Bot API in channels/groups where bot is authorized | Not configured |
-| YouTube | YouTube Data API under quota and display requirements | Not configured |
-| RSS | Public organizer/community feeds where reuse is permitted | Scaffold included |
+| YouTube | Official YouTube Data API v3 search | Implemented optionally; requires `HACKVERSE_YOUTUBE_API_KEY` |
+| RSS/Atom | Public organizer/community feed where terms permit use | Implemented; admin-managed, auto-published |
+| X | Official X API with suitable access tier and scopes | Not implemented; requires API access and adapter |
+| LinkedIn | Approved official API product or authorized organizer integration | Not implemented; no general public-post search connector |
+| Instagram | Meta Graph API only for permitted account/use cases | Not implemented |
+| Facebook | Meta Graph API for permitted Pages/content | Not implemented |
+| Reddit | Official Reddit Data API under current developer terms and OAuth | Not implemented |
+| Discord | Official bot/API only in servers where the bot is installed with permission | Not implemented |
+| Telegram | Official Bot API only in channels/groups where the bot is authorized | Not implemented |
 
-## Moderation path
-API/RSS post signal → event classifier → extract structured fields → resolve official page → risk checks → moderation queue → admin review → publish with source link. No social candidate is public by default.
+## Auto-publishing safeguards
+
+The current engine auto-publishes only RSS/YouTube items with an HTTPS source permalink and clear hackathon-related wording. It labels them `source-attributed`. This does not independently verify organizer identity, prizes, eligibility, deadlines, or registration links. Users are sent to the source announcement.
 
 ## Explicit prohibitions
+
 No scraping, browser automation, unofficial bots, credential-based access, login-wall bypass, private group collection, or collection from sources that prohibit the required use. A user connection must be opt-in, scoped, revocable, and documented.

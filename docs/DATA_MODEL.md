@@ -32,9 +32,17 @@ Contains `authorUid`, `authorName`, `text`, and `createdAt`. Only participants c
 
 Contains `ownerUid`, `ownerName`, `title`, `description`, `techStack`, `projectUrl`, `githubUrl`, `visibility` (`public` or `private`), `createdAt`, and `updatedAt`. Owners can manage their records. Public records are readable by all.
 
-## `sourceItems/{sourceId}` and `ingestionRuns/{runId}`
+## `discoverySources/{sourceId}`
 
-Admin-only RSS moderation candidates and ingestion logs. RSS ingestion never publishes directly to `hackathons`.
+Admin-managed source registry. Current source documents contain `name`, `type` (`rss`), `platform`, `category`, `feedUrl`, `enabled`, `autoPublish`, timestamps, and last-run/error metadata. Browser writes are blocked; trusted callables manage these records.
+
+## `eventFingerprints/{fingerprintId}`
+
+Admin-only URL/title fingerprints map duplicate source announcements to one `hackathons/{eventId}` record. Written by the Admin SDK during ingestion.
+
+## `ingestionRuns/{runId}`
+
+Admin-only run summaries containing source counts, fetched/relevant/published counts, expiry counts, errors, and timestamps. The discovery engine writes directly to public `hackathons` when conservative relevance checks pass and `autoPublish` is enabled. Every event retains `sourceUrl`, `sourceName`, `sourcePlatform`, and `verificationStatus: source-attributed`.
 
 ## `reports/{reportId}`
 

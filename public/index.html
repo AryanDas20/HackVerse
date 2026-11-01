@@ -57,6 +57,14 @@
       <div class="event-grid" id="eventGrid"><div class="loading-card">Connect Firebase to load your opportunity feed.</div></div>
     </section>
 
+    <section class="section wrap discovery-admin" id="discoveryAdminPanel" hidden>
+      <div class="section-heading"><div><div class="eyebrow">ADMIN CONTROL CENTER</div><h2>Automatic discovery <span class="gradient-text">sources.</span></h2><p class="muted">Add approved RSS feeds. Qualifying hackathon announcements publish automatically; source links remain visible.</p></div><button class="btn btn-primary" id="runDiscoveryBtn" type="button">Run discovery now ↻</button></div>
+      <form id="discoverySourceForm" class="discovery-source-form"><label>Source name<input id="discoverySourceName" required maxlength="100" placeholder="e.g. University innovation news"></label><label>Public RSS feed URL<input id="discoveryFeedUrl" required type="url" placeholder="https://example.org/feed.xml"></label><button class="btn btn-primary" id="addDiscoverySourceBtn" type="submit">＋ Add source</button></form>
+      <p class="muted" id="discoveryStatus" role="status">Automatic discovery runs every six hours after Functions are deployed.</p>
+      <div id="discoverySourcesList" class="discovery-sources-list"><p class="muted">Admin source settings load after sign-in with an admin account.</p></div>
+      <p class="discovery-caution">RSS sources only. Social network discovery needs each platform's official API access, credentials and permitted scopes; it is not enabled by scraping public profile pages.</p>
+    </section>
+
     <section class="deadline-band wrap" id="saved">
       <div><div class="eyebrow">YOUR PERSONAL SHORTLIST</div><h2>Keep the right<br><span class="gradient-text">opportunities close.</span></h2><p class="muted">Save real events from the opportunity radar and track them here.</p><button class="btn btn-primary" id="viewSavedBtn">Show saved events ↗</button></div>
       <div class="deadline-preview"><div class="preview-head"><span>MY SHORTLIST</span><span class="preview-count" id="savedCount">0 SAVED</span></div><div id="savedPreview" class="saved-preview-empty">Sign in to save opportunities. Your saved list will appear here.</div><div class="progress-line"><span></span></div><small>Your shortlist belongs to your account.</small></div>

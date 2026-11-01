@@ -14,7 +14,9 @@ The current frontend uses Firebase client SDK operations directly. Firestore Sec
 | Send message | Create `conversations/{id}/messages/{id}` | Participant | Text message up to 2,000 characters |
 | Create/delete project | `projects/{id}` | Owner | Project showcase |
 | Report member profile | Create `reports/{id}` | Required | Submit a profile safety report |
-| RSS refresh | `manualRssRefresh` callable | Admin custom claim + App Check | Import candidates to moderation |
+| Add RSS source | `addDiscoverySource` callable | Admin custom claim | Register an approved public feed |
+| Run discovery | `runDiscoveryNow` callable | Admin custom claim | Fetch RSS/YouTube and auto-publish qualifying source-attributed events |
+| Toggle RSS source | `setDiscoverySourceEnabled` callable | Admin custom claim | Enable/disable a feed |
 
 ## Future REST/API layer
 

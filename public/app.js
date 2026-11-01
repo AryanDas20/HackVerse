@@ -9,12 +9,13 @@ import {
   startAt, endAt, limit, serverTimestamp, addDoc, setDoc, deleteDoc,
   onSnapshot, updateDoc, runTransaction
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-functions.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const CONFIGURED = Boolean(firebaseConfig.apiKey && !String(firebaseConfig.apiKey).startsWith("YOUR_") && firebaseConfig.projectId && !String(firebaseConfig.projectId).startsWith("YOUR_"));
-let app = null, auth = null, db = null, currentUser = null, authMode = "signin";
+let app = null, auth = null, db = null, functions = null, currentUser = null, authMode = "signin", isAdminUser = false;
 let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [];
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
@@ -52,9 +53,14 @@ function initFirebase() {
     renderEvents(); renderSaved(); renderPeopleEmpty(); return;
   }
   try {
-    app = initializeApp(firebaseConfig); auth = getAuth(app); db = getFirestore(app);
+    app = initializeApp(firebaseConfig); auth = getAuth(app); db = getFirestore(app); functions = getFunctions(app);
     onAuthStateChanged(auth, async user => {
       currentUser = user;
+      isAdminUser = false;
+      $("#discoveryAdminPanel").hidden = true;
+      if (user) { try { const token = await user.getIdTokenResult(); isAdminUser = token.claims.admin === true; } catch (e) { console.warn("Admin claim check failed", e); } }
+      $("#discoveryAdminPanel").hidden = !isAdminUser;
+      if (isAdminUser) loadDiscoverySources();
       $("#authButton").textContent = user ? "Sign out" : "Sign in";
       $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
       if (!user) {
@@ -222,19 +228,55 @@ async function saveProfile(event) {
   } catch (error) { console.error(error); message.textContent = friendlyError(error); }
 }
 
+async function loadDiscoverySources() {
+  if (!db || !isAdminUser) return;
+  try {
+    const snap = await getDocs(query(collection(db, "discoverySources"), limit(50)));
+    const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const host = $("#discoverySourcesList");
+    host.innerHTML = rows.length ? rows.map(source => `<div class="discovery-source-row"><div><b>${esc(source.name || "RSS source")}</b><small>${esc(source.feedUrl || "")}</small></div><label class="source-toggle"><input type="checkbox" data-source-toggle="${esc(source.id)}" ${source.enabled ? "checked" : ""}> Enabled</label></div>`).join("") : '<p class="muted">No sources connected yet. Add an approved public RSS feed below.</p>';
+    host.querySelectorAll("[data-source-toggle]").forEach(input => input.addEventListener("change", async () => {
+      try { await httpsCallable(functions, "setDiscoverySourceEnabled")({ id: input.dataset.sourceToggle, enabled: input.checked }); toast("Source setting updated."); }
+      catch (error) { input.checked = !input.checked; toast(friendlyError(error)); }
+    }));
+  } catch (error) { $("#discoverySourcesList").textContent = friendlyError(error); }
+}
+async function addDiscoverySource(event) {
+  event.preventDefault();
+  if (!isAdminUser || !functions) return;
+  const name = $("#discoverySourceName").value.trim(); const feedUrl = $("#discoveryFeedUrl").value.trim();
+  const button = $("#addDiscoverySourceBtn"); button.disabled = true;
+  try {
+    await httpsCallable(functions, "addDiscoverySource")({ name, feedUrl, autoPublish: true });
+    $("#discoverySourceForm").reset(); toast("RSS source connected. It will be checked on the next run."); await loadDiscoverySources();
+  } catch (error) { toast(friendlyError(error)); }
+  finally { button.disabled = false; }
+}
+async function runDiscoveryManually() {
+  if (!isAdminUser || !functions) return;
+  const button = $("#runDiscoveryBtn"); button.disabled = true; button.textContent = "Discovering…";
+  try {
+    const result = await httpsCallable(functions, "runDiscoveryNow")({});
+    const data = result.data || {};
+    $("#discoveryStatus").textContent = `Checked ${data.sourceCount || 0} sources · fetched ${data.fetched || 0} items · published/updated ${data.published || 0} listings · ${data.errors?.length || 0} source errors.`;
+    await loadEvents(); await loadDiscoverySources();
+  } catch (error) { $("#discoveryStatus").textContent = friendlyError(error); }
+  finally { button.disabled = false; button.textContent = "Run discovery now ↻"; }
+}
+
 async function loadEvents() {
   const grid = $("#eventGrid");
   if (!db) { grid.innerHTML = '<div class="loading-card">Connect Firebase to load real opportunities. No sample listings are bundled with this website.</div>'; return; }
   grid.innerHTML = '<div class="loading-card">Loading published opportunities…</div>';
   try {
     const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(100)));
-    events = snapshot.docs.map(d => ({ id: d.id, ...d.data() })); renderEvents(); renderSaved();
+    events = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => e.status !== "expired"); renderEvents(); renderSaved();
   } catch (error) { console.error("Event feed read failed", error); grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Firestore rules and connection.</div>'; }
 }
 
 function filteredEvents() {
   const term = $("#eventSearch").value.trim().toLowerCase(); const mode = $("#eventMode").value; const track = $("#eventTrack").value;
-  let list = events.filter(event => {
+  let list = events.filter(event => event.status !== "expired").filter(event => {
     const text = [event.title, event.organizer, event.summary, ...(event.tracks || []), ...(event.technologies || []), ...(event.tags || [])].join(" ").toLowerCase();
     return (!term || text.includes(term)) && (mode === "all" || event.mode === mode) && (track === "all" || (event.tracks || []).includes(track));
   });
@@ -256,8 +298,8 @@ function renderEvents() {
     const prize = Number(event.prizePool) > 0 ? `${esc(event.currency || "")} ${Number(event.prizePool).toLocaleString()}` : "Prize TBA";
     const deadline = event.registrationDeadline ? new Date(tsMillis(event.registrationDeadline)) : null;
     const deadlineText = deadline && !Number.isNaN(deadline.getTime()) ? (deadline < new Date() ? "Deadline passed" : `Closes ${deadline.toLocaleDateString()}`) : "Deadline TBA";
-    const officialUrl = validUrl(event.officialRegistrationUrl || event.officialEventUrl);
-    return `<article class="event-card"><div class="event-banner b${(index % 3) + 1}"><span class="tag">${esc(event.mode || "Format TBA")}</span><span class="tag">${esc(event.verificationStatus || "Review status TBA")}</span></div><div class="event-body"><div class="event-source">${esc(event.organizer || "Organizer not listed")}</div><h3>${esc(event.title || "Untitled opportunity")}</h3><p class="event-desc">${esc(event.summary || "Visit the official page for event information.")}</p><div class="event-facts"><span>✦ ${esc((event.tracks || []).slice(0,2).join(" / ") || "Track TBA")}</span><span>⌘ ${esc(event.teamSize || "Team size TBA")}</span><span>◎ ${prize}</span></div><div class="event-bottom"><span class="deadline">${deadlineText}</span><div class="event-actions"><button class="save-btn" data-save="${esc(event.id)}">${savedIds.has(event.id) ? "♥ Saved" : "♡ Save"}</button>${officialUrl ? `<a class="register-btn" href="${esc(officialUrl)}" target="_blank" rel="noopener noreferrer">Official site ↗</a>` : ""}</div></div></div></article>`;
+    const officialUrl = validUrl(event.officialRegistrationUrl || event.officialEventUrl || event.sourceUrl);
+    return `<article class="event-card"><div class="event-banner b${(index % 3) + 1}"><span class="tag">${esc(event.mode || "Format TBA")}</span><span class="tag">${esc(event.verificationStatus || "Review status TBA")}</span></div><div class="event-body"><div class="event-source">${esc(event.sourceName ? `Source: ${event.sourceName}` : (event.organizer || "Organizer not listed"))}</div><h3>${esc(event.title || "Untitled opportunity")}</h3><p class="event-desc">${esc(event.summary || "Visit the official page for event information.")}</p><div class="event-facts"><span>✦ ${esc((event.tracks || []).slice(0,2).join(" / ") || "Track TBA")}</span><span>⌘ ${esc(event.teamSize || "Team size TBA")}</span><span>◎ ${prize}</span></div><div class="event-bottom"><span class="deadline">${deadlineText}</span><div class="event-actions"><button class="save-btn" data-save="${esc(event.id)}">${savedIds.has(event.id) ? "♥ Saved" : "♡ Save"}</button>${officialUrl ? `<a class="register-btn" href="${esc(officialUrl)}" target="_blank" rel="noopener noreferrer">${event.officialRegistrationUrl ? "Register ↗" : event.officialEventUrl ? "Official site ↗" : "View source ↗"}</a>` : ""}</div></div></div></article>`;
   }).join("");
   grid.querySelectorAll("[data-save]").forEach(button => button.addEventListener("click", () => saveEvent(button.dataset.save)));
 }
@@ -527,6 +569,8 @@ function bindUI() {
   document.addEventListener("keydown", e => { if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal"].forEach(hideModal); if (e.key === "Escape") closeProfileModal(); });
   $("#eventSearch").addEventListener("input", renderEvents); $("#eventMode").onchange = renderEvents; $("#eventTrack").onchange = renderEvents; $("#eventSort").onchange = renderEvents;
   $("#refreshEventsBtn").onclick = loadEvents;
+  $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
+  $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
   $("#peopleSearch").addEventListener("input", searchPeople); $("#peopleRole").onchange = searchPeople; $("#lookingForTeamOnly").onchange = searchPeople;
   $("#viewSavedBtn").onclick = () => { if (!currentUser) openAuth(); else { const saved = events.filter(e => savedIds.has(e.id)); if (!saved.length) toast("You have not saved any currently loaded opportunities."); else { $("#eventSearch").value = ""; $("#eventMode").value = "all"; $("#eventTrack").value = "all"; $("#eventGrid").innerHTML = saved.map(e => `<article class="saved-event-line">${esc(e.title || "Untitled event")}</article>`).join(""); location.hash = "#discover"; } } };

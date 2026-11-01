@@ -130,6 +130,13 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['createdBy','targetUid','targetName','category','details','status','createdAt']);
       allow read, update, delete: if isAdmin();
     }
+    match /discoverySources/{sourceId} {
+      allow read: if isAdmin();
+      allow write: if false; // Managed by trusted Cloud Functions only.
+    }
+    match /eventFingerprints/{fingerprintId} {
+      allow read, write: if isAdmin();
+    }
     match /sourceItems/{sourceId} {
       allow read, write: if isAdmin();
     }

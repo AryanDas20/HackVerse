@@ -16,14 +16,14 @@
 - User A cannot read or mutate User B private account data, saved events, projects, or conversations they do not belong to.
 - Client cannot set admin role or publish/edit hackathons.
 - Non-admin cannot invoke manual refresh.
-- App Check and callable auth enforced.
+- Admin custom claims are required for source management/manual discovery; configure App Check before public launch.
 - No secrets in public assets or git history.
 
 ## Ingestion
 - RSS timeouts, malformed feeds, duplicate links, redirects, rate limits, empty feed, retry.
-- Candidate is moderation-only; never auto-published.
+- RSS/YouTube candidates matching the conservative relevance rules are auto-published with `source-attributed` status.
 - Preserve attribution and source URL; only minimum permitted content stored.
-- Date/timezone and cancellation tests before enabling publishing.
+- Deadline parsing is heuristic; test known formats, timezone assumptions, and expired-event hiding.
 
 ## Accessibility/responsive
 - Keyboard-only navigation; visible focus; labels; modal focus/escape; screen reader status.
