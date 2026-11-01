@@ -1,0 +1,53 @@
+{
+  "id": "candidate_reddit_2026_001",
+  "title": "Campus AI Buildathon",
+  "organizer": "Example University Innovation Cell",
+  "sourcePlatform": "Reddit",
+  "sourceType": "Social media",
+  "sourceUrl": "https://www.reddit.com/r/example/comments/example_post/",
+  "officialEventUrl": "https://innovation.example.edu/ai-buildathon",
+  "officialRegistrationUrl": "https://innovation.example.edu/ai-buildathon/register",
+  "summary": "A short summary of the public announcement. See the original post and official event page for full details.",
+  "fullDescriptionUrl": "https://innovation.example.edu/ai-buildathon/rules",
+  "bannerImageUrl": null,
+  "startAt": "2027-02-14T09:00:00Z",
+  "endAt": "2027-02-15T18:00:00Z",
+  "registrationDeadline": "2027-02-10T18:30:00Z",
+  "timezone": "Asia/Kolkata",
+  "mode": "Hybrid",
+  "venue": "Example University",
+  "city": "Ludhiana",
+  "country": "India",
+  "eligibility": [
+    "University students"
+  ],
+  "tracks": [
+    "AI / ML",
+    "Open innovation"
+  ],
+  "technologies": [
+    "Python",
+    "Machine learning"
+  ],
+  "prizePool": 100000,
+  "currency": "INR",
+  "categoryPrizes": [],
+  "teamMin": 2,
+  "teamMax": 4,
+  "registrationFee": 0,
+  "participantCount": null,
+  "difficulty": "Beginner",
+  "beginnerFriendly": true,
+  "travelAccommodation": null,
+  "status": "Upcoming",
+  "verificationStatus": "Needs review",
+  "tags": [
+    "AI",
+    "student",
+    "campus"
+  ],
+  "sourceAttribution": "Reddit public post; organizer page linked",
+  "ingestedAt": "2026-11-01T00:00:00Z",
+  "updatedAt": "2026-11-01T00:00:00Z",
+  "visibility": "moderation"
+}

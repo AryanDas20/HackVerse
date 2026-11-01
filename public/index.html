@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#090d18">
+  <meta name="description" content="Find every hackathon worth joining — in one place. Discover, track, team up, and build your reputation with HackVerse.">
+  <title>HackVerse — Find your next build</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+  <header class="topbar">
+    <a class="brand" href="#"><span class="brand-mark">H</span><span>hack<span class="brand-accent">verse</span></span></a>
+    <nav class="desktop-nav" aria-label="Main navigation">
+      <a class="active" href="#discover">Discover</a><a href="#saved">My list</a><a href="#teams">Find a team</a><a href="#showcase">Showcase</a>
+    </nav>
+    <div class="top-actions">
+      <button class="icon-btn" id="themeToggle" aria-label="Toggle theme">☼</button>
+      <button class="btn btn-quiet" id="signInBtn">Sign in</button>
+      <button class="btn btn-primary" id="getStartedBtn">Get started <span>↗</span></button>
+      <button class="menu-toggle" id="menuToggle" aria-label="Open navigation">☰</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="pulse"></span> THE BUILDER'S EVENT RADAR</div>
+        <h1>Your next big<br><span class="gradient-text">build starts here.</span></h1>
+        <p class="hero-sub">Discover hackathons from across the builder ecosystem. Find your people, beat the deadline, and ship something extraordinary.</p>
+        <div class="hero-search">
+          <span class="search-icon">⌕</span>
+          <input id="globalSearch" type="search" placeholder="Try “AI hackathons closing this week”" aria-label="Search hackathons">
+          <button id="searchBtn" class="search-submit">Explore <span>→</span></button>
+        </div>
+        <div class="hero-meta"><span>✦ Curated discovery</span><span>◷ Deadline radar</span><span>⌘ Team matching</span></div>
+      </div>
+      <div class="hero-art" aria-label="HackVerse event dashboard illustration">
+        <div class="orbit orbit-a"></div><div class="orbit orbit-b"></div>
+        <div class="hero-glow"></div>
+        <div class="floating-chip chip-top"><span class="chip-dot green"></span> 24h left to register</div>
+        <div class="feature-window">
+          <div class="window-top"><div class="window-dots"><i></i><i></i><i></i></div><span>YOUR BUILDER RADAR</span><span class="live-label">LIVE PREVIEW</span></div>
+          <div class="window-stat"><div><small>YOUR NEXT OPPORTUNITY</small><h3>Build for what's next.</h3></div><div class="stat-orb">✳</div></div>
+          <div class="mini-event"><div class="mini-logo purple">AI</div><div class="mini-info"><b>Future of AI Challenge</b><small>Online · AI / ML · Example listing</small></div><span class="mini-prize">$10k</span></div>
+          <div class="mini-event"><div class="mini-logo orange">W3</div><div class="mini-info"><b>Web3 Builders Sprint</b><small>Hybrid · Web3 · Example listing</small></div><span class="mini-prize">$5k</span></div>
+          <div class="window-footer"><span>✦ Your builder journey, organized</span><span>↗</span></div>
+        </div>
+        <div class="floating-chip chip-bottom">✦ Your next win is out there</div>
+      </div>
+    </section>
+
+    <section class="trust-strip wrap"><span>ONE RADAR. MANY SOURCES.</span><div class="source-logos"><b>DEVPOST</b><b>MLH</b><b>DEVFOLIO</b><b>ETHGLOBAL</b><b>UNSTOP</b><b>+ COMMUNITY</b></div></section>
+
+    <section class="section wrap" id="discover">
+      <div class="section-heading"><div><div class="eyebrow">OPPORTUNITY FEED</div><h2>Find your next <span class="gradient-text">challenge.</span></h2><p class="muted">A single place for opportunities worth your time.</p></div><button class="btn btn-outline" id="refreshBtn">↻ Refresh feed</button></div>
+      <div class="filter-row">
+        <div class="filter-pills" id="modeFilters"><button class="filter active" data-mode="all">All events</button><button class="filter" data-mode="Online">Online</button><button class="filter" data-mode="In-person">In-person</button><button class="filter" data-mode="Hybrid">Hybrid</button></div>
+        <select id="trackFilter" aria-label="Filter by track"><option value="all">All tracks</option><option>AI / ML</option><option>Web3</option><option>Climate</option><option>Fintech</option><option>Gaming</option><option>Open innovation</option></select>
+        <select id="sortFilter" aria-label="Sort events"><option value="deadline">Nearest deadline</option><option value="newest">Recently added</option><option value="prize">Highest prize</option></select>
+      </div>
+      <div class="feed-note"><span class="note-icon">ⓘ</span> Demo listings are clearly labelled. Connect approved sources to publish verified live events.</div>
+      <div class="event-grid" id="eventGrid"><div class="loading-card">Loading your opportunity radar…</div></div>
+      <div class="center"><button class="btn btn-outline" id="loadMoreBtn">Explore all opportunities <span>→</span></button></div>
+    </section>
+
+    <section class="deadline-band wrap" id="saved">
+      <div><div class="eyebrow">YOUR PERSONAL COMMAND CENTER</div><h2>Never miss your<br><span class="gradient-text">moment to ship.</span></h2><p class="muted">Save opportunities, track deadlines, and keep your next build moving.</p><button class="btn btn-primary" id="savedCta">View my saved events ↗</button></div>
+      <div class="deadline-preview"><div class="preview-head"><span>MY SHORTLIST</span><span class="preview-count" id="savedCount">0 SAVED</span></div><div id="savedPreview" class="saved-preview-empty">Sign in and save events to build your personal deadline dashboard.</div><div class="progress-line"><span></span></div><small>One focused build at a time.</small></div>
+    </section>
+
+    <section class="section wrap feature-section" id="teams">
+      <div class="section-heading"><div><div class="eyebrow">BUILD BETTER, TOGETHER</div><h2>Great teams make<br><span class="gradient-text">bold ideas real.</span></h2><p class="muted">Find collaborators by skills, interests, and availability.</p></div></div>
+      <div class="feature-grid"><article class="feature-card"><div class="feature-icon violet">⌘</div><h3>Skill-first matching</h3><p>Connect with builders who complement your strengths and share your ambition.</p></article><article class="feature-card"><div class="feature-icon mint">◷</div><h3>Deadline clarity</h3><p>Keep registration and submission milestones visible in one focused workspace.</p></article><article class="feature-card"><div class="feature-icon amber">✳</div><h3>Show what you ship</h3><p>Turn projects, wins, and experiments into a portfolio that grows with you.</p></article></div>
+    </section>
+
+    <section class="cta wrap" id="showcase"><div class="cta-orb">✳</div><div class="eyebrow">THE BUILDER ERA IS YOURS</div><h2>Stop searching.<br><span class="gradient-text">Start building.</span></h2><p>Make HackVerse your home base for the next big thing.</p><button class="btn btn-primary" id="ctaJoin">Create your free account ↗</button></section>
+  </main>
+
+  <footer class="footer wrap"><a class="brand" href="#"><span class="brand-mark">H</span><span>hack<span class="brand-accent">verse</span></span></a><span>Built for people who build.</span><div><a href="#discover">Discover</a><a href="#" id="privacyLink">Privacy</a><a href="#" id="termsLink">Terms</a></div><small>© <span id="year"></span> HackVerse</small></footer>
+
+  <div class="modal-backdrop" id="authModal" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <button class="modal-close" data-close aria-label="Close">×</button><div class="modal-brand"><span class="brand-mark">H</span></div>
+      <div class="eyebrow">WELCOME TO THE BUILDERVERSE</div><h2 id="authTitle">Your next build awaits.</h2><p class="muted" id="authSubtitle">Sign in to save events and personalize your radar.</p>
+      <button class="btn google-btn" id="googleSignIn"><span class="google-g">G</span> Continue with Google</button>
+      <div class="or-line"><span>OR WITH EMAIL</span></div>
+      <form id="authForm"><label>Email address<input type="email" id="authEmail" placeholder="you@example.com" required autocomplete="email"></label><label>Password<input type="password" id="authPassword" placeholder="At least 6 characters" minlength="6" required autocomplete="current-password"></label><button class="btn btn-primary full" id="authSubmit" type="submit">Sign in →</button></form>
+      <div class="auth-foot"><button id="authModeToggle">Create an account</button><button id="resetPassword">Forgot password?</button></div>
+      <p class="form-message" id="authMessage" role="status"></p>
+      <small class="legal-note">By continuing, you agree to our Terms and Privacy Policy.</small>
+    </section>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
