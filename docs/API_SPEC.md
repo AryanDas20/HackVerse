@@ -1,30 +1,28 @@
-# API Specification (MVP + target)
+# API / data operations
 
-The MVP uses Firebase client SDK for user-scoped operations and callable Cloud Functions for privileged actions.
+The current frontend uses Firebase client SDK operations directly. Firestore Security Rules are the authorization boundary for browser writes.
 
-| Operation | Method / Function | Auth | Purpose |
+| Operation | Client operation | Auth | Purpose |
 |---|---|---|---|
-| List public events | Firestore query `hackathons` | Optional | Read approved listings |
-| Save event | Firestore `users/{uid}/savedEvents/{eventId}` | Required | Save to own shortlist |
-| Remove saved event | Firestore delete | Required | Remove own saved event |
-| Create account | Firebase Auth | Public | Email/password |
-| Google login | Firebase Auth popup | Public | Google OAuth |
-| Reset password | Firebase Auth | Public | Password reset email |
-| Manual RSS refresh | `manualRssRefresh` callable | Admin | Trigger approved feed ingestion |
-| Connector status | `socialConnectorStatus` callable | Required | Report configured/not-configured adapters |
+| List public events | Query `hackathons` where `visibility == public` | Optional | Discover approved opportunities |
+| Search members | Prefix/array queries on `publicProfiles` | Optional | Search public directory |
+| Register / sign in | Firebase Auth | Public | Email/password and Google authentication |
+| Save/remove event | `users/{uid}/savedEvents/{eventId}` | Required | Manage personal shortlist |
+| Save profile | Transaction across `users`, `publicProfiles`, `usernames` | Required | Private account + public directory record |
+| Start direct chat | Create/read `conversations/{id}` | Required | One-to-one messaging |
+| Create group chat | Create `conversations/{id}` | Required | Team room with up to 11 members |
+| Send message | Create `conversations/{id}/messages/{id}` | Participant | Text message up to 2,000 characters |
+| Create/delete project | `projects/{id}` | Owner | Project showcase |
+| Report member profile | Create `reports/{id}` | Required | Submit a profile safety report |
+| RSS refresh | `manualRssRefresh` callable | Admin custom claim + App Check | Import candidates to moderation |
 
-## Target REST endpoints
+## Future REST/API layer
+
 - `GET /v1/hackathons?q=&track=&mode=&deadlineBefore=&verified=&sort=&cursor=`
-- `GET /v1/hackathons/{id}`
-- `POST /v1/hackathons/{id}/save`
-- `DELETE /v1/hackathons/{id}/save`
+- `GET /v1/members?q=&skills=&roles=&availability=&cursor=`
+- `POST /v1/conversations` and `POST /v1/conversations/{id}/messages`
 - `POST /v1/reports`
-- `GET /v1/me/saved-events`
 - `PATCH /v1/me/profile`
-- `GET /v1/teams?skills=&timezone=&availability=`
-- `POST /v1/teams/{id}/requests`
-- `POST /v1/organizer/events` (verified organizer)
-- `POST /v1/admin/events/{id}/approve` (admin)
-- `POST /v1/admin/events/{id}/reject` (admin)
+- `POST /v1/admin/events/{id}/approve` and `/reject`
 
 Use Firebase ID tokens or secure session cookies. Validate payloads server-side, enforce App Check, rate-limit write endpoints, and use cursor pagination. Never trust client-supplied role, verification status, prize, or source attribution.

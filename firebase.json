@@ -1,31 +1,17 @@
 {
   "hosting": {
     "public": "public",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
-    ],
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "headers": [
-      {
-        "source": "**/*.@(js|css)",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "public,max-age=3600"
-          }
-        ]
-      }
+      { "source": "/index.html", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+      { "source": "/app.js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+      { "source": "/workspace.css", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+      { "source": "/styles.css", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
     ]
   },
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
-  "functions": [
-    {
-      "source": "functions",
-      "codebase": "default"
-    }
-  ]
+  "functions": [{ "source": "functions", "codebase": "default" }]
 }

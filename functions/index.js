@@ -6,7 +6,7 @@ const admin = require("firebase-admin");
 const Parser = require("rss-parser");
 admin.initializeApp();
 const db = admin.firestore();
-const parser = new Parser({ timeout: 12000, headers: { "User-Agent": "HackVerseEventIndexer/1.0 (contact: admin@your-domain.example)" } });
+const parser = new Parser({ timeout: 12000, headers: { "User-Agent": "HackVerseEventIndexer/1.0" } });
 const RSS_FEEDS = defineString("HACKVERSE_RSS_FEEDS", { default: "" });
 
 /**
@@ -30,11 +30,11 @@ async function ingestApprovedRssFeeds() {
           sourceType: "Community",
           sourceUrl: link,
           officialEventUrl: link,
-          officialRegistrationUrl: link,
+          officialRegistrationUrl: null,
           summary: String(item.contentSnippet || item.summary || "").slice(0, 420),
           registrationDeadline: null,
           startAt: null, endAt: null, timezone: null,
-          mode: "Online",
+          mode: null,
           tracks: [], technologies: [], tags: [],
           verificationStatus: "Needs review",
           status: "Needs review",
@@ -58,8 +58,7 @@ async function ingestApprovedRssFeeds() {
 exports.scheduledRssIngestion = onSchedule("every 6 hours", async () => ingestApprovedRssFeeds());
 exports.manualRssRefresh = onCall({ enforceAppCheck: true }, async request => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in required.");
-  const user = await db.collection("users").doc(request.auth.uid).get();
-  if (user.data()?.role !== "admin") throw new HttpsError("permission-denied", "Admin role required.");
+  if (request.auth.token.admin !== true) throw new HttpsError("permission-denied", "Admin custom claim required.");
   return ingestApprovedRssFeeds();
 });
 

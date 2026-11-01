@@ -4,97 +4,113 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#090d18">
-  <meta name="description" content="Find every hackathon worth joining — in one place. Discover, track, team up, and build your reputation with HackVerse.">
-  <title>HackVerse — Find your next build</title>
+  <meta name="description" content="Discover hackathons, meet collaborators, message your team, and showcase what you build with HackVerse.">
+  <title>HackVerse — Discover. Team up. Build.</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="workspace.css">
 </head>
 <body>
   <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
   <header class="topbar">
-    <a class="brand" href="#"><span class="brand-mark">H</span><span>hack<span class="brand-accent">verse</span></span></a>
+    <a class="brand" href="#top" aria-label="HackVerse home"><span class="brand-mark">H</span><span>hack<span class="brand-accent">verse</span></span></a>
     <nav class="desktop-nav" aria-label="Main navigation">
-      <a class="active" href="#discover">Discover</a><a href="#saved">My list</a><a href="#teams">Find a team</a><a href="#showcase">Showcase</a>
+      <a class="active" href="#discover">Discover</a><a href="#people">People</a><a href="#messages">Messages</a><a href="#profile">My profile</a>
     </nav>
     <div class="top-actions">
       <button class="icon-btn" id="themeToggle" aria-label="Toggle theme">☼</button>
-      <button class="btn btn-quiet" id="signInBtn">Sign in</button>
-      <button class="btn btn-primary" id="getStartedBtn">Get started <span>↗</span></button>
+      <button class="btn btn-quiet" id="authButton">Sign in</button>
+      <button class="btn btn-primary" id="accountButton">Get started <span>↗</span></button>
       <button class="menu-toggle" id="menuToggle" aria-label="Open navigation">☰</button>
     </div>
   </header>
 
-  <main>
+  <main id="top">
     <section class="hero wrap">
       <div class="hero-copy">
-        <div class="eyebrow"><span class="pulse"></span> THE BUILDER'S EVENT RADAR</div>
-        <h1>Your next big<br><span class="gradient-text">build starts here.</span></h1>
-        <p class="hero-sub">Discover hackathons from across the builder ecosystem. Find your people, beat the deadline, and ship something extraordinary.</p>
-        <div class="hero-search">
-          <span class="search-icon">⌕</span>
-          <input id="globalSearch" type="search" placeholder="Try “AI hackathons closing this week”" aria-label="Search hackathons">
-          <button id="searchBtn" class="search-submit">Explore <span>→</span></button>
-        </div>
-        <div class="hero-meta"><span>✦ Curated discovery</span><span>◷ Deadline radar</span><span>⌘ Team matching</span></div>
+        <div class="eyebrow"><span class="pulse"></span> YOUR BUILDER NETWORK</div>
+        <h1>Find your people.<br><span class="gradient-text">Build what matters.</span></h1>
+        <p class="hero-sub">Discover opportunities, meet teammates with complementary skills, keep conversations together, and turn every build into a portfolio.</p>
+        <div class="hero-search"><span class="search-icon">⌕</span><input id="heroSearch" type="search" placeholder="Search hackathons, topics, skills..." aria-label="Search opportunities"><button id="heroSearchBtn" class="search-submit">Search <span>→</span></button></div>
+        <div class="hero-meta"><span>✦ Opportunity discovery</span><span>⌘ Teammate matching</span><span>◉ Live collaboration</span></div>
       </div>
-      <div class="hero-art" aria-label="HackVerse event dashboard illustration">
-        <div class="orbit orbit-a"></div><div class="orbit orbit-b"></div>
-        <div class="hero-glow"></div>
-        <div class="floating-chip chip-top"><span class="chip-dot green"></span> 24h left to register</div>
-        <div class="feature-window">
-          <div class="window-top"><div class="window-dots"><i></i><i></i><i></i></div><span>YOUR BUILDER RADAR</span><span class="live-label">LIVE PREVIEW</span></div>
-          <div class="window-stat"><div><small>YOUR NEXT OPPORTUNITY</small><h3>Build for what's next.</h3></div><div class="stat-orb">✳</div></div>
-          <div class="mini-event"><div class="mini-logo purple">AI</div><div class="mini-info"><b>Future of AI Challenge</b><small>Online · AI / ML · Example listing</small></div><span class="mini-prize">$10k</span></div>
-          <div class="mini-event"><div class="mini-logo orange">W3</div><div class="mini-info"><b>Web3 Builders Sprint</b><small>Hybrid · Web3 · Example listing</small></div><span class="mini-prize">$5k</span></div>
-          <div class="window-footer"><span>✦ Your builder journey, organized</span><span>↗</span></div>
+      <div class="hero-art" aria-label="HackVerse collaboration illustration">
+        <div class="orbit orbit-a"></div><div class="orbit orbit-b"></div><div class="hero-glow"></div>
+        <div class="feature-window hv-hero-window">
+          <div class="window-top"><div class="window-dots"><i></i><i></i><i></i></div><span>HACKVERSE WORKSPACE</span><span class="live-label">YOUR SPACE</span></div>
+          <div class="window-stat"><div><small>DISCOVER · CONNECT · CREATE</small><h3>Your next chapter starts here.</h3></div><div class="stat-orb">✳</div></div>
+          <div class="hero-principle"><span>01</span><div><b>Find opportunities</b><small>Explore verified listings when available</small></div></div>
+          <div class="hero-principle"><span>02</span><div><b>Meet collaborators</b><small>Search by skills, interests, and goals</small></div></div>
+          <div class="hero-principle"><span>03</span><div><b>Build in community</b><small>Keep your team conversations in one place</small></div></div>
+          <div class="window-footer"><span>Made for people who build</span><span>↗</span></div>
         </div>
-        <div class="floating-chip chip-bottom">✦ Your next win is out there</div>
+        <div class="floating-chip chip-bottom">✦ Your next idea needs a team</div>
       </div>
     </section>
 
-    <section class="trust-strip wrap"><span>ONE RADAR. MANY SOURCES.</span><div class="source-logos"><b>DEVPOST</b><b>MLH</b><b>DEVFOLIO</b><b>ETHGLOBAL</b><b>UNSTOP</b><b>+ COMMUNITY</b></div></section>
-
     <section class="section wrap" id="discover">
-      <div class="section-heading"><div><div class="eyebrow">OPPORTUNITY FEED</div><h2>Find your next <span class="gradient-text">challenge.</span></h2><p class="muted">A single place for opportunities worth your time.</p></div><button class="btn btn-outline" id="refreshBtn">↻ Refresh feed</button></div>
-      <div class="filter-row">
-        <div class="filter-pills" id="modeFilters"><button class="filter active" data-mode="all">All events</button><button class="filter" data-mode="Online">Online</button><button class="filter" data-mode="In-person">In-person</button><button class="filter" data-mode="Hybrid">Hybrid</button></div>
-        <select id="trackFilter" aria-label="Filter by track"><option value="all">All tracks</option><option>AI / ML</option><option>Web3</option><option>Climate</option><option>Fintech</option><option>Gaming</option><option>Open innovation</option></select>
-        <select id="sortFilter" aria-label="Sort events"><option value="deadline">Nearest deadline</option><option value="newest">Recently added</option><option value="prize">Highest prize</option></select>
-      </div>
-      <div class="feed-note"><span class="note-icon">ⓘ</span> Demo listings are clearly labelled. Connect approved sources to publish verified live events.</div>
-      <div class="event-grid" id="eventGrid"><div class="loading-card">Loading your opportunity radar…</div></div>
-      <div class="center"><button class="btn btn-outline" id="loadMoreBtn">Explore all opportunities <span>→</span></button></div>
+      <div class="section-heading"><div><div class="eyebrow">OPPORTUNITY RADAR</div><h2>Discover your next <span class="gradient-text">challenge.</span></h2><p class="muted">Only listings published to your connected HackVerse database appear here.</p></div><button class="btn btn-outline" id="refreshEventsBtn">↻ Refresh</button></div>
+      <div class="workspace-search-row"><input id="eventSearch" type="search" placeholder="Search title, organizer, track, technology..."><select id="eventMode"><option value="all">All formats</option><option>Online</option><option>In-person</option><option>Hybrid</option></select><select id="eventTrack"><option value="all">All tracks</option><option>AI / ML</option><option>Web3</option><option>Climate</option><option>Fintech</option><option>Gaming</option><option>Open innovation</option></select><select id="eventSort"><option value="deadline">Nearest deadline</option><option value="newest">Recently added</option><option value="prize">Highest prize</option></select></div>
+      <div class="feed-note"><span class="note-icon">ⓘ</span><span>No example events are included. This feed stays empty until real event documents are added to Firestore or an approved source is connected.</span></div>
+      <div class="event-grid" id="eventGrid"><div class="loading-card">Connect Firebase to load your opportunity feed.</div></div>
     </section>
 
     <section class="deadline-band wrap" id="saved">
-      <div><div class="eyebrow">YOUR PERSONAL COMMAND CENTER</div><h2>Never miss your<br><span class="gradient-text">moment to ship.</span></h2><p class="muted">Save opportunities, track deadlines, and keep your next build moving.</p><button class="btn btn-primary" id="savedCta">View my saved events ↗</button></div>
-      <div class="deadline-preview"><div class="preview-head"><span>MY SHORTLIST</span><span class="preview-count" id="savedCount">0 SAVED</span></div><div id="savedPreview" class="saved-preview-empty">Sign in and save events to build your personal deadline dashboard.</div><div class="progress-line"><span></span></div><small>One focused build at a time.</small></div>
+      <div><div class="eyebrow">YOUR PERSONAL SHORTLIST</div><h2>Keep the right<br><span class="gradient-text">opportunities close.</span></h2><p class="muted">Save real events from the opportunity radar and track them here.</p><button class="btn btn-primary" id="viewSavedBtn">Show saved events ↗</button></div>
+      <div class="deadline-preview"><div class="preview-head"><span>MY SHORTLIST</span><span class="preview-count" id="savedCount">0 SAVED</span></div><div id="savedPreview" class="saved-preview-empty">Sign in to save opportunities. Your saved list will appear here.</div><div class="progress-line"><span></span></div><small>Your shortlist belongs to your account.</small></div>
     </section>
 
-    <section class="section wrap feature-section" id="teams">
-      <div class="section-heading"><div><div class="eyebrow">BUILD BETTER, TOGETHER</div><h2>Great teams make<br><span class="gradient-text">bold ideas real.</span></h2><p class="muted">Find collaborators by skills, interests, and availability.</p></div></div>
-      <div class="feature-grid"><article class="feature-card"><div class="feature-icon violet">⌘</div><h3>Skill-first matching</h3><p>Connect with builders who complement your strengths and share your ambition.</p></article><article class="feature-card"><div class="feature-icon mint">◷</div><h3>Deadline clarity</h3><p>Keep registration and submission milestones visible in one focused workspace.</p></article><article class="feature-card"><div class="feature-icon amber">✳</div><h3>Show what you ship</h3><p>Turn projects, wins, and experiments into a portfolio that grows with you.</p></article></div>
+    <section class="section wrap" id="people">
+      <div class="section-heading"><div><div class="eyebrow">COMMUNITY DIRECTORY</div><h2>Meet your next <span class="gradient-text">teammate.</span></h2><p class="muted">Search public builder profiles by name, username, college, skills, or role.</p></div></div>
+      <div class="workspace-search-row people-search-row"><input id="peopleSearch" type="search" placeholder="Try a skill, name, username, or college..."><select id="peopleRole"><option value="all">All roles</option><option>Frontend Developer</option><option>Backend Developer</option><option>AI / ML Engineer</option><option>UI / UX Designer</option><option>Product Manager</option><option>Blockchain Developer</option><option>Data Scientist</option><option>Hardware / IoT</option></select><label class="check-filter"><input type="checkbox" id="lookingForTeamOnly"> Looking for a team</label></div>
+      <div class="directory-meta"><span id="peopleResultCount">Sign in to search the community directory.</span><button class="btn btn-outline" id="editProfileFromPeople">Complete my profile</button></div>
+      <div class="people-grid" id="peopleGrid"><div class="loading-card">Public member profiles will appear here after people create an account.</div></div>
     </section>
 
-    <section class="cta wrap" id="showcase"><div class="cta-orb">✳</div><div class="eyebrow">THE BUILDER ERA IS YOURS</div><h2>Stop searching.<br><span class="gradient-text">Start building.</span></h2><p>Make HackVerse your home base for the next big thing.</p><button class="btn btn-primary" id="ctaJoin">Create your free account ↗</button></section>
+    <section class="section wrap" id="messages">
+      <div class="section-heading"><div><div class="eyebrow">COLLABORATION SPACE</div><h2>Keep your team <span class="gradient-text">in sync.</span></h2><p class="muted">Start one-to-one chats or create a group room for your project team.</p></div><button class="btn btn-primary" id="newGroupBtn">＋ New group</button></div>
+      <div class="chat-workspace">
+        <aside class="chat-sidebar"><div class="chat-sidebar-head"><b>Conversations</b><span id="conversationCount">0</span></div><div id="conversationList" class="conversation-list"><div class="empty-note">Sign in to see your conversations.</div></div></aside>
+        <section class="chat-main" aria-label="Chat conversation"><div id="chatPlaceholder" class="chat-placeholder"><div class="placeholder-icon">⌁</div><h3>Your conversations live here.</h3><p>Choose a conversation or find a builder in the community directory to start chatting.</p><a href="#people" class="text-link">Find teammates →</a></div>
+          <div id="chatActive" class="chat-active" hidden><div class="chat-heading"><div><b id="chatTitle">Conversation</b><small id="chatSubtitle"></small></div><span class="secure-tag">Private to members</span></div><div id="messageList" class="message-list"></div><form id="messageForm" class="message-composer"><textarea id="messageText" rows="1" maxlength="2000" placeholder="Write a message..." required></textarea><button class="btn btn-primary" type="submit">Send ↗</button></form></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="section wrap" id="profile">
+      <div class="section-heading"><div><div class="eyebrow">YOUR BUILDER IDENTITY</div><h2>Make your work <span class="gradient-text">speak.</span></h2><p class="muted">Create a useful public profile, share your skills, and showcase projects.</p></div><button class="btn btn-outline" id="editProfileBtn">Edit profile</button></div>
+      <div class="profile-panel" id="myProfilePanel"><div class="profile-empty"><div class="placeholder-icon">◎</div><h3>Your profile starts here.</h3><p>Sign in and complete your builder profile to be discoverable by teammates.</p><button class="btn btn-primary" id="profileStartBtn">Create my profile</button></div></div>
+      <div class="projects-heading"><div><h3>Project showcase</h3><p class="muted">Share projects you have built or are working on.</p></div><button class="btn btn-outline" id="addProjectBtn">＋ Add project</button></div>
+      <div class="projects-grid" id="myProjects"><div class="empty-note">No projects published yet.</div></div>
+    </section>
+
+    <section class="cta wrap"><div class="cta-orb">✳</div><div class="eyebrow">YOUR NEXT BUILD STARTS WITH A CONNECTION</div><h2>Think bigger.<br><span class="gradient-text">Build together.</span></h2><p>Create your profile and meet the people who can help make it real.</p><button class="btn btn-primary" id="ctaJoin">Create your free account ↗</button></section>
   </main>
+  <footer class="footer wrap"><a class="brand" href="#top"><span class="brand-mark">H</span><span>hack<span class="brand-accent">verse</span></span></a><span>Built for people who build.</span><div><a href="#discover">Discover</a><a href="mailto:hello@hackverse.example">Contact</a></div><small>© <span id="year"></span> HackVerse</small></footer>
 
-  <footer class="footer wrap"><a class="brand" href="#"><span class="brand-mark">H</span><span>hack<span class="brand-accent">verse</span></span></a><span>Built for people who build.</span><div><a href="#discover">Discover</a><a href="#" id="privacyLink">Privacy</a><a href="#" id="termsLink">Terms</a></div><small>© <span id="year"></span> HackVerse</small></footer>
+  <!-- Authentication -->
+  <div class="modal-backdrop" id="authModal" hidden><section class="modal" role="dialog" aria-modal="true" aria-labelledby="authTitle"><button class="modal-close" data-close="authModal" aria-label="Close">×</button><div class="modal-brand"><span class="brand-mark">H</span></div><div class="eyebrow">WELCOME TO HACKVERSE</div><h2 id="authTitle">Your next build awaits.</h2><p class="muted" id="authSubtitle">Sign in to access your builder workspace.</p><button class="btn google-btn" id="googleSignIn"><span class="google-g">G</span> Continue with Google</button><div class="or-line"><span>OR WITH EMAIL</span></div><form id="authForm"><label>Email address<input type="email" id="authEmail" placeholder="you@example.com" required autocomplete="email"></label><label>Password<input type="password" id="authPassword" placeholder="At least 8 characters" minlength="8" required autocomplete="current-password"></label><button class="btn btn-primary full" id="authSubmit" type="submit">Sign in →</button></form><div class="auth-foot"><button id="authModeToggle" type="button">Create an account</button><button id="resetPassword" type="button">Forgot password?</button></div><p class="form-message" id="authMessage" role="status"></p><small class="legal-note">Use real contact details only where you are comfortable. Your email is never shown on your public profile.</small></section></div>
 
-  <div class="modal-backdrop" id="authModal" hidden>
-    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
-      <button class="modal-close" data-close aria-label="Close">×</button><div class="modal-brand"><span class="brand-mark">H</span></div>
-      <div class="eyebrow">WELCOME TO THE BUILDERVERSE</div><h2 id="authTitle">Your next build awaits.</h2><p class="muted" id="authSubtitle">Sign in to save events and personalize your radar.</p>
-      <button class="btn google-btn" id="googleSignIn"><span class="google-g">G</span> Continue with Google</button>
-      <div class="or-line"><span>OR WITH EMAIL</span></div>
-      <form id="authForm"><label>Email address<input type="email" id="authEmail" placeholder="you@example.com" required autocomplete="email"></label><label>Password<input type="password" id="authPassword" placeholder="At least 6 characters" minlength="6" required autocomplete="current-password"></label><button class="btn btn-primary full" id="authSubmit" type="submit">Sign in →</button></form>
-      <div class="auth-foot"><button id="authModeToggle">Create an account</button><button id="resetPassword">Forgot password?</button></div>
-      <p class="form-message" id="authMessage" role="status"></p>
-      <small class="legal-note">By continuing, you agree to our Terms and Privacy Policy.</small>
-    </section>
-  </div>
+  <!-- Detailed registration and profile editor -->
+  <div class="modal-backdrop" id="profileModal" hidden><section class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="profileModalTitle"><button class="modal-close" data-close="profileModal" id="profileModalClose" aria-label="Close">×</button><div class="eyebrow">BUILDER PROFILE</div><h2 id="profileModalTitle">Tell the community about you.</h2><p class="muted" id="profileModalHint">A detailed profile helps teammates find you. Fields marked * are required.</p><form id="profileForm" class="profile-form">
+    <div class="form-section-title">Identity & education</div><div class="form-grid"><label>Full name *<input id="profileName" required maxlength="80" placeholder="Your name"></label><label>Username *<input id="profileUsername" required minlength="3" maxlength="24" pattern="[A-Za-z0-9_]{3,24}" placeholder="e.g. alex_builds"><small>3–24 letters, numbers, or underscores. This cannot be changed in this starter.</small></label><label>College / university *<input id="profileCollege" required maxlength="120" placeholder="College or university name"></label><label>Course / department *<input id="profileCourse" required maxlength="100" placeholder="e.g. Computer Science"></label><label>Study level *<select id="profileStudyLevel" required><option value="">Choose one</option><option>High school</option><option>Diploma</option><option>Undergraduate</option><option>Postgraduate</option><option>Doctoral</option><option>Graduate</option><option>Self-taught</option><option>Other</option></select></label><label>Graduation year<input id="profileGradYear" type="number" min="2000" max="2045" placeholder="e.g. 2028"></label><label>City<input id="profileCity" maxlength="80" placeholder="City"></label><label>Country<input id="profileCountry" maxlength="80" placeholder="Country"></label></div>
+    <div class="form-section-title">Your builder identity</div><div class="form-grid"><label class="span-2">Short bio *<textarea id="profileBio" required maxlength="500" rows="3" placeholder="What are you interested in building? What do you bring to a team?"></textarea></label><label class="span-2">Skills *<input id="profileSkills" required placeholder="JavaScript, Python, Figma, Firebase"><small>Separate skills with commas. Add the skills you actually use.</small></label><label class="span-2">Roles you are interested in<input id="profileRoles" placeholder="Frontend Developer, UI / UX Designer"></label><label class="span-2">Interests / domains<input id="profileInterests" placeholder="AI, climate, fintech, accessibility"></label><label>Availability<select id="profileAvailability"><option>Open to opportunities</option><option>Available weekends</option><option>Available evenings</option><option>Currently busy</option><option>Not looking right now</option></select></label><label>Preferred event format<select id="profileMode"><option>Any format</option><option>Online</option><option>In-person</option><option>Hybrid</option></select></label><label class="span-2">Profile photo URL (optional)<input id="profileAvatar" type="url" placeholder="https://..."></label></div>
+    <div class="form-section-title">Links & contact</div><div class="form-grid"><label>GitHub URL<input id="profileGithub" type="url" placeholder="https://github.com/username"></label><label>LinkedIn URL<input id="profileLinkedin" type="url" placeholder="https://linkedin.com/in/username"></label><label class="span-2">Portfolio / personal website<input id="profilePortfolio" type="url" placeholder="https://your-portfolio.example"></label><label>Phone (private, optional)<input id="profilePhone" type="tel" maxlength="24" placeholder="Only stored in your private account"></label><label>Looking for teammates?<select id="profileLooking"><option value="true">Yes, open to teammates</option><option value="false">Not right now</option></select></label></div>
+    <label class="consent-row"><input type="checkbox" id="profilePublicConsent" required><span>I understand that my name, username, college, course, bio, skills, interests, availability, selected links, and teammate status will be visible in the public builder directory. My email and phone remain private.</span></label>
+    <div class="profile-form-actions"><button class="btn btn-primary full" type="submit" id="saveProfileBtn">Save profile and continue →</button><button class="text-link profile-signout" type="button" id="profileSignOutBtn">Sign out instead</button></div><p class="form-message" id="profileMessage" role="status"></p>
+  </form></section></div>
+
+  <!-- Public member profile -->
+  <div class="modal-backdrop" id="memberModal" hidden><section class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="memberModalTitle"><button class="modal-close" data-close="memberModal" aria-label="Close">×</button><div id="memberProfileContent"></div><div class="member-actions"><button class="btn btn-primary" id="memberMessageBtn">Message this builder ↗</button><button class="btn btn-outline" id="memberReportBtn">Report profile</button></div></section></div>
+
+  <!-- Group chat creation -->
+  <div class="modal-backdrop" id="groupModal" hidden><section class="modal" role="dialog" aria-modal="true" aria-labelledby="groupTitle"><button class="modal-close" data-close="groupModal" aria-label="Close">×</button><div class="eyebrow">TEAM WORKSPACE</div><h2 id="groupTitle">Create a group chat.</h2><p class="muted">Add up to 10 existing HackVerse usernames. Everyone must have an account and a public profile.</p><form id="groupForm"><label>Group name<input id="groupName" required maxlength="60" placeholder="e.g. ClimateBuild team"></label><label>Member usernames<input id="groupMembers" required placeholder="alex_builds, samcodes"><small>Do not include the @ symbol. You will be added automatically.</small></label><button class="btn btn-primary full" type="submit">Create group →</button><p class="form-message" id="groupMessage"></p></form></section></div>
+
+  <!-- Project creation -->
+  <div class="modal-backdrop" id="projectModal" hidden><section class="modal" role="dialog" aria-modal="true" aria-labelledby="projectTitle"><button class="modal-close" data-close="projectModal" aria-label="Close">×</button><div class="eyebrow">PROJECT SHOWCASE</div><h2 id="projectTitle">Add a project.</h2><form id="projectForm"><label>Project name<input id="projectName" required maxlength="100" placeholder="Project title"></label><label>What does it do?<textarea id="projectDescription" rows="3" required maxlength="600" placeholder="Describe the problem and what you built..."></textarea></label><label>Tech stack<input id="projectTech" placeholder="React, Firebase, Python"></label><label>Live project URL<input id="projectUrl" type="url" placeholder="https://..."></label><label>GitHub URL<input id="projectGithub" type="url" placeholder="https://github.com/..."></label><label>Visibility<select id="projectVisibility"><option value="public">Public</option><option value="private">Only me</option></select></label><button class="btn btn-primary full" type="submit">Publish project →</button><p class="form-message" id="projectMessage"></p></form></section></div>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script type="module" src="app.js"></script>
 </body>

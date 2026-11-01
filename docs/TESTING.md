@@ -3,13 +3,17 @@
 ## Functional
 - Google sign-in success/cancel/error; email signup/signin; verification email; password reset; signout.
 - Saved event add/remove; saved list scoped to current UID.
+- Profile onboarding, username collision, public/private field separation, and profile edits.
+- Member directory prefix/skill search, role filter, and looking-for-team filter.
+- Direct chat with two accounts, group chat with multiple accounts, message size limit, and participant-only message reads.
+- Project create/delete and profile report submission.
 - Search typo/empty/no-result behavior; track/mode/sort filters.
 - Official links open in new tab with noopener.
 - Feed handles missing fields, malformed dates, long titles, no prize, expired events.
 
 ## Security
-- Anonymous user cannot read private profiles/saved events.
-- User A cannot read or mutate User B data.
+- Anonymous user cannot read private account documents/saved events; public profiles are intentionally public.
+- User A cannot read or mutate User B private account data, saved events, projects, or conversations they do not belong to.
 - Client cannot set admin role or publish/edit hackathons.
 - Non-admin cannot invoke manual refresh.
 - App Check and callable auth enforced.

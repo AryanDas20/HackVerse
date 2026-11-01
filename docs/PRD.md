@@ -15,11 +15,9 @@ Students, developers, designers, product managers, founders, researchers, hobbyi
 - Turn participation into a durable project portfolio.
 
 ## 4. MVP requirements
-P0: responsive landing/discovery feed; keyword search; mode/track filters; event cards; source and verification labels; external official-registration link; Firebase Google and email/password auth; email verification; password reset; saved events; Firestore rules; admin-controlled public event collection; RSS ingestion queue scaffold; manual refresh restricted to admins.
+P0 in this starter: responsive opportunity discovery feed; keyword search; mode/track filters; Firebase Google and email/password authentication; password reset; detailed profile onboarding; public member directory; saved events; direct and group text chat; project cards; profile reporting; Firestore rules; admin-controlled public event collection; RSS moderation scaffold.
 
-P1: onboarding profile; full event detail; deadline dashboard; in-app notifications; report listing; moderation console; source adapter framework; dedupe; organizer-submitted events; calendar export.
-
-P2: team marketplace/chat; project showcase; organizer console; judge scoring; recruiter tools; social API integrations; AI matching and coaching; push/email digests; analytics.
+Next: email-verification enforcement; App Check; contact requests and blocking; moderation console; notifications and reminders; deadline dashboard; project collaboration; organizer-submitted events; calendar export; full-text search; official source adapters; deduplication; AI recommendations; judge/recruiter tools.
 
 ## 5. Trust requirements
 Every public event must expose source attribution, original/source URL, official event/registration URL where known, last-updated time, verification status, and a report action. Unverified social discoveries stay in moderation until reviewed. Never imply an unverified listing is official.

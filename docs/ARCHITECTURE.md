@@ -1,23 +1,32 @@
 # System Architecture
 
-## MVP topology
-Browser (HTML/CSS/ES modules) → Firebase Authentication → Firestore (user profiles, saved events, public approved hackathons) → Cloud Functions (scheduled ingestion, callable admin refresh) → approved public RSS feeds.
+## Current release topology
 
-Firebase Hosting serves static assets. Firebase Storage is reserved for user-uploaded portfolio assets. Cloud Functions are the trusted boundary for secrets, ingestion, privileged writes, AI calls, and API integrations.
+Browser (HTML/CSS/ES modules, Firebase Web SDK) → Firebase Authentication → Cloud Firestore.
 
-## Production topology (target)
-Source adapters → queue/scheduler → raw source store → normalization and enrichment → deduplication/entity resolution → moderation queue → approved event store → indexed search (Algolia/Meilisearch) → web/mobile clients. Observability and audit logging span all workers.
+- Firebase Hosting serves the static site.
+- Firestore stores private user accounts, public member profiles, username reservations, events, saved events, conversations/messages, project cards, and profile reports.
+- Conversation and message access is restricted by participant membership in Firestore Security Rules.
+- Public event publishing and ingestion candidate writes are reserved for trusted admin/server environments.
+- Optional Cloud Functions handle approved RSS ingestion and admin-only maintenance. They are not required for the core website/chat to run.
 
 ## Trust boundaries
-- Browser may read public events and write only to the signed-in user's own profile/saved subcollections.
-- Browser must never hold source API secrets, AI provider keys, service-account credentials, or admin credentials.
-- Only trusted server processes can publish or edit public events.
-- Admin role assignment must be performed by a privileged operator using Firebase Admin SDK/custom claims or a controlled admin provisioning function.
-- Social sources require platform-specific API approval, scopes, retention, and display compliance.
+
+- Browser clients can update only their own private and public profile records, saved events, owned projects, and messages in conversations they belong to.
+- Browser clients cannot publish or edit `hackathons` documents.
+- Admin access is granted with Firebase Authentication custom claims assigned through a trusted Admin SDK environment.
+- Never put service-account credentials, source API keys, AI provider tokens, or admin credentials in `public/`.
+- `publicProfiles` is a public directory by design. Never put email addresses, phone numbers, student IDs, or other private contact information in it.
+- Social sources require approved official APIs, integrations, public RSS, or explicit user-authorized connections. No scraping or logged-in browser automation.
+
+## Known limits
+
+This starter is a single-page static client. It has no backend search service, message attachments, typing indicators, read receipts, group membership management, server-side message notifications, or mature anti-abuse moderation. It permits direct messages to other directory members and includes profile reporting, but no block/report review console yet. Launch this as a controlled beta until moderation, rate limiting, abuse response, and account deletion/export are completed.
 
 ## Suggested scaling path
-1. Firebase-only MVP.
-2. Add Cloud Tasks/Pub/Sub for ingestion fan-out and retry.
-3. Add dedicated search index for typo tolerance/facets.
-4. Move high-volume event history and analytics to PostgreSQL/BigQuery if Firestore query/cost patterns justify it.
-5. Add Redis only when measurable caching/queue needs emerge.
+
+1. Add contact requests, block/mute, report triage, rate limits, and notifications.
+2. Add Firebase App Check and rules/emulator tests to CI.
+3. Add Cloud Tasks/Pub/Sub for ingestion retry and source fan-out.
+4. Add dedicated search indexing (Algolia, Typesense, or Meilisearch).
+5. Add Firebase Storage only when validated upload and retention rules are ready.

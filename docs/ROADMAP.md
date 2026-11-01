@@ -1,28 +1,30 @@
-# MVP vs Phase 2 Roadmap
+# Suggested next release roadmap
 
-## MVP (this starter)
-- Responsive discovery landing/feed.
-- Search, track/mode filters, sorting.
-- Sample events clearly marked.
-- Google and email/password Firebase auth.
-- Email verification and password reset.
-- Save/unsave events.
-- Firestore security rules.
-- Scheduled public RSS candidate ingestion scaffold.
-- Documentation and deploy foundation.
+## Release 1 — included in this starter
+- Firebase Authentication and detailed profile onboarding.
+- Public member directory with prefix and skill search.
+- Firestore-backed event catalogue with no bundled sample listings.
+- Saved events, direct messages, group chat, and project cards.
+- Owner/participant-based Firestore security rules.
 
-## Phase 1.5
-- Onboarding profile and recommendation rules.
-- Event detail pages and report form.
-- Admin moderation UI and audit trail.
-- Real source adapters for approved feeds/APIs.
-- Date parsing, dedupe, stale/cancelled detection.
-- Calendar export and email reminders.
+## Release 2 — trust and safety
+- Email verification enforcement and optional MFA.
+- App Check rollout, rate limiting, abuse reporting UI, member blocking, moderation dashboard.
+- Account deletion/export and privacy consent/version management.
+- Message retention controls and notification preferences.
 
-## Phase 2
-- Social official API connectors and organizer authorizations.
-- Team profiles, matching, requests, moderated chat.
-- Builder profiles and project showcase.
-- Organizer/judge dashboards and judging rubrics.
-- AI features behind consent, budgets, and safety checks.
-- Search service, analytics, push notifications, recruiter/sponsor tools.
+## Release 3 — collaboration depth
+- Image/document attachments using Firebase Storage and strict file validation.
+- Typing indicators, read receipts, reactions, message editing/deletion, group membership management.
+- Team recruitment posts, join requests, role slots, and project workspaces.
+
+## Release 4 — discovery and intelligence
+- Search service for full-text and typo-tolerant event/member search.
+- Scheduled reminders, saved-search alerts, and deadline calendar.
+- Skill-based recommendations and team-fit insights with explainable matching.
+- Organizer tools, event submission, verification, and moderation queue.
+
+## Release 5 — approved event integrations
+- Source-specific adapters using official APIs, approved integrations, or public RSS.
+- Deduplication and source attribution; human review before publication.
+- No scraping, credential sharing, or unofficial automation for social platforms.
