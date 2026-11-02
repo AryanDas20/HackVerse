@@ -1,5 +1,4 @@
-HackStop v5.2.4
+HackStop v5.2.3
 Brand: HackStop
 UI: sky blue + soft pink, responsive light/dark theme
 Dark mode: persistent, mobile-accessible, pre-paint theme initialization
-Auth UX: Get Started and Sign In always open the auth modal; missing Firebase setup is explained in the modal.

@@ -136,10 +136,3 @@ Firebase Authentication verification and password-reset emails are sent by Fireb
 ## Before a public launch
 
 Publish a real Privacy Policy and Terms of Service, replace the `hello@hackstop.example` footer placeholder, configure abuse reporting and moderation operations, test Firestore rules with the Emulator Suite, configure backups/monitoring, add rate limits, and review privacy requirements for each country where users will register. Do not describe source-attributed events as independently verified. Do not use unofficial scraping for sites without a permitted RSS feed or API.
-
-
-## v5.2.4 authentication-screen behavior
-
-The Get Started / Sign In actions now open the authentication modal even when Firebase has not yet been configured. In that situation the modal explains what needs to be configured, and email sign-up, Google sign-in, and password reset show a clear setup message instead of silently doing nothing.
-
-**Important:** this ZIP still contains placeholder Firebase settings in `public/firebase-config.js`. Replace them with the Web app configuration from your existing Firebase project (`hackverseneo`) before expecting registration, sign-in, profiles, or chat to work. This UI fix does not create or connect a Firebase project automatically.

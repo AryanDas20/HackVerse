@@ -156,11 +156,8 @@ function setSystemNotice(message) {
 }
 
 function openAuth(mode = "signin") {
-  setAuthMode(mode);
-  $("#authMessage").textContent = CONFIGURED
-    ? ""
-    : "Setup required: add your Firebase Web App configuration in public/firebase-config.js. You can view this sign-up screen now, but account creation and Google sign-in will stay unavailable until Firebase is configured.";
-  showModal("authModal");
+  if (!CONFIGURED) { toast("Add your Firebase Web App config first."); return; }
+  setAuthMode(mode); $("#authMessage").textContent = ""; showModal("authModal");
 }
 function closeProfileModal() { if (profileIsMandatory) return; hideModal("profileModal"); }
 function setAuthMode(mode) {
@@ -174,10 +171,7 @@ function setAuthMode(mode) {
 
 async function authSubmit(event) {
   event.preventDefault();
-  if (!CONFIGURED || !auth || !db) {
-    $("#authMessage").textContent = "Firebase is not connected yet. Add the real Firebase Web App settings in public/firebase-config.js, then reload the site.";
-    return;
-  }
+  if (!auth || !db) return;
   const email = $("#authEmail").value.trim(); const password = $("#authPassword").value;
   $("#authMessage").textContent = "";
   try {
@@ -192,19 +186,12 @@ async function authSubmit(event) {
 }
 
 async function googleSignIn() {
-  if (!CONFIGURED || !auth || !db) {
-    $("#authMessage").textContent = "Google sign-in is unavailable until Firebase is configured in public/firebase-config.js.";
-    return;
-  }
+  if (!auth || !db) return;
   try { await signInWithPopup(auth, new GoogleAuthProvider()); hideModal("authModal"); toast("Signed in with Google."); }
   catch (error) { $("#authMessage").textContent = friendlyError(error); }
 }
 
 async function resetPassword() {
-  if (!CONFIGURED || !auth) {
-    $("#authMessage").textContent = "Password reset is unavailable until Firebase is configured in public/firebase-config.js.";
-    return;
-  }
   const email = $("#authEmail").value.trim();
   if (!email) { $("#authMessage").textContent = "Enter your email address first."; return; }
   try { await sendPasswordResetEmail(auth, email); $("#authMessage").textContent = "Password reset email sent."; }
