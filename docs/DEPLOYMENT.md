@@ -1,4 +1,4 @@
-# HackStop v5 deployment guide
+# HackVerse v5 deployment guide
 
 Firebase Cloud Storage is not used or required. The app uses Firebase Authentication and Cloud Firestore. The automatic discovery schedule runs through GitHub Actions so the project can remain on Firebase Spark.
 
@@ -24,7 +24,7 @@ Before replacing the old local folder, back it up and copy your existing `public
 
 The GitHub Actions workflow in `.github/workflows/hackathon-discovery.yml` executes every six hours and has a manual `workflow_dispatch` option. It authenticates using the existing GitHub Workload Identity Federation provider and the `hackverse-discovery` service account. No service-account key is required. Its three RSS sources are Hackalendar, Brabble's hackathons feed and Brabble's Delhi-NCR feed.
 
-Open GitHub → Actions → **HackStop Automatic Hackathon Discovery** to monitor or manually run the job. The cron is UTC: 00:00, 06:00, 12:00 and 18:00 UTC (approximately 05:30, 11:30, 17:30 and 23:30 India time).
+Open GitHub → Actions → **HackVerse Automatic Hackathon Discovery** to monitor or manually run the job. The cron is UTC: 00:00, 06:00, 12:00 and 18:00 UTC (approximately 05:30, 11:30, 17:30 and 23:30 India time).
 
 Do not run `firebase deploy --only functions` while staying on Spark. Firebase Cloud Functions / Cloud Scheduler deployments require Blaze billing. The source retains Cloud Functions exports for a future migration, but the GitHub Actions workflow is the scheduler for this release. The browser-based admin source-management callables are optional and not needed for the scheduled runner.
 

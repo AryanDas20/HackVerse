@@ -1,7 +1,7 @@
-# HackStop — Product Requirements Document
+# HackVerse — Product Requirements Document
 
 ## 1. Vision
-HackStop is the trusted home base for discovering, evaluating, tracking, joining, and showcasing hackathons. Promise: **Find every hackathon worth joining — in one place.**
+HackVerse is the trusted home base for discovering, evaluating, tracking, joining, and showcasing hackathons. Promise: **Find every hackathon worth joining — in one place.**
 
 ## 2. Audiences
 Students, developers, designers, product managers, founders, researchers, hobbyists, organizers, mentors, judges, recruiters, sponsors, moderators, and admins.
