@@ -1,20 +1,20 @@
-# Firestore data model — v5
+# Firestore data model
 
 ## `users/{uid}` — private account document
 
-Owner/admin only. Contains base `email` and `phone`, account metadata, visibility settings, profile completion state and `profileData` snapshot for Private profiles. When profile visibility is Private, the public directory record is deleted and the complete profile snapshot stays only here. Do not allow public reads of this collection.
+Contains `email`, optional `phone`, `displayName`, `username`, `usernameLower`, college/course/study details, `profileComplete`, role metadata, and timestamps. Readable only by the owner and admins. Do not copy private contact details into the public profile.
 
 ## `publicProfiles/{uid}` — searchable public directory record
 
-Public-readable curated profile document. Fields can include `uid`, `displayName`, `nameLower`, `username`, `usernameLower`, `college`, `collegeLower`, `collegeShort`, `collegeShortLower`, `course`, `courseLower`, `studyLevel`, `graduationYear`, `city`, `country`, `bio`, `skills`, `skillsLower`, `rolesInterested`, `rolesLower`, `interests`, `interestsLower`, `availability`, `preferredMode`, `avatarUrl`, optional selected GitHub/LinkedIn/portfolio URLs, `lookingForTeam`, `profileVisibility`, `publicEmail`, `publicEmailLower`, `publicPhone`, `publicPhoneDigits`, `profileConsentAt` and `updatedAt`. Email and phone fields are blank unless the member opts in; a Private profile has no document in this collection.
+Fields written by the app: `uid`, `displayName`, `nameLower`, `username`, `usernameLower`, `college`, `collegeLower`, `course`, `studyLevel`, `graduationYear`, `city`, `country`, `bio`, `skills`, `skillsLower`, `rolesInterested`, `rolesLower`, `interests`, `availability`, `preferredMode`, `avatarUrl`, `github`, `linkedin`, `portfolio`, `lookingForTeam`, `profileConsentAt`, and `updatedAt`. This collection is public-readable by design. Do not add email, phone, student ID, or private account identifiers.
 
 ## `usernames/{usernameLower}` — username reservation
 
-Contains `uid` and `createdAt`. A username is reserved once. Username change/release is not implemented in this starter.
+Contains `uid` and `createdAt`. A username is reserved once. This starter does not support username changes or release.
 
-## `hackathons/{eventId}` — opportunity catalogue
+## `hackathons/{eventId}` — curated event catalogue
 
-Stores hackathons, case competitions, coding events, bootcamps, courses and certifications in one collection. Typical fields include `title`, `category`, `opportunityType`, `organizer`, `summary`, `description`, `mode`, `location`, `city`, `region`, `country`, `tracks`, `technologies`, `skills`, `level`, `teamSize`, `prize`, `prizePool`, `currency`, `isFree`, `price`, `registrationDeadline`, `startAt`, `endAt`, `officialRegistrationUrl`, `officialEventUrl`, `sourceUrl`, `sourceName`, `sourcePlatform`, `attributionText`, `verificationStatus`, `visibility`, `status`, `createdAt`, `updatedAt` and ingestion timestamps. `source-attributed` means source linked, not independently verified.
+Suggested fields: `title`, `organizer`, `summary`, `mode` (`Online`, `In-person`, or `Hybrid`), `tracks` (array), `technologies` (array), `teamSize`, `prizePool`, `currency`, `registrationDeadline`, `startAt`, `endAt`, `officialRegistrationUrl`, `officialEventUrl`, `sourceUrl`, `verificationStatus`, `visibility`, `createdAt`, `updatedAt`. `visibility` must be `public` to appear in the app. Only admin custom-claim accounts can write these documents under the provided rules.
 
 ## `users/{uid}/savedEvents/{eventId}`
 
@@ -22,19 +22,19 @@ Contains `eventId` and `savedAt`. Only the owner can read/create/delete their sa
 
 ## `conversations/{conversationId}`
 
-Contains `isGroup`, `groupName`, `participants` (UID array), `participantNames` (UID-to-display-name map), `createdBy`, `admins`, `lastMessage`, `lastMessageSender`, `createdAt`, `updatedAt` and `lastMessageAt`. Group creator/admin can update membership (up to 11 total); private profiles can participate in an existing conversation without being published in the directory.
+Contains `isGroup`, `groupName`, `participants` (UID array), `participantNames` (UID-to-display-name map), `lastMessage`, `createdAt`, `updatedAt`, and `lastMessageAt`. Members can read the conversation. Membership is fixed after creation in this starter.
 
 ### `conversations/{conversationId}/messages/{messageId}`
 
-Contains `authorUid`, `authorName`, `text`, `createdAt`, and optional `edited`, `editedAt`, `deleted`, `deletedAt`. Only participants can read. Author can edit or soft-delete their own messages within 15 minutes. Hard deletion is disabled by rules.
+Contains `authorUid`, `authorName`, `text`, and `createdAt`. Only participants can read. A signed-in participant can create a message only with their own UID as `authorUid`; text is limited to 2,000 characters.
 
 ## `projects/{projectId}`
 
-Contains `ownerUid`, `ownerName`, `title`, `description`, `techStack`, `projectUrl`, `githubUrl`, `visibility`, `createdAt`, and `updatedAt`. Owners can manage their records. Public records are readable by all.
+Contains `ownerUid`, `ownerName`, `title`, `description`, `techStack`, `projectUrl`, `githubUrl`, `visibility` (`public` or `private`), `createdAt`, and `updatedAt`. Owners can manage their records. Public records are readable by all.
 
 ## `discoverySources/{sourceId}`
 
-Admin-managed RSS registry. Browser writes are blocked; trusted callables manage these records. The Spark-compatible GitHub Actions runner also accepts the comma-separated `HACKVERSE_RSS_FEEDS` environment variable, so it can run without Firestore source documents.
+Admin-managed source registry. Current source documents contain `name`, `type` (`rss`), `platform`, `category`, `feedUrl`, `enabled`, `autoPublish`, timestamps, and last-run/error metadata. Browser writes are blocked; trusted callables manage these records.
 
 ## `eventFingerprints/{fingerprintId}`
 
@@ -42,8 +42,8 @@ Admin-only URL/title fingerprints map duplicate source announcements to one `hac
 
 ## `ingestionRuns/{runId}`
 
-Admin-only run summaries containing source counts, fetched/relevant/published counts, expiry counts, errors and timestamps.
+Admin-only run summaries containing source counts, fetched/relevant/published counts, expiry counts, errors, and timestamps. The discovery engine writes directly to public `hackathons` when conservative relevance checks pass and `autoPublish` is enabled. Every event retains `sourceUrl`, `sourceName`, `sourcePlatform`, and `verificationStatus: source-attributed`.
 
 ## `reports/{reportId}`
 
-Profile reports are stored for moderation review. A complete moderation dashboard and abuse workflow are not included yet.
+Reserved for moderation reports. The client does not yet include a complete report UI or moderation workflow.

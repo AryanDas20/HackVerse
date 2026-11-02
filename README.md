@@ -1,119 +1,139 @@
-# HackVerse v5 — Opportunity discovery and builder community
+# HackVerse — Firebase-backed collaboration starter
 
-HackVerse is a mobile-first web app built with HTML, CSS, JavaScript modules, Firebase Authentication and Cloud Firestore. It uses no Firebase Cloud Storage and does not require a Firebase Blaze upgrade for the scheduled discovery pipeline included in this package.
+A clean, mobile-first hackathon and builder community starter built with plain HTML, CSS, JavaScript modules, Firebase Authentication, Cloud Firestore, and Firebase Hosting. Firebase Cloud Storage is not used or required.
 
-## What changed in v5
+## This release contains no seeded/sample event or member data
 
-### Opportunity discovery
-- The home page shows a preview of up to six latest opportunities. **Explore** opens a dedicated directory page; **Saved** opens a separate saved-opportunities page.
-- Opportunity cards are compact. **Read details** opens a modal with the available description, organiser, country/region/city, format, track, skills, level, team size, prize, dates, eligibility, source attribution and original source/registration link.
-- Filters include opportunity type, country, region/state, format (online/in-person/hybrid), track, skill/technology, level, free/paid (only when explicitly stated), deadline and source platform. Country, region, track and source choices are derived from the event data available in Firestore.
-- Supported categories include hackathons, case competitions, coding events, bootcamps, online courses and certifications. The workflow now imports dated, current/upcoming courses from the public openHPI JSON course feed and ignores historical courses whose end date has passed. Bootcamp and certification filters are supported; official provider catalogues are shown for those categories because a reliable public bootcamp feed is not currently connected.
-- The feed reads up to 500 public records. Search, filters and sort run in the browser. This is suitable for a starter catalogue; add server-side pagination and a search service before scaling much further.
+The event catalogue starts empty. There are no hard-coded demo hackathons or fallback event records. The discovery engine can automatically publish qualifying hackathon announcements from public RSS feeds you explicitly connect in the admin control center.
 
-### Community profiles and privacy
-- Search public profiles by name, username, full college name, college short name, course, skills and interests. Search for phone/email works only when the member explicitly publishes that field.
-- Profile visibility can be **Public** or **Private**. A private profile is kept in the signed-in user's private `users/{uid}` document and removed from `publicProfiles`; other users cannot search or open it.
-- Phone and email have their own independent Public/Private settings. They default to Private. Public contact fields are copied to the public profile only after the member opts in.
-- Profile views include education, location, bio, skills, interested roles, interests, availability and optional GitHub/LinkedIn/portfolio links.
+## Features in this release
 
-**Privacy / matching limitation:** The smart team matcher currently ranks *public, discoverable* profiles using a deterministic skills-and-roles matching score. It is not an LLM-powered AI service. A private user can run the matcher using their own profile locally, but their private profile is never included as a candidate in another person’s client-side search. Allowing every browser to read hidden profile data in order to match it would defeat the privacy setting. To let other people match private candidates without exposing their data, HackVerse needs a trusted server-side matching endpoint. Firebase Cloud Functions deployment requires Blaze; this package does not enable that because this project is staying on Spark.
+- **Authentication:** Google sign-in, email/password registration and login, password reset, and email-verification email on email signup.
+- **Detailed onboarding:** required name, unique username, college/university, course, study level, bio, and at least one skill; optional graduation year, city/country, roles, interests, availability, preferred event format, avatar URL, GitHub, LinkedIn, portfolio, and private phone number.
+- **Member directory:** search by username, name, college, skills, and interests; role and “looking for a team” filters; skill-overlap ordering.
+- **Public/private profile split:** contact email and phone are stored in `users/{uid}`. Only the fields shown in the public profile form are copied to `publicProfiles/{uid}`.
+- **Opportunity discovery:** real Firestore event feed, keyword search, mode/track filters, sorting, official registration links, and saved events.
+- **Live messaging:** one-to-one conversations, multi-member group rooms, real-time inbox/message updates, and a 2,000-character message limit.
+- **Project showcase:** create, publish, make private, and delete project cards with tech stack and links.
+- **Responsive layout:** mobile navigation, dark/light theme, modal close controls, empty states, and toast feedback.
+- **Security baseline:** Firestore rules scope private records and chats to their owners/participants; admin powers use Firebase Authentication custom claims.
+- **Automatic discovery:** scheduled six-hour RSS/Atom feed checks plus optional YouTube Data API searches, relevance filtering, canonical URL/title deduplication, source attribution, automatic publication, per-source enable/disable, manual admin refresh, ingestion logs, and expired-deadline hiding. No sample listings are seeded.
 
-### Messaging and teams
-- Real-time direct messages and group chat rooms, conversation search and in-chat message search.
-- Click a direct-chat title to open the other member's profile. Click a group title to open group details.
-- A message author can edit or soft-delete their own message for 15 minutes after sending. Deleted messages become a deleted-message marker for all members; they are not physically erased from Firestore.
-- Group creators/admins can add and remove members. Group creation includes a searchable member picker and selected-member chips; groups support up to 11 people including the creator.
-- Smart team matching lets the user specify the project name, team size and needed skills/roles, review candidates, select members and create a team chat.
+## What is not included yet
 
-The current chat is text-only. It does not include attachments, voice/video calls, typing indicators, read receipts, reactions, message forwarding or push notifications. No image/file uploads are provided because Firebase Storage is intentionally not used.
+This is a deployable foundation, not a claim that every feature of a mature social platform is finished. It does not yet include message attachments, typing indicators, read receipts, message editing/deletion, member blocking, push notifications, video calls, account deletion/export UI, organizer dashboards, payments, AI matching, or dedicated full-text search infrastructure. The current event search loads up to 100 public event documents and filters them in the browser; the member directory uses Firestore prefix/skill queries. Use a dedicated search service such as Algolia, Typesense, or Meilisearch before scaling to a large catalogue.
 
-## Existing discovery automation retained
+The browser uses the Firebase Web SDK for Authentication and Cloud Firestore only. This project does not initialize Firebase Cloud Storage, upload files, or require a Storage bucket. Profile avatars and project media are represented by externally hosted URLs; no binary files are uploaded by this starter. Firebase Web configuration is public client configuration, not a service-account secret. Never place service-account JSON, private API tokens, or admin credentials in `public/`.
 
-The GitHub Actions workflow is retained in `.github/workflows/hackathon-discovery.yml`. It runs every six hours and can also be started manually from GitHub Actions. It authenticates to Google Cloud using the repository's existing Workload Identity Federation configuration; no service-account JSON key is stored in GitHub or this ZIP.
+## 1. Configure Firebase
 
-The three feeds already tested from the current project are configured:
+1. Create a Firebase project at <https://console.firebase.google.com/>.
+2. Register a Web app and copy its Firebase config into `public/firebase-config.js`.
+3. In **Authentication → Sign-in method**, enable **Google** and **Email/Password**.
+4. In **Authentication → Settings → Authorized domains**, add `localhost` for local testing and your deployed domain.
+5. Create a **Cloud Firestore** database in Production mode. Choose a nearby region carefully because the database location is difficult to change later.
+6. From this project folder, run:
 
-1. `https://hackalendar.com/feed.xml`
-2. `https://brabble.ai/rss/hackathons.xml`
-3. `https://brabble.ai/rss/in/delhi-ncr.xml`
+   ```bash
+   npm install -g firebase-tools
+   firebase login
+   firebase use --add
+   ```
 
-The discovery engine normalizes RSS entries, filters relevant listings, writes to Firestore, deduplicates URL/title fingerprints and expires passed registration deadlines. Source-attributed listings are not independently fact-checked. Always confirm details at the linked organiser/source page. Coverage is broad but cannot guarantee every hackathon or opportunity on the internet.
+   Select your Firebase project and use the `default` alias.
+7. Deploy the Firestore rules, indexes, and Hosting site:
 
-**Spark plan note:** GitHub Actions is the six-hour scheduler. Do not deploy `scheduledRssIngestion` as a Firebase scheduled Cloud Function while staying on Spark. The Cloud Functions callable admin/source-management panel is an optional path and is not required for the GitHub Actions pipeline.
+   ```bash
+   firebase deploy --only firestore:rules,firestore:indexes,hosting
+   ```
 
-## Important: preserve your existing Firebase configuration before replacing files
+8. Open the Hosting URL printed by Firebase, register a new account, and complete the profile onboarding.
 
-This ZIP intentionally contains a placeholder `public/firebase-config.js`; it does not contain your private deployment state or actual Web App config. Before replacing your old project folder:
+## 2. Local preview
 
-1. Make a backup copy of the existing `HackVerse` folder.
-2. Copy your working `public/firebase-config.js` from the old folder into the new v5 folder, replacing the placeholder.
-3. Copy your existing hidden `.firebaserc` file into the new folder if you use Firebase CLI locally. Do not overwrite it with `.firebaserc.example`.
-4. Keep your existing Firebase project `hackverseneo`, Vercel project and GitHub repository connection. This ZIP does not change those cloud resources.
-5. Preserve any local-only files you need, such as `.env.*`, `functions/package-lock.json`, or editor settings. Do not add private environment files or service-account keys to Git.
-
-The code and Firestore schema are updated, but no cloud database is changed by extracting this ZIP.
-
-## Deploying the updated version
-
-### 1. Replace the local source safely
-
-Extract this ZIP into a new folder first. Restore `public/firebase-config.js` and `.firebaserc` from your backup as described above. Then replace the old source files with the v5 files. Do not delete your backup until the website is confirmed working.
-
-### 2. Update Firestore security rules
-
-From the project root, with Firebase CLI logged into the account that owns `hackverseneo`, run:
+From the project directory run:
 
 ```bash
-firebase use hackverseneo
-firebase deploy --only firestore:rules,firestore:indexes
+python3 -m http.server 5500 --directory public
 ```
 
-The rules update adds public/private profile handling, group membership administration and the 15-minute message edit/delete window. Test with two separate user accounts after deploying.
+Then open <http://localhost:5500>. This local preview uses your configured Firebase project directly; it is not automatically connected to the Firebase Emulator Suite. Do not use production data while experimenting unless that is intended.
 
-### 3. Push to your existing GitHub repository
+## 3. Turn on automatic discovery
 
-The project is connected to `https://github.com/AryanDas20/VerseNeo.git`. Review changes before committing. Then:
+The engine reads public RSS feeds you add and can optionally search YouTube through the official YouTube Data API. It checks every six hours after Cloud Functions are deployed. An event is auto-published when its source item has a secure HTTPS link and the title/summary clearly identifies a hackathon. It is labelled `source-attributed`; this is not a guarantee that every prize, deadline, or eligibility detail has been independently verified. Each card links to its source. A deadline detected in the source text is stored and expired deadlines are hidden from the public feed.
+
+### Give your account admin access
+
+1. Create a normal HackVerse account and complete your profile.
+2. In Firebase Authentication, copy that account's UID.
+3. Create/download a service-account key only on a trusted computer. Keep it outside this project and never upload it to GitHub.
+4. From the `functions` folder, run:
+
+   ```bash
+   npm install
+   GOOGLE_APPLICATION_CREDENTIALS="/absolute/path/to/service-account.json" node scripts/set-admin.js YOUR_AUTH_UID
+   ```
+
+5. Sign out of HackVerse and sign in again. Your account will then see the **Admin Control Center** below the event feed.
+
+### Add RSS sources
+
+1. Paste an RSS/Atom feed URL whose publisher terms permit this kind of discovery and display.
+2. Choose a clear source name and click **Add source**.
+3. Click **Run discovery now** to test immediately, or wait for the six-hour schedule.
+4. The admin panel shows configured feeds. Disable any feed that becomes unavailable or changes its terms.
+
+To enable YouTube, enable YouTube Data API v3 in Google Cloud Console and set `HACKVERSE_YOUTUBE_API_KEY` in `functions/.env.<your-project-id>` (see `.env.example`). Restrict that key to the YouTube Data API and never commit the environment file. The default three search terms use about 1,200 YouTube search quota units per day at a six-hour schedule; adjust `HACKVERSE_YOUTUBE_QUERIES` if needed. The system deliberately does not crawl arbitrary websites. If a website has no permitted RSS feed or API, do not add its ordinary page URL as a feed. Add a dedicated adapter only when the publisher/platform authorizes it. Automatic publication is based on conservative relevance checks and source attribution, not human fact-checking. Do not describe source-attributed entries as independently verified.
+
+### Deploy the discovery backend
+
+Cloud Functions and scheduled jobs require the Firebase Blaze plan. Review pricing and set budget alerts before enabling billing. From the project root:
 
 ```bash
-git add README.md docs firestore.rules functions public .github/workflows/hackathon-discovery.yml
-git commit -m "Upgrade HackVerse opportunity and social workspace"
-git push origin main
+cd functions
+npm install
+cd ..
+firebase deploy --only functions,firestore:rules,firestore:indexes,hosting
 ```
 
-If the new folder is not already a Git clone, do not run these commands blindly; first use your existing clone or connect the folder to the repository. Vercel should redeploy from the connected `main` branch.
+If your site is hosted on Vercel instead of Firebase Hosting, deploy only `functions,firestore:rules,firestore:indexes` and redeploy the frontend through your connected Git/Vercel workflow. The callable functions use Firebase Authentication custom admin claims. App Check is not enforced by these discovery callables in this starter; configure App Check and enable enforcement before a public production launch.
 
-### 4. Verify automatic discovery
+## 4. Chat and groups
 
-Open <https://github.com/AryanDas20/VerseNeo/actions>, select **HackVerse Automatic Hackathon Discovery**, then choose **Run workflow**. Confirm the job ends with a green check. Scheduled runs are at 00:00, 06:00, 12:00 and 18:00 UTC (approximately 05:30, 11:30, 17:30 and 23:30 India time).
+Users must sign in and complete a public profile before using messaging. Open **People**, search for a member, and choose **Message**. To start a team room, choose **New group** and enter the usernames of up to 10 other registered users. Group membership is fixed after creation in this starter version. Firestore rules restrict conversation and message reads/writes to listed participants.
 
-The workflow uses `npm install --prefix functions` so a locally retained `functions/package-lock.json` is not required for this ZIP to run. On your Mac, install dependencies once before running the standalone script:
+## 5. Social-platform scope
 
-```bash
-npm install --prefix functions
+This package currently supports public RSS/Atom feeds and optional YouTube Data API search. Reddit, X, LinkedIn, Instagram, Facebook, Discord and Telegram are not connected yet; each needs its own official API access, credentials, permissions and provider-specific adapter. There is no scraping or unofficial browser automation.
+
+## 6. Before public launch
+
+- Publish real Terms of Service and Privacy Policy and replace the contact email placeholder in the footer.
+- Configure Firebase App Check and enable enforcement before exposing callable functions publicly. Discovery callables currently rely on Firebase admin custom claims and do not enforce App Check.
+- Test `firestore.rules` using the Firebase Emulator Suite and test with two separate user accounts.
+- Add moderation/report handling, rate limits, account deletion/export, abuse response, backups, monitoring, and an incident process.
+- Consider a dedicated search provider, pagination, server-side message notifications, data-retention policies before scaling.
+- Review applicable privacy, consumer, and student-data requirements for the regions where you operate.
+
+## Project structure
+
+```text
+HackVerse/
+  public/
+    index.html
+    styles.css
+    workspace.css
+    app.js
+    firebase-config.js
+  functions/
+    index.js
+    package.json
+    scripts/set-admin.js
+  docs/
+  firebase.json
+  firestore.rules
+  firestore.indexes.json
 ```
 
-### 5. Check the live site
-
-Open your Vercel site and confirm:
-- Home shows a limited preview and Explore opens the full opportunity directory.
-- Read details opens the event modal with the source link and (for courses) provider, instructor and language when supplied.
-- Country, region, format, type, skill, level, cost, deadline and source filters respond.
-- Selecting Courses shows openHPI-backed upcoming/current listings plus official course catalogues; Bootcamps and Certifications show relevant provider catalogues.
-- Saved opens a separate page.
-- Public profiles can be searched; private profiles and unshared contact information are not exposed.
-- Direct chats, group creation, group membership controls, message search and 15-minute edit/delete work with two test accounts.
-
-## Technical notes
-
-- Frontend: vanilla JavaScript ES modules, Firebase Web SDK 13.1, Firestore realtime listeners.
-- Backend discovery: Node.js 22, `firebase-admin` modular API v14, `firebase-functions` v2 exports, `rss-parser`.
-- Hosting: compatible with Vercel static deployment or Firebase Hosting.
-- Storage: no Firebase Storage import, bucket, upload code or dependency.
-- Rules: `firestore.rules`; indexes: `firestore.indexes.json`.
-- Discovery runner: `functions/scripts/run-discovery.js`.
-- Admin claim helper: `functions/scripts/set-admin.js` (uses Application Default Credentials; keep credentials outside this project).
-
-## Before a public launch
-
-Publish a real Privacy Policy and Terms of Service, replace the `hello@hackverse.example` footer placeholder, configure abuse reporting and moderation operations, test Firestore rules with the Emulator Suite, configure backups/monitoring, add rate limits, and review privacy requirements for each country where users will register. Do not describe source-attributed events as independently verified. Do not use unofficial scraping for sites without a permitted RSS feed or API.
+Read `docs/FEATURES_AND_LIMITS.md`, `docs/DATA_MODEL.md`, and `docs/DEPLOYMENT.md` before production deployment.

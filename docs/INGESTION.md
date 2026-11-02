@@ -1,39 +1,38 @@
-# Automatic discovery and ingestion — Spark-compatible schedule
+# Automatic discovery and ingestion
 
-## Implemented
+## Implemented in this release
 
-- Public RSS/Atom feed ingestion with HTTPS URL validation.
-- Standalone Node.js discovery runner (`functions/scripts/run-discovery.js`) using Firebase Admin SDK Application Default Credentials.
-- GitHub Actions schedule every six hours plus manual `workflow_dispatch`.
-- GitHub Actions authenticates to Google Cloud using the repository's existing Workload Identity Federation provider and dedicated service account; no service-account JSON key is stored in GitHub.
-- Existing checked feeds: Hackalendar global RSS, Brabble hackathons RSS, and Brabble Delhi-NCR RSS.
-- Public JSON course adapter: openHPI `https://open.hpi.de/feeds/courses`; imports dated courses that have not ended and skips historical/undated entries.
-- Categories recognized: hackathons, bootcamps, certifications, online courses, case competitions and coding events.
-- Canonical URL and normalized-title fingerprints, source attribution, automatic publication and expired-deadline status updates.
-- Ingestion summaries are written to `ingestionRuns`.
+- Admin-managed public RSS/Atom source registry (`discoverySources`).
+- Optional YouTube Data API video search (configured by a server-side API key and query list).
+- Six-hour Cloud Scheduler run in Asia/Kolkata.
+- Manual admin-triggered run from the HackVerse admin panel.
+- HTTPS-only feed URLs; feed items are capped per source and normalized.
+- Conservative hackathon relevance check (title/summary must include hackathon or a clear hack/build challenge phrase).
+- Stable URL and normalized-title fingerprints to reduce duplicate records across feeds.
+- Automatic publication to `hackathons` when a source has `autoPublish: true` (the admin UI currently enables this by default).
+- Source URL and publisher attribution are retained on each event.
+- Extracts a deadline only when a recognizable date is explicitly labelled in the source text.
+- Expired deadlines are marked `status: expired` and hidden by the frontend.
+- Per-source enabled/disabled controls and ingestion-run logs.
 
-## Firebase Spark constraint
+## Automatic publishing safeguards
 
-The scheduled runner does not use Firebase Cloud Scheduler or scheduled Cloud Functions. GitHub Actions is the scheduler, so this pipeline can remain on Firebase Spark. Do not deploy `scheduledRssIngestion` or other Cloud Functions while staying on Spark; Firebase Functions deployment requires the Blaze billing plan. Existing callable admin functions are retained in source but are not required by the GitHub Actions workflow.
+A listing is marked `verificationStatus: source-attributed`, not independently verified. The relevance check is heuristic and cannot validate prizes, organizer identity, eligibility, or registration links. Cards link to the original announcement. Do not label the content as fact-checked. Events without an explicit deadline remain visible until their source is updated or an admin removes/updates them. Review the feed and source terms regularly.
 
-## Current source coverage
+## Add sources
 
-The three RSS feeds listed in `.github/workflows/hackathon-discovery.yml` were manually tested from the project's local environment. They produced 47 published records in the most recent three-feed run reported by the project owner. The workflow also reads the public openHPI JSON catalogue, imports only dated courses whose end date has not passed, and preserves the provider link and instructor/language metadata when present. This adapter has syntax-level validation in this ZIP; it still needs a successful GitHub Actions run against the live Firestore project before its first production confirmation. Brabble entries preserve source attribution and may route through a Brabble detail page before reaching the organiser.
+1. Assign a trusted Firebase Auth custom admin claim using `functions/scripts/set-admin.js`.
+2. Sign out/in to refresh the ID token.
+3. Use the Admin Control Center in HackVerse to add a public RSS/Atom feed URL.
+4. Use **Run discovery now** to test, then confirm listings and source attribution.
+5. The scheduled job repeats every six hours.
 
-Bootcamp and certification filters are supported and the Explore page provides official provider catalogue links for those categories. No verified public bootcamp feed has been connected, so these catalogues are linked rather than copied into the HackVerse events database.
+Only add feed endpoints where the publisher's terms allow fetching and displaying the metadata. Do not add normal webpage URLs, login pages, social profile URLs, or feed endpoints that prohibit this use.
 
-## Workflow operation
+## Social platforms
 
-- File: `.github/workflows/hackathon-discovery.yml`
-- Cron: `0 */6 * * *` (UTC; approximately 05:30, 11:30, 17:30 and 23:30 Asia/Kolkata).
-- Manual run: GitHub repository → Actions → HackVerse Automatic Hackathon Discovery → Run workflow.
-- Dependencies: installed with `npm install --prefix functions`; a package lock is not required for this workflow.
-- Auth: Workload Identity Federation; provider and service account identifiers are set in the workflow.
+YouTube search uses the official YouTube Data API v3 when `HACKVERSE_YOUTUBE_API_KEY` is configured. Search requests cost 100 quota units each; the default three queries run every six hours (about 1,200 units/day). Restrict the API key to YouTube Data API v3 and keep the Functions environment file out of version control. Social scraping is intentionally not implemented. Reddit, X, LinkedIn, Instagram, Facebook, Discord and Telegram still need their own official API access, credentials, permissions and provider adapters.
 
-## Adding sources
+## Data flow
 
-Only connect public RSS/Atom URLs whose terms permit ingestion and display. Verify a candidate feed manually before adding it to the workflow. Do not enter normal website pages, login-required endpoints or scrape pages behind authentication. Do not claim that an item is fact-checked: `verificationStatus` is source attribution, not independent validation.
-
-## Optional and unavailable connectors
-
-The engine retains optional YouTube Data API v3 support through `HACKVERSE_YOUTUBE_API_KEY`. Other platforms require their own official APIs, credentials, permissions and adapters. Do not scrape X, LinkedIn, Instagram, Facebook, Reddit, Discord or Telegram. Course/bootcamp providers may publish APIs or feeds, but each connector must be evaluated separately.
+`discoverySources` → scheduled/manual RSS fetch → normalize/relevance filter → `eventFingerprints` → `hackathons` → public event feed. `ingestionRuns` stores per-run counts and source errors.
