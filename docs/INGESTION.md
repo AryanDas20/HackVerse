@@ -20,13 +20,13 @@ The scheduled runner does not use Firebase Cloud Scheduler or scheduled Cloud Fu
 
 The three RSS feeds listed in `.github/workflows/hackathon-discovery.yml` were manually tested from the project's local environment. They produced 47 published records in the most recent three-feed run reported by the project owner. The workflow also reads the public openHPI JSON catalogue, imports only dated courses whose end date has not passed, and preserves the provider link and instructor/language metadata when present. This adapter has syntax-level validation in this ZIP; it still needs a successful GitHub Actions run against the live Firestore project before its first production confirmation. Brabble entries preserve source attribution and may route through a Brabble detail page before reaching the organiser.
 
-Bootcamp and certification filters are supported and the Explore page provides official provider catalogue links for those categories. No verified public bootcamp feed has been connected, so these catalogues are linked rather than copied into the HackStop events database.
+Bootcamp and certification filters are supported and the Explore page provides official provider catalogue links for those categories. No verified public bootcamp feed has been connected, so these catalogues are linked rather than copied into the HackVerse events database.
 
 ## Workflow operation
 
 - File: `.github/workflows/hackathon-discovery.yml`
 - Cron: `0 */6 * * *` (UTC; approximately 05:30, 11:30, 17:30 and 23:30 Asia/Kolkata).
-- Manual run: GitHub repository → Actions → HackStop Automatic Hackathon Discovery → Run workflow.
+- Manual run: GitHub repository → Actions → HackVerse Automatic Hackathon Discovery → Run workflow.
 - Dependencies: installed with `npm install --prefix functions`; a package lock is not required for this workflow.
 - Auth: Workload Identity Federation; provider and service account identifiers are set in the workflow.
 
