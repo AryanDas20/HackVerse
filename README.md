@@ -38,7 +38,7 @@ The three feeds already tested from the current project are configured:
 2. `https://brabble.ai/rss/hackathons.xml`
 3. `https://brabble.ai/rss/in/delhi-ncr.xml`
 
-The discovery engine normalizes RSS entries, filters relevant listings, writes to Firestore, deduplicates URL/title fingerprints and expires passed registration deadlines. Source-attributed listings are not independently fact-checked. Always confirm details at the linked organiser/source page. Coverage is broad but cannot guarantee every hackathon or opportunity on the internet.
+The discovery engine includes independent direct public-listing connectors for Unstop, Devpost, Devfolio and HackerEarth, plus the existing Hackalendar/Brabble RSS feeds and the openHPI dated course feed. It normalizes listings, writes to Firestore, deduplicates URL/title fingerprints and expires passed registration deadlines. Brabble is an optional additional aggregator source, not the only source. See `docs/PLATFORM_CONNECTORS.md` for exact coverage and limitations. Source-attributed listings are not independently fact-checked. Always confirm details at the linked organiser/source page. Coverage is broad but cannot guarantee every hackathon or opportunity on the internet.
 
 **Spark plan note:** GitHub Actions is the six-hour scheduler. Do not deploy `scheduledRssIngestion` as a Firebase scheduled Cloud Function while staying on Spark. The Cloud Functions callable admin/source-management panel is an optional path and is not required for the GitHub Actions pipeline.
 

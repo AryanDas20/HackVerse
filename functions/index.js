@@ -242,6 +242,136 @@ async function readEnabledSources() {
   for (const item of legacy) if (!seen.has(canonicalUrl(item.feedUrl))) sources.push(item);
   return sources;
 }
+
+// Direct public listing connectors. These are independent of Brabble: each platform
+// is fetched separately, so a failure at one provider does not stop the others.
+const DIRECT_PLATFORM_SOURCES = [
+  { id: "direct-unstop", name: "Unstop", platform: "Unstop", url: "https://unstop.com/api/public/opportunity/search-result?opportunity=hackathons&per_page=100&oppstatus=open", parser: "unstop" },
+  { id: "direct-devpost", name: "Devpost", platform: "Devpost", url: "https://devpost.com/api/hackathons", parser: "devpost" },
+  { id: "direct-devfolio", name: "Devfolio", platform: "Devfolio", url: "https://api.devfolio.co/api/hackathons", parser: "generic" },
+  { id: "direct-hackerearth", name: "HackerEarth", platform: "HackerEarth", url: "https://www.hackerearth.com/chrome-extension/events/", parser: "generic" }
+];
+function firstValue(...values) { return values.find(v => v !== undefined && v !== null && v !== ""); }
+function findListingArray(body) {
+  if (Array.isArray(body)) return body;
+  const keys = ["data", "results", "hackathons", "events", "items", "opportunities"];
+  for (const key of keys) {
+    const value = body && body[key];
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === "object") {
+      for (const nested of keys) if (Array.isArray(value[nested])) return value[nested];
+    }
+  }
+  return [];
+}
+function directListingCandidate(platform, item) {
+  const org = firstValue(item.organisation?.name, item.organization?.name, item.organizer?.name,
+    item.organizer, item.company?.name, item.company, item.host, item.creator, platform.name);
+  const title = cleanText(firstValue(item.title, item.name, item.hackathon_name, item.event_name), 180);
+  const description = cleanText(firstValue(item.details, item.description, item.summary, item.about, item.tagline), 1800);
+  let link = firstValue(item.seo_url, item.url, item.link, item.public_url, item.short_url, item.event_url, item.href);
+  if (link && !/^https:\/\//i.test(link)) link = `https://${platform.platform.toLowerCase() === "unstop" ? "unstop.com" : platform.platform.toLowerCase() === "devpost" ? "devpost.com" : platform.platform.toLowerCase() === "devfolio" ? "devfolio.co" : "hackerearth.com"}/${String(link).replace(/^\//, "")}`;
+  const sourceUrl = canonicalUrl(link || "");
+  if (!title || !sourceUrl) return null;
+
+  const req = item.regnRequirements || item.registration || item.registration_details || {};
+  const deadlineRaw = firstValue(req.end_regn_dt, req.deadline, item.registration_deadline, item.deadline,
+    item.submission_period_dates?.end, item.ends_at, item.end_utc_tz, item.end_date);
+  const startRaw = firstValue(item.start_date, item.startDate, item.starts_at, item.start_at,
+    item.submission_period_dates?.start, item.festival?.start_date);
+  const endRaw = firstValue(item.end_date, item.endDate, item.ends_at, item.end_at,
+    item.festival?.end_date);
+  const parseDate = value => { const date = value ? new Date(value) : null; return date && !Number.isNaN(date.getTime()) ? date : null; };
+  const deadline = parseDate(deadlineRaw);
+  const startAt = parseDate(startRaw);
+  const endAt = parseDate(endRaw);
+  if (deadline && deadline.getTime() < Date.now()) return null;
+  if (endAt && endAt.getTime() < Date.now()) return null;
+
+  const address = item.address_with_country_logo || item.address || item.location || {};
+  const country = cleanText(firstValue(address.country?.name, address.country_name, item.country, item.country_name,
+    platform.platform === "Unstop" ? "India" : "Global / Online"), 80);
+  const city = cleanText(firstValue(address.city, item.city, item.location?.city), 100);
+  const region = cleanText(firstValue(address.state, item.state, item.location?.state), 100);
+  const modeRaw = String(firstValue(item.region, item.mode, item.format, item.event_mode, "") || "").toLowerCase();
+  const mode = /hybrid/.test(modeRaw) ? "Hybrid" : /online|virtual|remote/.test(modeRaw) ? "Online" : /offline|in.?person|onsite/.test(modeRaw) ? "In-person" : (item.is_online === true ? "Online" : null);
+  const skills = (Array.isArray(item.required_skills) ? item.required_skills : Array.isArray(item.skills) ? item.skills : [])
+    .map(skill => cleanText(skill.skill_name || skill.name || skill.skill || skill, 60)).filter(Boolean).slice(0, 12);
+  const prizeRows = Array.isArray(item.prizes) ? item.prizes : [];
+  const prize = prizeRows.map(row => [row.rank, row.cash, row.currencyCode || row.currency].filter(Boolean).join(" ")).filter(Boolean).join("; ").slice(0, 200);
+  const isFree = item.isPaid === false || item.is_paid === false ? true : item.isPaid === true || item.is_paid === true ? false : null;
+  const text = `${title} ${description}`;
+  const titleKey = sha(title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()).slice(0, 40);
+  const id = sha(sourceUrl).slice(0, 40);
+  const expired = deadline && deadline.getTime() < Date.now();
+  return {
+    id, titleKey, title, category: "hackathon", opportunityType: "hackathon", organizer: cleanText(org, 120),
+    summary: description || `Hackathon listing published on ${platform.name}.`,
+    description: description || `Open the original ${platform.name} listing for rules, dates and registration details.`,
+    sourceUrl, officialEventUrl: sourceUrl, officialRegistrationUrl: sourceUrl,
+    registrationDeadline: deadline ? Timestamp.fromDate(deadline) : null,
+    startAt: startAt ? Timestamp.fromDate(startAt) : null, endAt: endAt ? Timestamp.fromDate(endAt) : null,
+    timezone: null, mode, location: [city, region, country].filter(Boolean).join(", "), city, region, country,
+    tracks: skills, technologies: skills, tags: skills, skills,
+    level: "Check eligibility on provider site", teamSize: cleanText(firstValue(req.max_team_size, item.team_size, item.team), 40),
+    prize, prizePool: null, currency: null, isFree, price: isFree === true ? "Free" : isFree === false ? "Paid" : "Check provider",
+    eligibility: cleanText(firstValue(item.eligibility, item.eligibility_text, "Check the organiser's eligibility rules"), 500),
+    sourcePlatform: platform.platform, sourceType: "hackathon", sourceName: platform.name,
+    attributionText: `Listing imported directly from ${platform.name}; confirm details on the organiser's page.`,
+    verificationStatus: "source-attributed", status: expired ? "expired" : "upcoming", visibility: "public", autoPublished: true,
+    discoveryScore: 96, sourcePublishedAt: parseDate(firstValue(item.updated_at, item.created_at, item.published_at)),
+    ingestedAt: SERVER_TIME(), updatedAt: SERVER_TIME(), lastSeenAt: SERVER_TIME(), sourceIds: [platform.id]
+  };
+}
+async function fetchDirectPlatform(platform) {
+  const response = await fetch(platform.url, {
+    headers: { "Accept": "application/json, text/plain, */*", "User-Agent": "Mozilla/5.0 (compatible; HackStopOpportunityDiscovery/1.0)" },
+    signal: AbortSignal.timeout(20000)
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const body = await response.json();
+  if (platform.parser === "unstop") {
+    const rows = body?.data?.data;
+    if (!Array.isArray(rows)) throw new Error("Unstop response format changed; expected data.data array");
+    return rows;
+  }
+  const rows = findListingArray(body);
+  if (!rows.length) throw new Error("No listing array found in provider response");
+  return rows;
+}
+async function ingestDirectPlatforms(summary) {
+  for (const platform of DIRECT_PLATFORM_SOURCES) {
+    summary.sourceCount++;
+    try {
+      const rows = await fetchDirectPlatform(platform);
+      summary.fetched += rows.length;
+      let published = 0;
+      for (const row of rows.slice(0, 150)) {
+        const candidate = directListingCandidate(platform, row);
+        if (!candidate || !isDuplicateCandidate(candidate)) continue;
+        summary.relevant++;
+        await storeCandidate(candidate);
+        summary.published++;
+        published++;
+      }
+      await db.collection("discoverySources").doc(platform.id).set({
+        name: platform.name, platform: platform.platform, type: "direct-api", enabled: true,
+        lastRunAt: SERVER_TIME(), lastError: null, lastItemCount: rows.length, lastPublishedCount: published,
+        sourceUrl: platform.url, updatedAt: SERVER_TIME()
+      }, { merge: true });
+      console.log(`[direct:${platform.name}] fetched=${rows.length} published=${published}`);
+    } catch (error) {
+      const message = String(error.message || error).slice(0, 220);
+      summary.errors.push({ source: platform.name, message });
+      await db.collection("discoverySources").doc(platform.id).set({
+        name: platform.name, platform: platform.platform, type: "direct-api", enabled: true,
+        lastRunAt: SERVER_TIME(), lastError: message, sourceUrl: platform.url, updatedAt: SERVER_TIME()
+      }, { merge: true }).catch(() => {});
+      logger.warn(`Direct ${platform.name} ingestion failed`, { error: message });
+    }
+  }
+}
+
 async function ingestOpenHpiCourses(summary) {
   const feedUrl = safeHttps(OPENHPI_COURSE_FEED.value().trim());
   if (!feedUrl) return;
@@ -382,6 +512,7 @@ async function runDiscovery() {
         }
       }
     }
+    await ingestDirectPlatforms(summary);
     await ingestOpenHpiCourses(summary);
     await ingestYouTube(summary);
   } catch (error) {
