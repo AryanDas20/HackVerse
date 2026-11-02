@@ -2,11 +2,11 @@
 
 ## `users/{uid}` — private account document
 
-Owner/admin only. Contains base `email` and `phone`, account metadata, visibility settings, profile completion state and `profileData` snapshot for Private profiles. When profile visibility is Private, the public directory record is deleted and the complete profile snapshot stays only here. Do not allow public reads of this collection.
+Owner/admin only. Contains base `email` and `phone`, account metadata, visibility settings, `mutedNotificationCategories`, `blockedUsers`, profile completion state and `profileData` snapshot for Private profiles. When profile visibility is Private, the public directory record is deleted and the complete profile snapshot stays only here. Do not allow public reads of this collection.
 
 ## `publicProfiles/{uid}` — searchable public directory record
 
-Public-readable curated profile document. Fields can include `uid`, `displayName`, `nameLower`, `username`, `usernameLower`, `college`, `collegeLower`, `collegeShort`, `collegeShortLower`, `course`, `courseLower`, `studyLevel`, `graduationYear`, `city`, `country`, `bio`, `skills`, `skillsLower`, `rolesInterested`, `rolesLower`, `interests`, `interestsLower`, `availability`, `preferredMode`, `avatarUrl`, optional selected GitHub/LinkedIn/portfolio URLs, `lookingForTeam`, `profileVisibility`, `publicEmail`, `publicEmailLower`, `publicPhone`, `publicPhoneDigits`, `profileConsentAt` and `updatedAt`. Email and phone fields are blank unless the member opts in; a Private profile has no document in this collection.
+Public-readable curated profile document. Fields can include `uid`, `displayName`, `nameLower`, `username`, `usernameLower`, `college`, `collegeLower`, `collegeShort`, `collegeShortLower`, `course`, `courseLower`, `studyLevel`, `graduationYear`, `city`, `country`, `bio`, `skills`, `skillsLower`, `rolesInterested`, `rolesLower`, `interests`, `interestsLower`, `availability`, `preferredMode`, `avatarUrl`, optional selected GitHub/LinkedIn/portfolio URLs, `lookingForTeam`, `profileVisibility`, `publicEmail`, `publicEmailLower`, `publicPhone`, `publicPhoneDigits`, `skillLevel`, `tracks`, `profileConsentAt` and `updatedAt`. Email and phone fields are blank unless the member opts in; a Private profile has no document in this collection.
 
 ## `usernames/{usernameLower}` — username reservation
 
@@ -22,11 +22,11 @@ Contains `eventId` and `savedAt`. Only the owner can read/create/delete their sa
 
 ## `conversations/{conversationId}`
 
-Contains `isGroup`, `groupName`, `participants` (UID array), `participantNames` (UID-to-display-name map), `createdBy`, `admins`, `lastMessage`, `lastMessageSender`, `createdAt`, `updatedAt` and `lastMessageAt`. Group creator/admin can update membership (up to 11 total); private profiles can participate in an existing conversation without being published in the directory.
+Contains `isGroup`, `groupName`, `participants` (UID array), `participantNames` (UID-to-display-name map), `createdBy`, `admins`, `lastMessage`, `lastMessageSender`, `createdAt`, `updatedAt`, `lastMessageAt`, `entityType`, `requiredSkills`, `teamSize`, `availability`, and optional team planning metadata. New members join only through `teamInvitations` acceptance. Creator-only deletion creates an audit record and member notifications. Group creator/admin can update membership (up to 10 total); private profiles can participate in an existing conversation without being published in the directory.
 
 ### `conversations/{conversationId}/messages/{messageId}`
 
-Contains `authorUid`, `authorName`, `text`, `createdAt`, and optional `edited`, `editedAt`, `deleted`, `deletedAt`. Only participants can read. Author can edit or soft-delete their own messages within 15 minutes. Hard deletion is disabled by rules.
+Contains `authorUid`, `authorName`, `text`, `createdAt`, optional `replyTo`, `edited`, `editedAt`, `deleted`, `deletedAt`, and `reactionsByUser` (UID → emoji list). Only participants can read. Author can edit or soft-delete their own messages within 15 minutes. Conversation members can change only their own reaction list. Hard deletion by an ordinary member is denied; creator cascade-delete is used for permanent group/team deletion.
 
 ## `projects/{projectId}`
 
@@ -47,3 +47,19 @@ Admin-only run summaries containing source counts, fetched/relevant/published co
 ## `reports/{reportId}`
 
 Profile reports are stored for moderation review. A complete moderation dashboard and abuse workflow are not included yet.
+
+## `teamInvitations/{invitationId}`
+
+Contains conversation/team name, entity type, inviter and invitee UIDs/names, required skills, target size, `status` (`pending`, `accepted`, `declined`), `createdAt`, `expiresAt` (seven days by default) and `respondedAt`. Only the invitee can accept or decline. The conversation participant list is updated in the same transaction as acceptance.
+
+## `users/{uid}/notifications/{notificationId}`
+
+Recipient-owned in-app notifications. Fields include `type`, `category`, `title`, `body`, actor details, optional `conversationId`, `invitationId`, `eventId`, `profileUid`, `targetHash`, `expiresAt`, `createdAt` and `read`.
+
+## `auditLogs/{auditId}`
+
+Append-only group/team deletion audit record with `action`, `actorUid`, `conversationId`, `conversationName`, `affectedUsers` and `createdAt`. Admin-only read.
+
+## `users/{uid}.blockedUsers`
+
+Private array of UIDs blocked by the owner. The inbox hides blocked direct chats; message-create rules deny DMs if either account has blocked the other. Group messages remain governed by group membership.

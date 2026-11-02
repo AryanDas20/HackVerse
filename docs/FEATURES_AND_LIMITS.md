@@ -1,38 +1,35 @@
-# Features, behaviour, and current limits — v5
+# Features, behaviour, and current limits — HackStop v5.2.2
 
 ## Opportunities
 
-The home route previews up to six opportunities. Explore opens a dedicated directory; Saved opens a separate shortlist page. Cards are compact and link to a modal with all available metadata and the source/organiser URL. Filters cover type (hackathons, case competitions, coding events, bootcamps, courses, certifications), country, region, format, track, skill, level, cost, deadline and source platform. Country/region/source options are derived from available records; fields missing from a source cannot be filtered reliably.
+The home route previews up to six opportunities. Explore opens a dedicated directory; Saved opens a separate shortlist page. Cards stay concise and open a detail modal with available organiser, location, format, track, skills, eligibility, prize, deadline, dates and source links. Filters cover opportunity type, country, region/state, format, track, source, skill, level, cost, deadline and sort order. Search normalizes case/spacing and supports partial and approximate word matches. Options depend on metadata actually supplied by the event sources.
 
-The current checked feeds focus on hackathons and coding/case competitions. Bootcamp, course and certification categories are supported by classification logic, but verified dedicated sources for those categories have not yet been configured. The browser reads up to 500 public events and filters locally. Add pagination/search infrastructure for larger datasets.
+The connected discovery feeds focus on hackathons and coding events; the openHPI adapter imports dated current/upcoming courses. Bootcamp and certification categories are available and link to official provider catalogues, but individual bootcamp/certificate records are not auto-imported unless a permitted source adapter is configured.
 
-## Accounts and privacy
+## Accounts and profiles
 
-Firebase Authentication handles Google and email/password auth. A completed builder profile is required. The member chooses Public or Private profile visibility; Private stores profile data in the owner-only `users/{uid}` document and removes the public `publicProfiles/{uid}` record. Phone and email are separately opt-in, defaulting to private. Only explicitly shared contact fields are published in the public profile.
+Firebase Authentication supports Google and email/password. Profile setup is a three-step flow (identity, builder skills/interests, education/privacy); optional fields can be skipped. Public/private visibility is supported. Private profiles are stored in the owner-only user document and removed from `publicProfiles`; email and phone sharing are independent opt-ins. Public profiles open on a dedicated page and may show skills, availability, links and public projects. Only public fields can be searched or viewed by other members.
 
-Public directory fields include display name, username, college and short name, course, study level, location, bio, skills, interested roles, interests, availability, selected links and consent metadata. Private users are not searchable by other users.
+## Community search
 
-**Important privacy/matching trade-off:** The current browser-based team matcher reads public profiles only. It cannot safely expose private users as candidate profiles to other browsers while keeping their details hidden. Secure matching over private profiles requires a trusted server endpoint. This build does not deploy Cloud Functions because the project is staying on Firebase Spark.
+The community landing area shows a View Members action instead of a full username list. The directory supports normalized case-insensitive, partial and typo-tolerant matching across public names, usernames, colleges, locations, roles and skills, plus skill/college/year/availability/interest filters. Search uses Firestore prefix/array queries and a bounded client-side fuzzy pass; this is suitable for a modest directory, not large-scale full-text search.
 
-## People and team matching
+## Teams and groups
 
-People search supports username, display name, college full/short name, course, public email/phone, skills and interests; public contact search only matches members who have opted in. The team matcher ranks public profiles using a deterministic role/skill/interest overlap score. This is a transparent heuristic, not an LLM-powered AI service. Users can review candidates and create a group chat from selected matches.
-
-Firestore is not full-text search. Search queries are prefix/token based and designed for modest data volumes; use a dedicated search service when scaling.
+Team size is configurable from 2 to 10 members including the creator. Required fields are team name, required skills and availability. College, year, course, location, hackathon, project idea and other context are optional. Skill matching provides exact/related skill scores and reasons; it is a deterministic heuristic, not an LLM. Candidate members are invited and only join after explicitly accepting. Invitations expire after seven days by default. Group/team creators can remove members and permanently delete their own room only after typing `DELETE GROUP` or `DELETE TEAM`; deletion adds member notifications and an audit record. Non-admin members can leave a room through the member controls.
 
 ## Chat
 
-Direct and group conversations use Firestore realtime listeners. Search is available for the inbox and the currently loaded messages (up to 200). Clicking the other member's direct-chat title opens their public profile; clicking a group title opens group management. Group creators/admins can add or remove participants; group size is capped at 11 total.
+Direct and group conversations use Firestore realtime listeners. Chat includes case-insensitive inbox/message search, clear timestamps, profile links, reply metadata, emoji reactions, copy, report/block, and author-only edit/soft-delete for 15 minutes. A deleted message remains as a marker. Reactions are stored per-user and Firestore rules limit updates to the acting member. Blocking is persisted in the owner's private profile and direct-message creation is denied if either participant blocks the other. Message text is limited to 2,000 characters.
 
-The author can edit or soft-delete their own message within 15 minutes. Deleted messages remain as deleted-message markers. Messages are plain text, at most 2,000 characters. Attachments, file/image upload, voice/video calls, read receipts, reactions, typing indicators, forwarding and push notifications are not included.
+Attachments, file/image uploads, voice/video calls, typing indicators, read receipts, message forwarding and multi-device presence are not included. Firebase Storage is intentionally not used.
+
+## Notifications
+
+The in-app notification centre supports All, Teams, Chat, Hackathons, Community and System categories, unread state, mark-all-read, clearing, team invitation Accept/Decline actions, conversation routing, event detail routing when the event is already loaded, and per-category mute preferences. Current generators cover chat messages, team invitations/responses and group/team deletion. Automatic deadline reminders, matching-event alerts, project/social alerts, profile-view alerts and admin announcements still need corresponding event producers. Email and Web Push delivery are not enabled; they require separately configured delivery services, user consent and push/service-worker infrastructure.
 
 ## Projects and safety
 
-Members can create public/private project cards and manage their own projects. Firestore rules restrict private user documents to the owner/admin, public directory fields to the curated whitelist, and conversations/messages to participants. Admin claims must be assigned from a trusted Admin SDK environment. The app does not upload to Firebase Storage.
+Members can create public/private project cards and manage their own projects. Firestore rules restrict private user documents to the owner/admin, public directory fields to a curated whitelist, and conversations/messages to participants. Admin claims must be assigned from a trusted Admin SDK environment. No Firebase Storage uploads are provided.
 
-The starter does not yet include a complete moderation operations dashboard, rate limiting, appeals workflow, account data export/deletion UI or anti-abuse automation. These are needed before large-scale public launch.
-
-
-## Learning catalogues
-
-The discovery workflow includes a public openHPI JSON catalogue adapter for dated courses that are current or upcoming. Bootcamp, certification and course filters are available. The Explore page links to official provider catalogues (such as edX, Coursera, Codecademy and SWAYAM) where a permitted, reliable direct feed is not connected. External catalogues open at their provider; they are not imported as individual HackVerse records.
+The starter does not yet include a complete moderation operations dashboard, rate limiting, appeals workflow, account data export/deletion UI, production anti-abuse automation or automated moderation. Test the Firestore rules with the Emulator Suite before a public release.
