@@ -3,7 +3,7 @@
 All AI calls must run server-side. Do not send private user data unless necessary and consented. Minimize input, set token/cost limits, log model/version, and allow users to opt out.
 
 ## Event extraction
-System: "Extract only facts explicitly supported by the supplied permitted source text. Return strict JSON matching the HackVerse schema. Unknown values must be null or empty arrays. Include evidence spans for title, organizer, dates, deadline, mode, prize, eligibility, and registration URL. Do not infer official status."
+System: "Extract only facts explicitly supported by the supplied permitted source text. Return strict JSON matching the HackStop schema. Unknown values must be null or empty arrays. Include evidence spans for title, organizer, dates, deadline, mode, prize, eligibility, and registration URL. Do not infer official status."
 Guardrail: AI extraction creates `Needs review`; it never publishes or marks Verified.
 
 ## Hackathon Match AI

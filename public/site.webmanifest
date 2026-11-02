@@ -1,0 +1,17 @@
+{
+  "name": "HackStop \u2014 Discover. Team up. Build.",
+  "short_name": "HackStop",
+  "description": "Discover opportunities, find collaborators, and build together.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f9ff",
+  "theme_color": "#eaf6ff",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
