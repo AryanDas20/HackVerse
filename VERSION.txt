@@ -1,3 +1,4 @@
-HackVerse v5.1.0
-
-Opportunity directory, learning catalogues, profile privacy, messaging and team collaboration update.
+HackVerse v5.2.0 — Social UX Refresh
+Base: HackVerse v5.1
+Included: pink + sky-blue visual refresh, larger type, mobile workspace improvements, member directory reveal control, contact actions for opted-in public contact fields, optional team college/year preferences, 1–10 team generator, related-skill matching, creator-only group soft deletion with typed note, and message edit/soft-delete controls retained.
+See docs/HACKSTOP_COMPLETE_UPGRADE_PROMPT.md for the complete product specification and remaining implementation requirements.

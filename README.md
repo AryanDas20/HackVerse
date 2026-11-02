@@ -117,3 +117,19 @@ Open your Vercel site and confirm:
 ## Before a public launch
 
 Publish a real Privacy Policy and Terms of Service, replace the `hello@hackverse.example` footer placeholder, configure abuse reporting and moderation operations, test Firestore rules with the Emulator Suite, configure backups/monitoring, add rate limits, and review privacy requirements for each country where users will register. Do not describe source-attributed events as independently verified. Do not use unofficial scraping for sites without a permitted RSS feed or API.
+
+
+## v5.2.0 social UX refresh
+
+This release is based on the supplied v5.1 ZIP. It refreshes the interface with a pink/sky-blue palette, increases common text sizes, improves mobile chat/community layouts, adds a View members control and opt-in Contact actions, expands team matching to 1–10 teams with optional college/year preferences and related-skill matching, and adds creator-only group soft deletion requiring a typed explanation note. Existing message edit and soft-delete controls are retained.
+
+### Important feature-status notes
+
+- Group deletion is a Firestore soft delete. It hides the conversation from inboxes; it does not physically erase the messages subcollection.
+- Group creation currently uses a creator-side consent acknowledgement. It is **not** a full invitee Accept/Decline workflow. Do not use it as a substitute for individual member consent.
+- Profile details are available from chat through the existing profile modal; a dedicated shareable profile route is not included in this release.
+- The detailed notification centre and invitation-driven notifications are not included in this release.
+- Team generator matching is deterministic client-side matching over public profiles; it is not an AI model and cannot see private profiles.
+- Existing Firestore rules must be deployed for the group soft-delete feature to work. Review `firestore.rules` before deployment and test against a non-production Firebase project first.
+
+See `docs/HACKSTOP_COMPLETE_UPGRADE_PROMPT.md` for the full requested product specification, including the features still to implement.

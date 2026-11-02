@@ -544,9 +544,16 @@ function renderPeople() {
   const sorted = [...people].sort((a,b) => overlapScore(b) - overlapScore(a));
   $("#peopleResultCount").textContent = `${sorted.length} builder${sorted.length === 1 ? "" : "s"} found`;
   if (!sorted.length) { grid.innerHTML = '<div class="loading-card">No public profiles match your search yet. Try another skill or keyword.</div>'; return; }
-  grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackVerse member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p><div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Message</button></div></div></article>`).join("");
+  grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackVerse member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p><div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div class="person-actions"><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Chat</button><button class="save-btn" data-contact-member="${esc(p.uid)}" ${p.publicEmail || p.publicPhone ? "" : "disabled"}>Contact</button></div></div></article>`).join("");
   grid.querySelectorAll("[data-view-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewMember));
   grid.querySelectorAll("[data-message-member]").forEach(b => b.onclick = () => { const p = people.find(x => x.uid === b.dataset.messageMember); if (p) startDirectConversation(p); });
+  grid.querySelectorAll("[data-contact-member]").forEach(b => b.onclick = () => {
+    const p = people.find(x => x.uid === b.dataset.contactMember);
+    if (!p) return;
+    if (p.publicEmail) location.href = `mailto:${p.publicEmail}`;
+    else if (p.publicPhone) location.href = `tel:${String(p.publicPhone).replace(/[^+\\d]/g,"")}`;
+    else toast("This member has not shared contact details. You can message them instead.");
+  });
 }
 async function viewMember(uid) {
   if (!db) return;
@@ -569,7 +576,7 @@ function beginInboxListener() {
   if (stopInboxListener) stopInboxListener();
   const inboxQuery = query(collection(db, "conversations"), where("participants", "array-contains", currentUser.uid), limit(100));
   stopInboxListener = onSnapshot(inboxQuery, snapshot => {
-    currentConversations = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
+    currentConversations = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(c => !c.deleted).sort((a,b) => tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
     renderConversationList(currentConversations);
     if (activeConversationId) {
       const latest = currentConversations.find(x => x.id === activeConversationId);
@@ -662,6 +669,8 @@ async function openGroupManager() {
   $("#manageGroupMembers").querySelectorAll("[data-view-group-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewGroupMember));
   $("#manageGroupSearch").disabled = !canManage;
   $("#manageGroupSearchResults").innerHTML = canManage ? '<p class="muted">Search for a builder to add to this group.</p>' : '<p class="muted">Only group admins can add or remove members.</p>';
+  const deleteWrap = $("#deleteGroupWrap");
+  if (deleteWrap) deleteWrap.hidden = activeConversation.createdBy !== currentUser?.uid;
   showModal("manageGroupModal");
 }
 async function searchPublicProfiles(term, max=50) {
@@ -778,6 +787,10 @@ async function createGroupWithMembers(groupName, peopleToAdd) {
   const unique = [...new Map(members.map(p=>[p.uid,p])).values()];
   if (unique.length < 2) { toast("Choose at least one other builder."); return; }
   if (unique.length > 11) { toast("A group can contain up to 11 members including you."); return; }
+  if (!confirm(`Consent check: have all ${unique.length - 1} selected member${unique.length === 2 ? "" : "s"} agreed to be added to “${groupName}”? Choose OK only after they have agreed.`)) {
+    toast("No one was added. Ask members for permission first.");
+    return;
+  }
   const participants = unique.map(p=>p.uid);
   const participantNames = Object.fromEntries(unique.map(p=>[p.uid,p.displayName||"Member"]));
   const conversationRef = doc(collection(db,"conversations"));
@@ -796,6 +809,47 @@ async function createGroup(event) {
     hideModal("groupModal"); $("#groupForm").reset(); selectedGroupMembers.clear(); refreshSelectedGroupMembers();
   } catch (error) { console.error(error); msg.textContent = friendlyError(error); }
 }
+async function deleteCurrentGroup() {
+  const c = activeConversation;
+  if (!c?.isGroup || c.createdBy !== currentUser?.uid) {
+    toast("Only the group creator can delete this group.");
+    return;
+  }
+  const note = prompt(`Type a short confirmation note explaining why you are deleting “${c.groupName || "this group"}”. This note is saved with the deletion.`);
+  if (note === null) return;
+  const confirmation = note.trim();
+  if (confirmation.length < 8) {
+    toast("Please enter a confirmation note of at least 8 characters.");
+    return;
+  }
+  if (confirmation.length > 300) {
+    toast("The confirmation note must be 300 characters or fewer.");
+    return;
+  }
+  if (!confirm(`Delete “${c.groupName || "this group"}” for all members? This action cannot be undone from the website.`)) return;
+  try {
+    await updateDoc(doc(db, "conversations", c.id), {
+      deleted: true,
+      deletedBy: currentUser.uid,
+      deletionNote: confirmation,
+      deletedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    hideModal("manageGroupModal");
+    if (stopMessageListener) stopMessageListener();
+    stopMessageListener = null;
+    activeConversation = null;
+    activeConversationId = null;
+    currentMessages = [];
+    $("#chatActive").hidden = true;
+    $("#chatPlaceholder").hidden = false;
+    toast("Group deleted for all members.");
+  } catch (error) {
+    console.error("Group deletion failed", error);
+    toast(friendlyError(error));
+  }
+}
+
 async function searchManageGroupMembers() {
   if (!activeConversation?.isGroup) return;
   const c=activeConversation; const canManage=c.createdBy===currentUser?.uid||(c.admins||[]).includes(currentUser?.uid);
@@ -810,28 +864,66 @@ async function searchManageGroupMembers() {
 async function runSmartTeamMatch(event) {
   event.preventDefault(); if(!requireAccount())return;
   if(!publicProfile){toast("Complete your profile first so team matching has your skills.");return;}
-  const needed=normalizedList($("#teamNeededSkills").value); const size=Number($("#teamSize").value)||4; const name=$("#teamProjectName").value.trim();
+  const needed=normalizedList($("#teamNeededSkills").value);
+  const size=Number($("#teamSize").value)||4;
+  const teamCount=Math.min(10,Math.max(1,Number($("#teamCount")?.value)||1));
+  const name=$("#teamProjectName").value.trim();
+  const preferredCollege=String($("#teamCollege")?.value||"").trim().toLowerCase();
+  const preferredYear=String($("#teamCollegeYear")?.value||"").trim().toLowerCase();
   if(!needed.length){toast("Add the skills or roles you need.");return;}
-  $("#teamMatchResults").innerHTML='<p class="muted">Finding complementary builders…</p>'; $("#createMatchedTeamBtn").hidden=true; matchedTeamCandidates=[];
+  $("#teamMatchResults").innerHTML='<p class="muted">Finding complementary builders…</p>';
+  $("#createMatchedTeamBtn").hidden=true; matchedTeamCandidates=[];
   try{
-    const profiles=await searchPublicProfiles("",150);
+    const profiles=await searchPublicProfiles("",250);
+    const synonyms={
+      "react":["reactjs","frontend","javascript"],"reactjs":["react","frontend","javascript"],
+      "javascript":["js","frontend","react"],"typescript":["javascript","frontend"],
+      "python":["django","flask","fastapi","machine learning"],"machine learning":["ml","python","ai"],
+      "ml":["machine learning","ai","python"],"ai":["artificial intelligence","machine learning","ml"],
+      "ui/ux":["ui","ux","figma","design"],"design":["ui/ux","figma","product design"],
+      "backend":["api","node","node.js","server"],"node.js":["node","backend","express"],
+      "firebase":["firestore","authentication","google cloud"],"data science":["analytics","python","sql"]
+    };
+    const expand = skill => [skill,...(synonyms[skill]||[])].map(x=>x.toLowerCase());
     const scored=profiles.map(p=>{
       const fields=[...(p.skills||[]),...(p.rolesInterested||[]),...(p.interests||[]),p.bio||""].join(" ").toLowerCase();
-      const matched=needed.filter(skill=>fields.includes(skill));
-      const score=matched.length/needed.length;
-      return {...p,matchScore:score,matchedSkills:matched};
-    }).filter(p=>p.matchScore>0).sort((a,b)=>b.matchScore-a.matchScore||overlapScore(b)-overlapScore(a)).slice(0,Math.max(20,(size-1)*4));
-    matchedTeamCandidates=scored.slice(0,size-1);
-    $("#teamMatchResults").innerHTML=matchedTeamCandidates.length?matchedTeamCandidates.map(p=>`<label class="team-match-option"><input type="checkbox" data-team-match="${esc(p.uid)}" checked><span><b>${esc(p.displayName||"Builder")}</b><small>@${esc(p.username||"member")} · ${esc(p.collegeShort||p.college||"College not listed")}</small><span class="skill-tags">${(p.skills||[]).slice(0,5).map(x=>`<i>${esc(x)}</i>`).join("")}</span><small>Matched: ${esc(p.matchedSkills.join(", "))} · ${Math.round(p.matchScore*100)}% skill coverage</small></span></label>`).join(""):'<p class="muted">No matching builders are available yet. Try broader roles or skills.</p>';
+      const matched=needed.filter(skill=>expand(skill).some(alias=>fields.includes(alias)));
+      const collegeBonus=preferredCollege && String(p.college||"").toLowerCase().includes(preferredCollege) ? 0.08 : 0;
+      const yearBonus=preferredYear && String(p.collegeYear||p.studyYear||p.yearOfStudy||"").toLowerCase()===preferredYear ? 0.04 : 0;
+      const score=Math.min(1,matched.length/needed.length+collegeBonus+yearBonus);
+      return {...p,matchScore:score,matchedSkills:matched,relatedSkills:(p.skills||[]).filter(s=>!matched.some(m=>expand(m).includes(String(s).toLowerCase())) && needed.some(m=>expand(m).some(a=>String(s).toLowerCase().includes(a))))};
+    }).filter(p=>p.matchScore>0).sort((a,b)=>b.matchScore-a.matchScore||overlapScore(b)-overlapScore(a));
+    const required=teamCount*(size-1);
+    matchedTeamCandidates=scored.slice(0,Math.max(required,required*2));
+    const groups=[];
+    for(let i=0;i<teamCount;i++){
+      const group=matchedTeamCandidates.slice(i*(size-1),(i+1)*(size-1));
+      if(group.length) groups.push(group);
+    }
+    const actual=groups.length;
+    $("#teamMatchResults").innerHTML=groups.length?groups.map((group,i)=>`<section class="generated-team"><h3>Suggested team ${i+1}</h3><p class="muted">${group.length+1} members including you</p>${group.map(p=>`<label class="team-match-option"><input type="checkbox" data-team-match="${esc(p.uid)}" data-team-index="${i}" checked><span><b>${esc(p.displayName||"Builder")}</b><small>@${esc(p.username||"member")} · ${esc(p.collegeShort||p.college||"College not listed")}${p.collegeYear||p.studyYear ? ` · Year ${esc(p.collegeYear||p.studyYear)}` : ""}</small><span class="skill-tags">${(p.skills||[]).slice(0,6).map(x=>`<i>${esc(x)}</i>`).join("")}</span><small>Matched: ${esc(p.matchedSkills.join(", ")||"Related skills")} · ${Math.round(p.matchScore*100)}% fit${p.relatedSkills?.length ? ` · Related: ${esc(p.relatedSkills.join(", "))}` : ""}</small></span></label>`).join("")}</section>`).join(""):'<p class="muted">No matching builders are available yet. Try broader roles or skills.</p>';
     $("#teamMatchResults").dataset.teamName=name;
-    $("#createMatchedTeamBtn").hidden=!matchedTeamCandidates.length;
+    $("#teamMatchResults").dataset.teamCount=String(actual);
+    $("#createMatchedTeamBtn").hidden=!groups.length;
+    $("#createMatchedTeamBtn").textContent=actual>1?`Create ${actual} suggested team chats →`:"Create team chat →";
   }catch(error){$("#teamMatchResults").textContent=friendlyError(error);}
 }
 async function createMatchedTeam() {
-  const selected=[...$("#teamMatchResults").querySelectorAll("[data-team-match]:checked")].map(b=>matchedTeamCandidates.find(p=>p.uid===b.dataset.teamMatch)).filter(Boolean);
-  if(!selected.length){toast("Select at least one builder.");return;}
-  try{await createGroupWithMembers($("#teamProjectName").value.trim()||"HackVerse project team",selected);hideModal("teamBuilderModal");}
-  catch(error){toast(friendlyError(error));}
+  const sections=[...$("#teamMatchResults").querySelectorAll(".generated-team")];
+  const teams=sections.map((section,index)=>({
+    index,
+    members:[...section.querySelectorAll("[data-team-match]:checked")].map(b=>matchedTeamCandidates.find(p=>p.uid===b.dataset.teamMatch)).filter(Boolean)
+  })).filter(team=>team.members.length);
+  if(!teams.length){toast("Select at least one builder for a team.");return;}
+  if(!confirm(`Create ${teams.length} separate team chat${teams.length===1?"":"s"}? Selected members will be added immediately. Ask each person for permission before creating a team with them.`))return;
+  try{
+    for(let i=0;i<teams.length;i++){
+      const suffix=teams.length>1?` · Team ${i+1}`:"";
+      await createGroupWithMembers((($("#teamProjectName").value.trim()||"HackStop project team")+suffix).slice(0,60),teams[i].members);
+    }
+    hideModal("teamBuilderModal");
+    toast(`${teams.length} team chat${teams.length===1?"":"s"} created.`);
+  }catch(error){toast(friendlyError(error));}
 }
 
 function renderMyProfile() {
@@ -912,6 +1004,8 @@ function bindUI() {
   $("#createMatchedTeamBtn").onclick=createMatchedTeam;
   $("#manageGroupSearch").addEventListener("input",searchManageGroupMembers);
   $("#groupManageBtn").onclick=openGroupManager;
+  $("#deleteGroupBtn").onclick=deleteCurrentGroup;
+  $("#viewMembersBtn").onclick=()=>{const grid=$("#peopleGrid");const open=grid.hidden;grid.hidden=!open;$("#viewMembersBtn").textContent=open?"Hide members":"View members";$("#viewMembersBtn").setAttribute("aria-expanded",String(open));if(open&&currentUser)searchPeople();};
   $("#chatTitle").onclick=openChatIdentity;
   $("#conversationSearch").addEventListener("input",()=>renderConversationList(currentConversations));
   $("#messageSearch").addEventListener("input",()=>renderMessages(currentMessages));

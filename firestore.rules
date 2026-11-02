@@ -97,6 +97,17 @@ service cloud.firestore {
             ]))
           ||
           (resource.data.isGroup == true
+            && request.auth.uid == resource.data.createdBy
+            && request.resource.data.deleted == true
+            && request.resource.data.deletedBy == request.auth.uid
+            && request.resource.data.deletionNote is string
+            && request.resource.data.deletionNote.size() >= 8
+            && request.resource.data.deletionNote.size() <= 300
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'deleted','deletedBy','deletionNote','deletedAt','updatedAt'
+            ]))
+          ||
+          (resource.data.isGroup == true
             && (request.auth.uid == resource.data.createdBy || request.auth.uid in resource.data.admins)
             && request.resource.data.createdBy == resource.data.createdBy
             && request.resource.data.admins == resource.data.admins
