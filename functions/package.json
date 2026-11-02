@@ -7,7 +7,8 @@
   "main": "index.js",
   "scripts": {
     "serve": "firebase emulators:start --only functions",
-    "deploy": "firebase deploy --only functions"
+    "deploy": "echo \"Cloud Functions deployment requires Firebase Blaze. This project stays on Spark and uses GitHub Actions.\" && exit 1",
+    "discover": "node scripts/run-discovery.js"
   },
   "dependencies": {
     "firebase-admin": "^14.5.0",
