@@ -15,6 +15,20 @@ service cloud.firestore {
         ? get(/databases/$(database)/documents/publicProfiles/$(uid)).data.displayName
         : get(/databases/$(database)/documents/users/$(uid)).data.profileData.displayName;
     }
+    function canDirectMessage(conversationId) {
+      let conversation = get(/databases/$(database)/documents/conversations/$(conversationId)).data;
+      return conversation.isGroup == true
+        || (conversation.participants.size() == 2 && directMessageParticipantsAreNotBlocked(conversation));
+    }
+    function directMessageParticipantsAreNotBlocked(conversation) {
+      let otherUid = conversation.participants[0] == request.auth.uid
+        ? conversation.participants[1]
+        : conversation.participants[0];
+      let sender = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      let recipient = get(/databases/$(database)/documents/users/$(otherUid)).data;
+      return !(otherUid in sender.get('blockedUsers', []))
+        && !(request.auth.uid in recipient.get('blockedUsers', []));
+    }
 
     match /hackathons/{eventId} {
       allow read: if resource.data.visibility == 'public' || isAdmin();
@@ -34,8 +48,45 @@ service cloud.firestore {
         allow update: if false;
       }
       match /notifications/{notificationId} {
-        allow read, update: if isSelf(userId);
-        allow create, delete: if false;
+        allow read: if isSelf(userId);
+        allow create: if signedIn()
+          && request.resource.data.actorUid == request.auth.uid
+          && request.resource.data.read == false
+          && request.resource.data.keys().hasOnly([
+            'type','category','title','body','actorUid','actorName','conversationId',
+            'conversationName','invitationId','targetHash','actionLabel','eventId','profileUid','expiresAt','createdAt','read'
+          ])
+          && (
+            (request.resource.data.type == 'team_invite'
+              && request.resource.data.invitationId is string
+              && exists(/databases/$(database)/documents/teamInvitations/$(request.resource.data.invitationId))
+              && get(/databases/$(database)/documents/teamInvitations/$(request.resource.data.invitationId)).data.fromUid == request.auth.uid
+              && get(/databases/$(database)/documents/teamInvitations/$(request.resource.data.invitationId)).data.toUid == userId)
+            ||
+            (request.resource.data.type == 'team_invite_response'
+              && request.resource.data.invitationId is string
+              && exists(/databases/$(database)/documents/teamInvitations/$(request.resource.data.invitationId))
+              && get(/databases/$(database)/documents/teamInvitations/$(request.resource.data.invitationId)).data.fromUid == userId
+              && get(/databases/$(database)/documents/teamInvitations/$(request.resource.data.invitationId)).data.toUid == request.auth.uid
+              && get(/databases/$(database)/documents/teamInvitations/$(request.resource.data.invitationId)).data.status in ['accepted','declined'])
+            ||
+            (request.resource.data.type == 'chat_message'
+              && request.resource.data.conversationId is string
+              && exists(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId))
+              && request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants
+              && userId in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants
+              && userId != request.auth.uid)
+            ||
+            (request.resource.data.type in ['group_deleted','team_deleted']
+              && request.resource.data.conversationId is string
+              && exists(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId))
+              && get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.createdBy == request.auth.uid
+              && userId in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants)
+          );
+        allow update: if isSelf(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])
+          && request.resource.data.read is bool;
+        allow delete: if isSelf(userId);
       }
     }
 
@@ -48,8 +99,9 @@ service cloud.firestore {
           'uid','displayName','nameLower','username','usernameLower','college','collegeLower',
           'course','courseLower','collegeShort','collegeShortLower','studyLevel','graduationYear','city','country','bio','skills','skillsLower',
           'rolesInterested','rolesLower','interests','interestsLower','availability','preferredMode','avatarUrl','profileVisibility',
-          'github','linkedin','portfolio','lookingForTeam','publicEmail','publicEmailLower','publicPhone','publicPhoneDigits','profileConsentAt','updatedAt'
+          'github','linkedin','portfolio','lookingForTeam','publicEmail','publicEmailLower','publicPhone','publicPhoneDigits','skillLevel','tracks','profileConsentAt','updatedAt'
         ])
+        && request.resource.data.profileVisibility == 'public'
         && request.resource.data.usernameLower is string
         && request.resource.data.usernameLower.size() >= 3
         && request.resource.data.usernameLower.size() <= 24
@@ -70,27 +122,28 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Direct messages and group chats. Group owners/admins can manage membership.
+    // Direct messages and groups. New group members can join only through an invitation acceptance.
     match /conversations/{conversationId} {
       allow read: if signedIn() && request.auth.uid in resource.data.participants;
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly([
-          'isGroup','groupName','participants','participantNames','lastMessage',
-          'createdAt','updatedAt','lastMessageAt','createdBy','admins','lastMessageSender'
+          'isGroup','entityType','groupName','participants','participantNames','lastMessage',
+          'createdAt','updatedAt','lastMessageAt','createdBy','admins','lastMessageSender','requiredSkills','teamSize','availability','preferredLevel','teamCollege','teamYear','teamCourse','teamLocation','teamHackathon','teamCommunication','teamVisibility','teamJoinMode','teamDescription','teamIdea'
         ])
         && request.resource.data.participants is list
-        && request.resource.data.participants.size() >= 2
-        && request.resource.data.participants.size() <= 11
+        && request.resource.data.participants.size() >= 1
+        && request.resource.data.participants.size() <= 10
         && request.auth.uid in request.resource.data.participants
         && request.resource.data.isGroup is bool
-        && (request.resource.data.isGroup == false || (
-          request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.admins is list
-          && request.auth.uid in request.resource.data.admins
-        ));
-      allow update: if signedIn()
-        && request.auth.uid in resource.data.participants
-        && (
+        && (request.resource.data.isGroup == false
+          ? request.resource.data.participants.size() == 2
+          : request.resource.data.participants.size() == 1
+            && request.resource.data.createdBy == request.auth.uid
+            && request.resource.data.entityType in ['group','team']
+            && request.resource.data.admins is list
+            && request.auth.uid in request.resource.data.admins);
+      allow update: if signedIn() && (
+        (request.auth.uid in resource.data.participants && (
           (request.resource.data.participants == resource.data.participants
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'lastMessage','lastMessageSender','lastMessageAt','updatedAt'
@@ -101,14 +154,45 @@ service cloud.firestore {
             && request.resource.data.createdBy == resource.data.createdBy
             && request.resource.data.admins == resource.data.admins
             && request.resource.data.participants is list
-            && request.resource.data.participants.size() >= 2
-            && request.resource.data.participants.size() <= 11
+            && request.resource.data.participants.size() >= 1
+            && request.resource.data.participants.size() <= 10
+            && request.resource.data.participants.size() <= resource.data.get('teamSize', 10)
             && resource.data.createdBy in request.resource.data.participants
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'participants','participantNames','updatedAt'
             ]))
-        );
-      allow delete: if false;
+          ||
+          (resource.data.isGroup == true
+            && request.auth.uid in resource.data.participants
+            && request.auth.uid != resource.data.createdBy
+            && !(request.auth.uid in resource.data.admins)
+            && !(request.auth.uid in request.resource.data.participants)
+            && request.resource.data.participants is list
+            && request.resource.data.participants.size() == resource.data.participants.size() - 1
+            && resource.data.createdBy in request.resource.data.participants
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.admins == resource.data.admins
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'participants','participantNames','updatedAt'
+            ])))
+        )
+        ||
+        (resource.data.isGroup == true
+          && !(request.auth.uid in resource.data.participants)
+          && request.auth.uid in request.resource.data.participants
+          && request.resource.data.participants.size() == resource.data.participants.size() + 1
+          && request.resource.data.participants.size() <= 10
+          && request.resource.data.participants.size() <= resource.data.get('teamSize', 10)
+          && request.resource.data.lastAcceptedInviteId is string
+          && exists(/databases/$(database)/documents/teamInvitations/$(request.resource.data.lastAcceptedInviteId))
+          && get(/databases/$(database)/documents/teamInvitations/$(request.resource.data.lastAcceptedInviteId)).data.conversationId == conversationId
+          && get(/databases/$(database)/documents/teamInvitations/$(request.resource.data.lastAcceptedInviteId)).data.toUid == request.auth.uid
+          && getAfter(/databases/$(database)/documents/teamInvitations/$(request.resource.data.lastAcceptedInviteId)).data.status == 'accepted'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'participants','participantNames','updatedAt','lastAcceptedInviteId'
+          ]))
+      );
+      allow delete: if signedIn() && resource.data.isGroup == true && resource.data.createdBy == request.auth.uid;
 
       match /messages/{messageId} {
         allow read: if isConversationMember(conversationId);
@@ -118,20 +202,71 @@ service cloud.firestore {
           && request.resource.data.text.size() > 0
           && request.resource.data.text.size() <= 2000
           && request.resource.data.authorName == profileDisplayName(request.auth.uid)
-          && request.resource.data.keys().hasOnly(['authorUid','authorName','text','createdAt']);
-        allow update: if isConversationMember(conversationId)
-          && resource.data.authorUid == request.auth.uid
-          && request.time < resource.data.createdAt + duration.value(15, 'm')
-          && request.resource.data.authorUid == resource.data.authorUid
-          && request.resource.data.authorName == resource.data.authorName
-          && request.resource.data.createdAt == resource.data.createdAt
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'text','edited','editedAt','deleted','deletedAt'
-          ])
-          && request.resource.data.text is string
-          && request.resource.data.text.size() <= 2000;
-        allow delete: if false;
+          && canDirectMessage(conversationId)
+          && request.resource.data.keys().hasOnly(['authorUid','authorName','text','createdAt','replyTo']);
+        allow update: if isConversationMember(conversationId) && (
+          (resource.data.authorUid == request.auth.uid
+            && request.time < resource.data.createdAt + duration.value(15, 'm')
+            && request.resource.data.authorUid == resource.data.authorUid
+            && request.resource.data.authorName == resource.data.authorName
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'text','edited','editedAt','deleted','deletedAt'
+            ])
+            && request.resource.data.text is string
+            && request.resource.data.text.size() <= 2000)
+          ||
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactionsByUser'])
+            && request.resource.data.reactionsByUser is map
+            && request.resource.data.reactionsByUser.diff(resource.data.get('reactionsByUser', {})).affectedKeys().hasOnly([request.auth.uid])
+            && request.resource.data.reactionsByUser.get(request.auth.uid, []).size() <= 4
+            && request.resource.data.reactionsByUser.get(request.auth.uid, []).hasOnly(['👍','❤️','😂','🎉']))
+        );
+        allow delete: if isConversationMember(conversationId)
+          && get(/databases/$(database)/documents/conversations/$(conversationId)).data.createdBy == request.auth.uid;
       }
+    }
+
+    match /teamInvitations/{invitationId} {
+      allow create: if signedIn()
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.toUid is string
+        && request.resource.data.toUid != request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.conversationId is string
+        && exists(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId))
+        && (get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.createdBy == request.auth.uid
+          || request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.admins)
+        && get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.isGroup == true
+        && !(request.resource.data.toUid in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants)
+        && request.resource.data.entityType in ['group','team']
+        && request.resource.data.teamSize is int
+        && request.resource.data.teamSize >= 2
+        && request.resource.data.teamSize <= 10
+        && !(request.auth.uid in get(/databases/$(database)/documents/users/$(request.resource.data.toUid)).data.get('blockedUsers', []))
+        && request.resource.data.keys().hasOnly([
+          'conversationId','conversationName','entityType','fromUid','fromName','toUid','toName',
+          'requiredSkills','teamSize','status','createdAt','expiresAt'
+        ]);
+      allow read: if signedIn() && (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+      allow update: if signedIn()
+        && resource.data.toUid == request.auth.uid
+        && resource.data.status == 'pending'
+        && request.time < resource.data.expiresAt
+        && request.resource.data.status in ['accepted','declined']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','respondedAt']);
+      allow delete: if false;
+    }
+
+    match /auditLogs/{auditId} {
+      allow create: if signedIn()
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.conversationId is string
+        && exists(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId))
+        && get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.createdBy == request.auth.uid
+        && request.resource.data.action in ['group_deleted','team_deleted'];
+      allow read: if isAdmin();
+      allow update, delete: if false;
     }
 
     match /projects/{projectId} {

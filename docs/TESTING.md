@@ -1,4 +1,4 @@
-# HackVerse v5 testing checklist
+# HackStop v5 testing checklist
 
 ## Opportunities
 - Home displays no more than six preview cards; Explore opens a distinct directory route; Saved opens a distinct shortlist route.

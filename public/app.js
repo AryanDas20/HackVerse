@@ -7,25 +7,93 @@ import {
 import {
   getFirestore, collection, doc, getDoc, getDocs, query, where, orderBy,
   startAt, endAt, limit, serverTimestamp, addDoc, setDoc, deleteDoc,
-  onSnapshot, updateDoc, runTransaction
+  onSnapshot, updateDoc, runTransaction, arrayUnion
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-functions.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+
 const CONFIGURED = Boolean(firebaseConfig.apiKey && !String(firebaseConfig.apiKey).startsWith("YOUR_") && firebaseConfig.projectId && !String(firebaseConfig.projectId).startsWith("YOUR_"));
 let app = null, auth = null, db = null, functions = null, currentUser = null, authMode = "signin", isAdminUser = false;
 let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [];
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null;
-let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
-let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
+let stopInboxListener = null, stopNotificationListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
+let allEventsVisible = 24, currentConversations = [], currentMessages = [], currentNotifications = [], currentNotificationCategory = "all", selectedGroupMembers = new Map(), matchedTeamCandidates = [];
+let replyingToMessage = null;
+let profileWizardIndex = 0;
+let profileWizardSteps = [];
+
+function setupProfileWizard() {
+  const form = $("#profileForm");
+  if (!form || form.dataset.wizardReady === "true") return;
+  const actionBar = form.querySelector(".profile-form-actions");
+  const message = form.querySelector("#profileMessage");
+  const original = [...form.children];
+  const groups = [];
+  let active = null;
+  for (const node of original) {
+    if (node.classList?.contains("form-section-title")) {
+      active = { nodes: [node] }; groups.push(active);
+    } else if (active && node !== actionBar && node !== message) {
+      active.nodes.push(node);
+    }
+  }
+  if (groups.length !== 3) return;
+  const wizard = document.createElement("div"); wizard.className = "profile-wizard";
+  const progress = document.createElement("div"); progress.className = "profile-wizard-progress"; progress.setAttribute("aria-live", "polite");
+  const steps = groups.map((group, index) => {
+    const section = document.createElement("section"); section.className = "profile-wizard-step"; section.dataset.profileStep = String(index); section.hidden = index !== 0;
+    group.nodes.forEach(node => section.appendChild(node));
+    wizard.appendChild(section); return section;
+  });
+  // Consent is part of the final privacy step, not a separate page.
+  const consent = original.find(node => node.classList?.contains("consent-row"));
+  if (consent) steps[2].appendChild(consent);
+  const controls = document.createElement("div"); controls.className = "profile-wizard-controls";
+  controls.innerHTML = '<button type="button" class="btn btn-outline" id="profileWizardBack">← Back</button><button type="button" class="btn btn-primary" id="profileWizardNext">Continue →</button>';
+  form.insertBefore(progress, form.firstChild);
+  form.insertBefore(wizard, actionBar);
+  form.insertBefore(controls, actionBar);
+  profileWizardSteps = steps;
+  const render = () => {
+    steps.forEach((step, index) => { step.hidden = index !== profileWizardIndex; });
+    progress.innerHTML = `<span>Step ${profileWizardIndex + 1} of ${steps.length}</span><strong>${["Your basics", "Skills & interests", "Privacy & contact"][profileWizardIndex]}</strong><div class="wizard-progress-track"><i style="width:${((profileWizardIndex + 1) / steps.length) * 100}%"></i></div>`;
+    $("#profileWizardBack").hidden = profileWizardIndex === 0;
+    $("#profileWizardNext").hidden = profileWizardIndex === steps.length - 1;
+    actionBar.hidden = profileWizardIndex !== steps.length - 1;
+    if (message) message.textContent = "";
+  };
+  $("#profileWizardBack").onclick = () => { profileWizardIndex = Math.max(0, profileWizardIndex - 1); render(); };
+  $("#profileWizardNext").onclick = () => {
+    const invalid = [...steps[profileWizardIndex].querySelectorAll(":required")].find(input => !input.checkValidity());
+    if (invalid) { invalid.reportValidity(); return; }
+    profileWizardIndex = Math.min(steps.length - 1, profileWizardIndex + 1); render();
+  };
+  form.dataset.wizardReady = "true";
+  form.dataset.wizardRender = "ready";
+  form._renderProfileWizard = render;
+  render();
+}
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const listFrom = value => String(value || "").split(",").map(x => x.trim()).filter(Boolean).slice(0, 30);
-const normalizedList = value => listFrom(value).map(x => x.toLowerCase()).filter((x, i, a) => a.indexOf(x) === i);
+const normalizedList = value => listFrom(value).map(x => normalizeSearch(x)).filter((x, i, a) => a.indexOf(x) === i);
+const normalizeSearch = value => String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim().replace(/\s+/g, " ");
+function editDistance(a, b) {
+  if (a === b) return 0; if (!a) return b.length; if (!b) return a.length;
+  let row = Array.from({length:b.length+1}, (_,i)=>i);
+  for (let i=1;i<=a.length;i++) { const next=[i]; for(let j=1;j<=b.length;j++) next[j]=Math.min(next[j-1]+1,row[j]+1,row[j-1]+(a[i-1]===b[j-1]?0:1)); row=next; }
+  return row[b.length];
+}
+function fuzzySearchMatch(queryText, haystackText) {
+  const q=normalizeSearch(queryText), h=normalizeSearch(haystackText); if(!q) return true; if(h.includes(q)) return true;
+  const queryWords=q.split(" ").filter(Boolean), words=h.split(/[^a-z0-9+.#]+/).filter(Boolean);
+  return queryWords.every(part=>words.some(word=>word.startsWith(part) || (part.length>=4 && editDistance(part,word.slice(0,Math.min(word.length,part.length+1))) <= (part.length>=8?2:1))));
+}
 const validUrl = value => { if (!value) return ""; try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) ? u.href : ""; } catch { return ""; } };
-const initials = name => String(name || "HV").trim().split(/\s+/).slice(0, 2).map(x => x[0] || "").join("").toUpperCase() || "HV";
+const initials = name => String(name || "HS").trim().split(/\s+/).slice(0, 2).map(x => x[0] || "").join("").toUpperCase() || "HS";
 const toast = message => { const el = $("#toast"); el.textContent = message; el.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove("show"), 3000); };
 const showModal = id => { const el = document.getElementById(id); if (el) el.hidden = false; };
 const hideModal = id => { const el = document.getElementById(id); if (el) el.hidden = true; };
@@ -68,9 +136,10 @@ function initFirebase() {
         privateProfile = null; publicProfile = null; savedIds.clear(); profileIsMandatory = false; hideModal("profileModal");
         detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
         $("#chatPlaceholder").hidden = false; $("#chatActive").hidden = true;
-        setSystemNotice(""); renderEvents(); searchPeople(); return;
+        setSystemNotice(""); renderEvents(); searchPeople(); handleRoute(); return;
       }
       await loadAccountWorkspace();
+      handleRoute();
     });
     loadEvents();
   } catch (error) {
@@ -142,6 +211,7 @@ async function loadAccountWorkspace() {
     } else {
       hideModal("profileModal");
       beginInboxListener();
+      beginNotificationListener();
       loadProjects();
     }
   } catch (error) {
@@ -149,9 +219,14 @@ async function loadAccountWorkspace() {
   }
 }
 
+function formWizardRender() { const form = $("#profileForm"); form?._renderProfileWizard?.(); }
+
 function openProfileEditor(mandatory = false) {
   if (!requireAccount()) return;
   profileIsMandatory = mandatory;
+  setupProfileWizard();
+  profileWizardIndex = 0;
+  formWizardRender();
   const p = { ...(privateProfile || {}), ...(publicProfile || {}) };
   $("#profileName").value = p.displayName || currentUser.displayName || "";
   $("#profileUsername").value = p.username || "";
@@ -159,7 +234,7 @@ function openProfileEditor(mandatory = false) {
   $("#profileCollege").value = p.college || ""; $("#profileCollegeShort").value = p.collegeShort || ""; $("#profileCourse").value = p.course || "";
   $("#profileStudyLevel").value = p.studyLevel || ""; $("#profileGradYear").value = p.graduationYear || "";
   $("#profileCity").value = p.city || ""; $("#profileCountry").value = p.country || "";
-  $("#profileBio").value = p.bio || ""; $("#profileSkills").value = (p.skills || []).join(", ");
+  $("#profileBio").value = p.bio || ""; $("#profileSkills").value = (p.skills || []).join(", "); $("#profileSkillLevel").value = p.skillLevel || ""; $("#profileTracks").value = (p.tracks || []).join(", ");
   $("#profileRoles").value = (p.rolesInterested || []).join(", "); $("#profileInterests").value = (p.interests || []).join(", ");
   $("#profileAvailability").value = p.availability || "Open to opportunities"; $("#profileMode").value = p.preferredMode || "Any format";
   $("#profileAvatar").value = p.avatarUrl || ""; $("#profileGithub").value = p.github || "";
@@ -182,8 +257,9 @@ async function saveProfile(event) {
   const username = $("#profileUsername").value.trim().replace(/^@/, "");
   const usernameLower = username.toLowerCase();
   if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) { message.textContent = "Username must be 3–24 letters, numbers, or underscores."; return; }
-  const skills = listFrom($("#profileSkills").value); if (!skills.length) { message.textContent = "Add at least one skill."; return; }
+  const skills = listFrom($("#profileSkills").value);
   const name = $("#profileName").value.trim(); const college = $("#profileCollege").value.trim();
+  if (!name) { message.textContent = "Enter your name to continue."; return; }
   const course = $("#profileCourse").value.trim(); const bio = $("#profileBio").value.trim();
   const consent = $("#profilePublicConsent").checked;
   if (!consent) { message.textContent = "Please confirm the public profile visibility notice."; return; }
@@ -200,7 +276,7 @@ async function saveProfile(event) {
     courseLower: course.toLowerCase(), availability: $("#profileAvailability").value,
     preferredMode: $("#profileMode").value, avatarUrl: validUrl($("#profileAvatar").value),
     github: validUrl($("#profileGithub").value), linkedin: validUrl($("#profileLinkedin").value),
-    portfolio: validUrl($("#profilePortfolio").value), lookingForTeam: $("#profileLooking").value === "true",
+    portfolio: validUrl($("#profilePortfolio").value), skillLevel: $("#profileSkillLevel").value, tracks: listFrom($("#profileTracks").value), lookingForTeam: $("#profileLooking").value === "true",
     publicEmail: $("#profileEmailVisibility").value === "public" ? (currentUser.email || "") : "",
     publicEmailLower: $("#profileEmailVisibility").value === "public" ? (currentUser.email || "").toLowerCase() : "",
     publicPhone: $("#profilePhoneVisibility").value === "public" ? $("#profilePhone").value.trim() : "",
@@ -347,7 +423,7 @@ function filteredEvents() {
     const costText = `${event.summary || ""} ${event.description || ""} ${event.price || ""}`;
     const explicitlyFree = event.isFree === true || /\bfree (?:to enter|registration|entry)\b|\bno (?:registration )?fee\b|₹\s*0(?:\.00)?|\$\s*0(?:\.00)?/i.test(costText);
     const explicitlyPaid = event.isFree === false || /\bpaid (?:entry|registration)\b|\bregistration fee\b|\bentry fee\b|\btuition fee\b/i.test(costText);
-    return (!term || searchable.includes(term))
+    return (!term || fuzzySearchMatch(term,searchable))
       && (!skill || [ ...(event.skills||[]), ...(event.technologies||[]), ...(event.tracks||[]) ].join(" ").toLowerCase().includes(skill))
       && (category === "all" || categoryValue === category)
       && (mode === "all" || eventMode.toLowerCase() === mode.toLowerCase())
@@ -392,7 +468,7 @@ function renderLearningCatalog() {
       title: "Explore online courses.",
       intro: "Browse live provider catalogues. Availability, enrolment dates, price and course status are confirmed by each provider.",
       providers: [
-        ["openHPI", "Online ICT and computer science courses from the Hasso Plattner Institute.", "https://open.hpi.de/courses", "Public dated course feed connected to HackVerse"],
+        ["openHPI", "Online ICT and computer science courses from the Hasso Plattner Institute.", "https://open.hpi.de/courses", "Public dated course feed connected to HackStop"],
         ["Coursera", "Courses and guided learning from universities and industry partners.", "https://www.coursera.org/browse", "Provider catalogue"],
         ["edX", "University and professional online courses, with availability and level filters.", "https://www.edx.org/courses", "Provider catalogue"],
         ["SWAYAM", "India's national online learning platform with courses from Indian institutions.", "https://swayam.gov.in/", "India · Provider catalogue"],
@@ -504,7 +580,7 @@ async function searchPeople() {
   clearTimeout(peopleSearchTimer);
   peopleSearchTimer = setTimeout(async () => {
     if (!db) { renderPeopleEmpty(); return; }
-    const term = $("#peopleSearch").value.trim().toLowerCase().replace(/^@/, "");
+    const term = normalizeSearch($("#peopleSearch").value).replace(/^@/, "");
     const role = $("#peopleRole").value; const lookingOnly = $("#lookingForTeamOnly").checked;
     $("#peopleResultCount").textContent = "Searching public builder profiles…";
     try {
@@ -516,6 +592,7 @@ async function searchPeople() {
         const requests = prefixes.map(field => getDocs(query(collection(db, "publicProfiles"), orderBy(field), startAt(term), endAt(term + "\uf8ff"), limit(18))));
         requests.push(getDocs(query(collection(db, "publicProfiles"), where("skillsLower", "array-contains", term), limit(18))));
         requests.push(getDocs(query(collection(db, "publicProfiles"), where("interestsLower", "array-contains", term), limit(18))));
+        requests.push(getDocs(query(collection(db, "publicProfiles"), orderBy("updatedAt", "desc"), limit(100))));
         const phoneDigits = term.replace(/\D/g, ""); if (phoneDigits.length >= 7) requests.push(getDocs(query(collection(db, "publicProfiles"), orderBy("publicPhoneDigits"), startAt(phoneDigits), endAt(phoneDigits + "\uf8ff"), limit(18))));
         snapshots = await Promise.all(requests);
       }
@@ -526,10 +603,10 @@ async function searchPeople() {
       if (lookingOnly) people = people.filter(p => p.lookingForTeam === true);
       if (term) {
         const digits = term.replace(/\D/g, "");
-        people = people.filter(p => [p.displayName, p.username, p.college, p.collegeShort, p.course, p.publicEmail, p.publicPhone, p.bio, ...(p.skills || []), ...(p.rolesInterested || []), ...(p.interests || [])].join(" ").toLowerCase().includes(term)
+        people = people.filter(p => fuzzySearchMatch(term, [p.displayName, p.username, p.college, p.collegeShort, p.course, p.publicEmail, p.publicPhone, p.bio, p.city, p.country, ...(p.skills || []), ...(p.rolesInterested || []), ...(p.interests || [])].join(" "))
           || (digits.length >= 7 && String(p.publicPhoneDigits || "").startsWith(digits)));
       }
-      renderPeople();
+      populateMemberFilters(); renderPeople();
     } catch (error) { console.error("People search failed", error); $("#peopleResultCount").textContent = "Could not search profiles. Check your Firestore rules and indexes."; $("#peopleGrid").innerHTML = '<div class="loading-card">Profile search is temporarily unavailable.</div>'; }
   }, 220);
 }
@@ -539,37 +616,171 @@ function overlapScore(profile) {
   const theirs = [...(profile.skillsLower || []), ...(profile.interests || []).map(x => x.toLowerCase())];
   return theirs.filter(x => mine.has(x)).length;
 }
+function populateMemberFilters() {
+  const options={
+    peopleSkillFilter:[...new Set(people.flatMap(p=>p.skills||[]))],
+    peopleCollegeFilter:[...new Set(people.map(p=>p.college).filter(Boolean))],
+    peopleYearFilter:[...new Set(people.map(p=>p.studyLevel).filter(Boolean))],
+    peopleAvailabilityFilter:[...new Set(people.map(p=>p.availability).filter(Boolean))],
+    peopleInterestFilter:[...new Set(people.flatMap(p=>p.interests||[]))]
+  };
+  for(const [id,values] of Object.entries(options)){const el=$("#"+id);if(!el)continue;const selected=el.value;const first=el.options[0];el.innerHTML="";el.add(new Option(first.textContent,"all"));values.sort((x,y)=>String(x).localeCompare(String(y))).slice(0,80).forEach(v=>el.add(new Option(v,v)));el.value=[...el.options].some(o=>o.value===selected)?selected:"all";}
+}
 function renderPeople() {
   const grid = $("#peopleGrid"); const role = $("#peopleRole").value; const lookingOnly = $("#lookingForTeamOnly").checked;
-  const sorted = [...people].sort((a,b) => overlapScore(b) - overlapScore(a));
+  const skill=normalizeSearch($("#peopleSkillFilter")?.value||"all"), college=normalizeSearch($("#peopleCollegeFilter")?.value||"all"), year=normalizeSearch($("#peopleYearFilter")?.value||"all"), availability=normalizeSearch($("#peopleAvailabilityFilter")?.value||"all"), interest=normalizeSearch($("#peopleInterestFilter")?.value||"all");
+  const filtered=people.filter(p=>(role==="all"||(p.rolesInterested||[]).some(x=>normalizeSearch(x)===normalizeSearch(role)))&&(skill==="all"||(p.skills||[]).some(x=>normalizeSearch(x)===skill))&&(college==="all"||normalizeSearch(p.college)===college)&&(year==="all"||normalizeSearch(p.studyLevel)===year)&&(availability==="all"||normalizeSearch(p.availability)===availability)&&(interest==="all"||(p.interests||[]).some(x=>normalizeSearch(x)===interest))&&(!lookingOnly||p.lookingForTeam===true));
+  const sorted = [...filtered].sort((a,b) => overlapScore(b) - overlapScore(a));
   $("#peopleResultCount").textContent = `${sorted.length} builder${sorted.length === 1 ? "" : "s"} found`;
   if (!sorted.length) { grid.innerHTML = '<div class="loading-card">No public profiles match your search yet. Try another skill or keyword.</div>'; return; }
-  grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackVerse member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p><div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Message</button></div></div></article>`).join("");
+  grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackStop member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p><div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Chat</button><button class="save-btn" data-contact-member="${esc(p.uid)}">Contact</button></div></div></article>`).join("");
   grid.querySelectorAll("[data-view-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewMember));
   grid.querySelectorAll("[data-message-member]").forEach(b => b.onclick = () => { const p = people.find(x => x.uid === b.dataset.messageMember); if (p) startDirectConversation(p); });
+  grid.querySelectorAll("[data-contact-member]").forEach(b => b.onclick = () => contactMember(b.dataset.contactMember));
+}
+function contactMember(uid,profileOverride=null) {
+  const p=profileOverride||people.find(x=>x.uid===uid)||selectedMember;if(!p)return;
+  const choices=[];
+  if(p.publicEmail)choices.push(`<a class="btn btn-outline contact-option" href="mailto:${esc(p.publicEmail)}">Email ${esc(p.publicEmail)} ↗</a>`);
+  if(p.publicPhone)choices.push(`<a class="btn btn-outline contact-option" href="tel:${esc(p.publicPhone)}">Call ${esc(p.publicPhone)} ↗</a>`);
+  if(!choices.length){toast("This member has not shared contact details. You can still send a chat message.");return;}
+  $("#contactOptionsContent").innerHTML=`<div class="eyebrow">CONTACT OPTIONS</div><h2 id="contactOptionsTitle">Reach ${esc(p.displayName||"this member")}</h2><p class="muted">Only contact methods this member chose to make public are shown here.</p><div class="contact-option-list">${choices.join("")}</div>`;
+  showModal("contactOptionsModal");
 }
 async function viewMember(uid) {
   if (!db) return;
   try {
     const snap = await getDoc(doc(db, "publicProfiles", uid)); if (!snap.exists()) { toast("This profile is no longer available."); return; }
     selectedMember = { uid, ...snap.data() }; const p = selectedMember;
-    $("#memberProfileContent").innerHTML = `<div class="member-profile-head"><div class="avatar avatar-large">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div><div class="eyebrow">HACKVERSE BUILDER</div><h2 id="memberModalTitle">${esc(p.displayName || "Builder")}</h2><p class="member-handle">@${esc(p.username || "member")}</p></div></div><p class="member-bio">${esc(p.bio || "No bio added yet.")}</p><div class="member-facts"><span>${esc([p.course,p.college].filter(Boolean).join(" · ") || "Education not listed")}</span><span>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not listed")}</span><span>${esc(p.availability || "Availability not listed")}</span></div><h3>Skills</h3><div class="skill-tags">${(p.skills || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interested roles</h3><div class="skill-tags">${(p.rolesInterested || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interests</h3><div class="skill-tags">${(p.interests || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><div class="member-contact"><h3>Contact details</h3><p>${p.publicEmail ? `Email: <a href="mailto:${esc(p.publicEmail)}">${esc(p.publicEmail)}</a>` : "Email kept private by this member."}</p><p>${p.publicPhone ? `Phone: <a href="tel:${esc(p.publicPhone)}">${esc(p.publicPhone)}</a>` : "Phone kept private by this member."}</p></div><div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>`;
-    $("#memberMessageBtn").onclick = () => startDirectConversation(selectedMember);
-    $("#memberReportBtn").onclick = () => reportMember(selectedMember);
-    showModal("memberModal");
+    $("#memberProfilePageContent").innerHTML = `<div class="member-profile-head"><div class="avatar avatar-large">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div><div class="eyebrow">HACKSTOP BUILDER</div><h2>${esc(p.displayName || "Builder")}</h2><p class="member-handle">@${esc(p.username || "member")}</p></div></div><p class="member-bio">${esc(p.bio || "No bio added yet.")}</p><div class="member-facts"><span>${esc([p.course,p.college].filter(Boolean).join(" · ") || "Education not listed")}</span><span>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not listed")}</span><span>${esc(p.availability || "Availability not listed")}</span></div><h3>Skills ${p.skillLevel ? `· ${esc(p.skillLevel)}` : ""}</h3><div class="skill-tags">${(p.skills || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interested tracks</h3><div class="skill-tags">${(p.tracks || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interested roles</h3><div class="skill-tags">${(p.rolesInterested || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interests</h3><div class="skill-tags">${(p.interests || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><div class="member-contact"><h3>Contact details</h3><p>${p.publicEmail ? `Email: <a href="mailto:${esc(p.publicEmail)}">${esc(p.publicEmail)}</a>` : "Email kept private by this member."}</p><p>${p.publicPhone ? `Phone: <a href="tel:${esc(p.publicPhone)}">${esc(p.publicPhone)}</a>` : "Phone kept private by this member."}</p></div><div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>`;
+    const projectSnap = await getDocs(query(collection(db,"projects"),where("ownerUid","==",uid),where("visibility","==","public"),limit(20))).catch(()=>null);
+    const publicProjects = projectSnap?.docs.map(d=>({id:d.id,...d.data()})) || [];
+    const projectsHtml = `<section class="member-projects"><h3>Public projects</h3>${publicProjects.length?publicProjects.map(x=>`<article class="member-project-item"><strong>${esc(x.title||"Project")}</strong><p>${esc(x.description||"")}</p><div class="skill-tags">${(x.techStack||[]).map(s=>`<span>${esc(s)}</span>`).join("")}</div>${x.projectUrl?`<a href="${esc(validUrl(x.projectUrl))}" target="_blank" rel="noopener">Open project ↗</a>`:""}${x.githubUrl?` · <a href="${esc(validUrl(x.githubUrl))}" target="_blank" rel="noopener">GitHub ↗</a>`:""}</article>`).join(""):'<p class="muted">No public projects listed yet.</p>'}</section>`;
+    $("#memberProfilePageContent").insertAdjacentHTML("beforeend", projectsHtml);
+    $("#memberPageMessageBtn").onclick = () => startDirectConversation(selectedMember);
+    $("#memberPageReportBtn").onclick = () => reportMember(selectedMember);
+    $("#memberPageInviteBtn").onclick = () => { if (!requireAccount()) return; toast("Open a group or team and send this builder an invitation."); location.hash="#messages"; };
+    $("#memberPageContactBtn").onclick = () => contactMember(uid,selectedMember);
+    location.hash = `#member/${encodeURIComponent(uid)}`;
+    handleRoute();
   } catch (error) { toast(friendlyError(error)); }
 }
 
+function beginNotificationListener() {
+  if (!currentUser || !db) return;
+  if (stopNotificationListener) stopNotificationListener();
+  const notificationQuery=query(collection(db,"users",currentUser.uid,"notifications"),orderBy("createdAt","desc"),limit(100));
+  stopNotificationListener=onSnapshot(notificationQuery,snapshot=>{
+    currentNotifications=snapshot.docs.map(d=>({id:d.id,...d.data()}));
+    renderNotifications();
+  },error=>{console.warn("Notifications listener",error);$("#notificationList").innerHTML='<div class="empty-note">Notifications are temporarily unavailable. Check your Firestore rules.</div>';});
+}
+function agoLabel(value) {
+  const ms=tsMillis(value); if(!ms)return "Just now";
+  const mins=Math.max(0,Math.floor((Date.now()-ms)/60000));
+  if(mins<1)return "Just now"; if(mins<60)return `${mins}m ago`;
+  const hours=Math.floor(mins/60); if(hours<24)return `${hours}h ago`;
+  const days=Math.floor(hours/24); return days<7?`${days}d ago`:new Date(ms).toLocaleDateString();
+}
+function renderNotifications() {
+  const muted=new Set(privateProfile?.mutedNotificationCategories||[]);
+  const unread=currentNotifications.filter(n=>!n.read&&!muted.has(n.category)).length;
+  const countEl=$("#notificationUnreadCount"); if(countEl){countEl.textContent=unread>99?"99+":String(unread);countEl.hidden=unread===0;}
+  const navCount=$("#navNotificationCount"); if(navCount){navCount.textContent=unread>99?"99+":String(unread);navCount.hidden=unread===0;}
+  const list=$("#notificationList"); if(!list)return;
+  const rows=currentNotifications.filter(n=>!muted.has(n.category)&&(currentNotificationCategory==="all"||n.category===currentNotificationCategory));
+  $$('[data-mute-notification-category]').forEach(input=>{input.checked=muted.has(input.dataset.muteNotificationCategory);});
+  if(!rows.length){list.innerHTML='<div class="notification-empty"><span>✧</span><h3>You are all caught up.</h3><p>New invitations and workspace updates will appear here.</p></div>';return;}
+  const icons={teams:"✦",chat:"↗",hackathons:"⌁",community:"◎",system:"ⓘ"};
+  list.innerHTML=rows.map(n=>{
+    const isInvite=n.type==="team_invite"&&n.status!=="expired";
+    const expired=tsMillis(n.expiresAt||n.inviteExpiresAt)>0&&tsMillis(n.expiresAt||n.inviteExpiresAt)<Date.now();
+    return `<article class="notification-card ${n.read?"":"unread"}" data-notification-card="${esc(n.id)}"><span class="notification-icon">${icons[n.category]||"✧"}</span><div class="notification-copy"><div class="notification-title-row"><strong>${esc(n.title||"HackStop update")}</strong><time>${esc(agoLabel(n.createdAt))}</time></div><p>${esc(n.body||"")}</p>${isInvite?`<div class="notification-actions"><button class="btn btn-primary" data-invite-accept="${esc(n.id)}" ${expired?"disabled":""}>Accept invitation</button><button class="btn btn-outline" data-invite-decline="${esc(n.id)}" ${expired?"disabled":""}>Decline</button></div>${expired?'<small class="notification-expired">This invitation has expired.</small>':""}`:`<div class="notification-actions"><button class="btn btn-outline" data-open-notification="${esc(n.id)}">${esc(n.actionLabel||"Open")}</button></div>`}</div>${n.read?"":'<span class="unread-dot" aria-label="Unread"></span>'}</article>`;
+  }).join("");
+  list.querySelectorAll("[data-open-notification]").forEach(b=>b.onclick=()=>openNotification(b.dataset.openNotification));
+  list.querySelectorAll("[data-invite-accept]").forEach(b=>b.onclick=()=>respondToTeamInvite(b.dataset.inviteAccept,"accepted"));
+  list.querySelectorAll("[data-invite-decline]").forEach(b=>b.onclick=()=>respondToTeamInvite(b.dataset.inviteDecline,"declined"));
+}
+async function openNotification(id) {
+  const n=currentNotifications.find(x=>x.id===id); if(!n)return;
+  try { if(!n.read)await updateDoc(doc(db,"users",currentUser.uid,"notifications",id),{read:true}); } catch(error){console.warn("Could not mark notification read",error);}
+  if(n.type === "group_deleted" || n.type === "team_deleted"){
+    location.hash="#messages";
+  } else if(n.profileUid){
+    location.hash=`#member/${encodeURIComponent(n.profileUid)}`;
+    await viewMember(n.profileUid);
+  } else if(n.conversationId){
+    location.hash="#messages";
+    const conversation=currentConversations.find(c=>c.id===n.conversationId);
+    if(conversation)selectConversation(conversation); else toast("This conversation is no longer available to your account.");
+  } else if(n.eventId){
+    location.hash="#opportunities";
+    const event=events.find(item=>item.id===n.eventId);
+    if(event)viewEvent(n.eventId);else toast("This opportunity is not in the latest loaded feed.");
+  } else if(n.targetHash) location.hash=n.targetHash;
+}
+async function respondToTeamInvite(notificationId,response) {
+  if(!requireAccount())return;
+  const n=currentNotifications.find(x=>x.id===notificationId); if(!n?.invitationId)return;
+  const inviteRef=doc(db,"teamInvitations",n.invitationId);
+  try {
+    const inviteSnap=await getDoc(inviteRef); if(!inviteSnap.exists())throw new Error("This invitation is no longer available.");
+    const invite=inviteSnap.data();
+    if(invite.toUid!==currentUser.uid||invite.status!=="pending")throw new Error("This invitation has already been handled.");
+    if(tsMillis(invite.expiresAt)&&tsMillis(invite.expiresAt)<Date.now())throw new Error("This invitation has expired.");
+    if(response==="accepted"){
+      const conversationRef=doc(db,"conversations",invite.conversationId);
+      let joinedConversation=null;
+      const name=publicProfile?.displayName||currentUser.displayName||"Member";
+      await runTransaction(db,async tx=>{
+        const [freshInvite,conversationSnap]=await Promise.all([tx.get(inviteRef),tx.get(conversationRef)]);
+        if(!freshInvite.exists()||!conversationSnap.exists())throw new Error("The invitation or team is no longer available.");
+        const currentInvite=freshInvite.data(), conversation=conversationSnap.data();
+        if(currentInvite.status!=="pending"||currentInvite.toUid!==currentUser.uid)throw new Error("This invitation has already been handled.");
+        if((conversation.participants||[]).includes(currentUser.uid))throw new Error("You are already a member of this team.");
+        const maxMembers=Math.min(10,Number(conversation.teamSize)||10);
+        if((conversation.participants||[]).length>=maxMembers)throw new Error(`This ${invite.entityType||"team"} has reached its ${maxMembers}-member limit.`);
+        const joinedParticipants=[...(conversation.participants||[]),currentUser.uid]; const joinedNames={...(conversation.participantNames||{}),[currentUser.uid]:name};
+        tx.update(conversationRef,{participants:joinedParticipants,participantNames:joinedNames,updatedAt:serverTimestamp(),lastAcceptedInviteId:n.invitationId});
+        joinedConversation={id:invite.conversationId,...conversation,participants:joinedParticipants,participantNames:joinedNames};
+        tx.update(inviteRef,{status:"accepted",respondedAt:serverTimestamp()});
+      });
+      await addDoc(collection(db,"users",invite.fromUid,"notifications"),{type:"team_invite_response",category:"teams",title:`${name} joined ${invite.conversationName}`,body:`${name} accepted your invitation and joined the ${invite.entityType||"group"}.`,actorUid:currentUser.uid,actorName:name,conversationId:invite.conversationId,conversationName:invite.conversationName,targetHash:"#messages",invitationId:n.invitationId,createdAt:serverTimestamp(),read:false});
+      toast(`You joined ${invite.conversationName}.`);
+      const found=currentConversations.find(c=>c.id===invite.conversationId);
+      location.hash="#messages"; selectConversation(found || joinedConversation);
+    } else {
+      await updateDoc(inviteRef,{status:"declined",respondedAt:serverTimestamp()});
+      await addDoc(collection(db,"users",invite.fromUid,"notifications"),{type:"team_invite_response",category:"teams",title:`Invitation declined`,body:`${publicProfile?.displayName||currentUser.displayName||"A builder"} declined the invitation to ${invite.conversationName}.`,actorUid:currentUser.uid,actorName:publicProfile?.displayName||currentUser.displayName||"Member",conversationId:invite.conversationId,conversationName:invite.conversationName,targetHash:"#messages",invitationId:n.invitationId,createdAt:serverTimestamp(),read:false});
+      toast("Invitation declined.");
+    }
+    await updateDoc(doc(db,"users",currentUser.uid,"notifications",notificationId),{read:true});
+  } catch(error){toast(friendlyError(error));}
+}
+async function markAllNotificationsRead() {
+  if(!requireAccount())return;
+  try{await Promise.all(currentNotifications.filter(n=>!n.read).map(n=>updateDoc(doc(db,"users",currentUser.uid,"notifications",n.id),{read:true})));toast("All notifications marked as read.");}
+  catch(error){toast(friendlyError(error));}
+}
+async function clearNotifications() {
+  if(!requireAccount()||!currentNotifications.length)return;
+  if(!confirm("Clear all notifications from your notification center?"))return;
+  try{await Promise.all(currentNotifications.map(n=>deleteDoc(doc(db,"users",currentUser.uid,"notifications",n.id))));toast("Notifications cleared.");}
+  catch(error){toast(friendlyError(error));}
+}
+
 function detachRealtimeListeners() {
-  if (stopInboxListener) stopInboxListener(); if (stopMessageListener) stopMessageListener();
-  stopInboxListener = null; stopMessageListener = null; activeConversationId = null; activeConversation = null;
+  if (stopInboxListener) stopInboxListener(); if (stopMessageListener) stopMessageListener(); if (stopNotificationListener) stopNotificationListener();
+  stopInboxListener = null; stopMessageListener = null; stopNotificationListener = null; activeConversationId = null; activeConversation = null;
+  currentNotifications = []; renderNotifications();
 }
 function beginInboxListener() {
   if (!currentUser || !db) return;
   if (stopInboxListener) stopInboxListener();
   const inboxQuery = query(collection(db, "conversations"), where("participants", "array-contains", currentUser.uid), limit(100));
   stopInboxListener = onSnapshot(inboxQuery, snapshot => {
-    currentConversations = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
+    const blocked=new Set(privateProfile?.blockedUsers||[]);
+    currentConversations = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(c=>c.isGroup||(c.participants||[]).every(uid=>uid===currentUser.uid||!blocked.has(uid))).sort((a,b) => tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
     renderConversationList(currentConversations);
     if (activeConversationId) {
       const latest = currentConversations.find(x => x.id === activeConversationId);
@@ -584,8 +795,8 @@ function conversationLabel(conversation) {
   return names[otherUid] || "Direct message";
 }
 function renderConversationList(rows) {
-  const term = $("#conversationSearch")?.value.trim().toLowerCase() || "";
-  const visible = rows.filter(c => `${conversationLabel(c)} ${c.lastMessage || ""} ${(c.participantNames ? Object.values(c.participantNames) : []).join(" ")}`.toLowerCase().includes(term));
+  const term = normalizeSearch($("#conversationSearch")?.value || "");
+  const visible = rows.filter(c => fuzzySearchMatch(term,`${conversationLabel(c)} ${c.lastMessage || ""} ${(c.participantNames ? Object.values(c.participantNames) : []).join(" ")}`));
   $("#conversationCount").textContent = String(visible.length);
   const list = $("#conversationList");
   if (!visible.length) { list.innerHTML = `<div class="empty-note">${term ? "No chats match that search." : "No conversations yet. Find a builder and send the first message."}</div>`; return; }
@@ -614,19 +825,54 @@ function selectConversation(conversation) {
 }
 function renderConversationListFromSnapshotSelection() { $$(".conversation-item").forEach(b => b.classList.toggle("selected", b.dataset.conversation === activeConversationId)); }
 function renderMessages(messages) {
-  const term = $("#messageSearch")?.value.trim().toLowerCase() || "";
-  const visible = messages.filter(m => !term || String(m.text || "").toLowerCase().includes(term) || String(m.authorName || "").toLowerCase().includes(term));
+  const term = normalizeSearch($("#messageSearch")?.value || "");
+  const visible = messages.filter(m => !term || fuzzySearchMatch(term,`${m.text||""} ${m.authorName||""}`));
   const box = $("#messageList"); $("#messageSearchCount").textContent = term ? `${visible.length} matches` : `${messages.length} messages`;
   if (!visible.length) { box.innerHTML = `<div class="empty-note message-empty">${term ? "No messages match your search." : "This is the start of the conversation. Say hello."}</div>`; return; }
   box.innerHTML = visible.map(m => {
     const mine = m.authorUid === currentUser?.uid;
     const created = tsMillis(m.createdAt); const time = created ? new Date(created).toLocaleString([], { dateStyle:"short", timeStyle:"short" }) : "Sending…";
     const canEdit = mine && !m.deleted && created && Date.now() - created <= 15*60*1000;
-    return `<div class="message-row ${mine ? "mine" : "theirs"}"><div class="message-bubble"><small>${mine ? "You" : esc(m.authorName || "Teammate")}${m.edited ? " · edited" : ""}</small><p>${m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || "")}</p><div class="message-meta"><time>${esc(time)}</time>${canEdit ? `<span class="message-actions"><button type="button" data-edit-message="${esc(m.id)}">Edit</button><button type="button" data-delete-message="${esc(m.id)}">Delete</button></span>` : ""}</div></div></div>`;
+    const reactionMap=m.reactionsByUser||{}; const reactionButtons=["👍","❤️","😂","🎉"].map(emoji=>{const users=Object.entries(reactionMap).filter(([,items])=>Array.isArray(items)&&items.includes(emoji));const mine=(reactionMap[currentUser?.uid]||[]).includes(emoji);return `<button type="button" class="reaction-chip ${mine?"selected":""}" data-react-message="${esc(m.id)}" data-emoji="${emoji}" aria-label="React ${emoji}">${emoji} ${users.length||""}</button>`;}).join("");
+    return `<div class="message-row ${mine ? "mine" : "theirs"}"><div class="message-bubble"><small>${mine ? "You" : `<button type="button" class="message-author-link" data-message-profile="${esc(m.authorUid)}">${esc(m.authorName || "Teammate")}</button>`}${m.edited ? " · edited" : ""}</small>${m.replyTo?`<blockquote class="message-reply-quote">Replying to ${esc(m.replyTo.authorName||"message")}: ${esc(m.replyTo.text||"").slice(0,180)}</blockquote>`:""}<p>${m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || "")}</p>${!m.deleted?`<div class="message-reactions">${reactionButtons}</div>`:""}<div class="message-meta"><time>${esc(time)}</time><span class="message-actions"><button type="button" data-copy-message="${esc(m.id)}">Copy</button>${!m.deleted?`<button type="button" data-reply-message="${esc(m.id)}">Reply</button>${canEdit ? `<button type="button" data-edit-message="${esc(m.id)}">Edit</button><button type="button" data-delete-message="${esc(m.id)}">Delete</button>` : ""}${!mine?`<button type="button" data-report-chat="${esc(m.id)}">Report</button><button type="button" data-block-chat="${esc(m.authorUid)}">Block</button>`:""}`:""}</span></div></div></div>`;
   }).join("");
   box.querySelectorAll("[data-edit-message]").forEach(b => b.onclick = () => editMessage(b.dataset.editMessage));
   box.querySelectorAll("[data-delete-message]").forEach(b => b.onclick = () => deleteMessage(b.dataset.deleteMessage));
+  box.querySelectorAll("[data-copy-message]").forEach(b => b.onclick = () => copyMessage(b.dataset.copyMessage));
+  box.querySelectorAll("[data-reply-message]").forEach(b => b.onclick = () => setReply(b.dataset.replyMessage));
+  box.querySelectorAll("[data-react-message]").forEach(b => b.onclick = () => toggleMessageReaction(b.dataset.reactMessage,b.dataset.emoji));
+  box.querySelectorAll("[data-message-profile]").forEach(b => b.onclick = () => viewMember(b.dataset.messageProfile));
+  box.querySelectorAll("[data-report-chat]").forEach(b => b.onclick = () => reportChatMessage(b.dataset.reportChat));
+  box.querySelectorAll("[data-block-chat]").forEach(b => b.onclick = () => blockChatUser(b.dataset.blockChat));
   box.scrollTop = box.scrollHeight;
+}
+async function copyMessage(messageId) {
+  const message=currentMessages.find(m=>m.id===messageId); if(!message||message.deleted)return;
+  try { await navigator.clipboard.writeText(message.text||""); toast("Message copied."); }
+  catch { toast("Clipboard access is unavailable in this browser."); }
+}
+function setReply(messageId) {
+  const message=currentMessages.find(m=>m.id===messageId); if(!message||message.deleted)return;
+  replyingToMessage=message; $("#replyingToText").textContent=`Replying to ${message.authorName||"message"}: ${(message.text||"").slice(0,100)}`;
+  $("#replyingToBar").hidden=false; $("#messageText").focus();
+}
+async function toggleMessageReaction(messageId,emoji) {
+  const ref=doc(db,"conversations",activeConversationId,"messages",messageId);
+  try { await runTransaction(db,async tx=>{const snap=await tx.get(ref);if(!snap.exists())return;const data=snap.data(),map={...(data.reactionsByUser||{})},mine=[...(map[currentUser.uid]||[])];const i=mine.indexOf(emoji);if(i>=0)mine.splice(i,1);else if(mine.length<4)mine.push(emoji);if(mine.length)map[currentUser.uid]=mine;else delete map[currentUser.uid];tx.update(ref,{reactionsByUser:map});}); }
+  catch(error){toast(friendlyError(error));}
+}
+async function reportChatMessage(messageId) {
+  const message=currentMessages.find(m=>m.id===messageId);if(!message||message.authorUid===currentUser?.uid||!requireAccount())return;
+  const details=prompt("Tell us why this message should be reviewed:");if(!details?.trim())return;
+  try{await addDoc(collection(db,"reports"),{createdBy:currentUser.uid,targetUid:message.authorUid,targetName:message.authorName||"Member",category:"chat-message",details:`Message: ${(message.text||"").slice(0,500)}\nReason: ${details.trim().slice(0,500)}`,status:"new",createdAt:serverTimestamp()});toast("Message reported to the HackStop moderation team.");}
+  catch(error){toast(friendlyError(error));}
+}
+async function blockChatUser(uid) {
+  if(!uid||uid===currentUser?.uid||!requireAccount())return;
+  const name=currentMessages.find(m=>m.authorUid===uid)?.authorName||"this member";
+  if(!confirm(`Block ${name}? Their direct messages will be hidden and new direct messages will be denied.`))return;
+  try{await updateDoc(doc(db,"users",currentUser.uid),{blockedUsers:arrayUnion(uid)});privateProfile={...(privateProfile||{}),blockedUsers:[...new Set([...(privateProfile?.blockedUsers||[]),uid])]};if(activeConversation&&!activeConversation.isGroup&&(activeConversation.participants||[]).includes(uid)){if(stopMessageListener)stopMessageListener();stopMessageListener=null;activeConversation=null;activeConversationId=null;currentMessages=[];$("#chatActive").hidden=true;$("#chatPlaceholder").hidden=false;}currentConversations=currentConversations.filter(c=>c.isGroup||(c.participants||[]).every(x=>x===currentUser.uid||x!==uid));renderConversationList(currentConversations);toast("Member blocked.");}
+  catch(error){toast(friendlyError(error));}
 }
 async function editMessage(messageId) {
   const message = currentMessages.find(m => m.id === messageId); if (!message || message.authorUid !== currentUser?.uid) return;
@@ -652,20 +898,66 @@ async function openChatIdentity() {
 async function openGroupManager() {
   if (!activeConversation?.isGroup) return;
   const canManage = activeConversation.createdBy === currentUser?.uid || (activeConversation.admins || []).includes(currentUser?.uid);
-  $("#manageGroupTitle").textContent = `Manage ${activeConversation.groupName || "team"}`;
+  const entityWord=activeConversation.entityType==="team"?"team":"group";
+  $("#manageGroupTitle").textContent = `Manage ${activeConversation.groupName || entityWord}`;
+  $("#openDeleteGroupBtn").hidden = activeConversation.createdBy !== currentUser?.uid;
+  $("#openDeleteGroupBtn").textContent = `Delete ${entityWord}`;
   const rows = await Promise.all((activeConversation.participants || []).map(async uid => {
     try { const snap = await getDoc(doc(db,"publicProfiles",uid)); return { uid, isPublic: snap.exists(), ...(snap.exists()?snap.data():{}) }; }
     catch { return { uid, isPublic: false, displayName: activeConversation.participantNames?.[uid] || "Member" }; }
   }));
-  $("#manageGroupMembers").innerHTML = rows.map(p => `<div class="group-member-row"><div>${p.isPublic ? `<button type="button" class="group-member-profile-link" data-view-group-member="${esc(p.uid)}">${esc(p.displayName || "Member")}</button>` : `<b>${esc(p.displayName || "Private member")}</b>`}<small>@${esc(p.username || "member")} ${p.uid === activeConversation.createdBy ? "· Group owner" : ""}</small></div>${canManage && (activeConversation.participants || []).length > 2 && p.uid !== activeConversation.createdBy ? `<button class="text-danger" data-remove-group-member="${esc(p.uid)}">Remove</button>` : ""}</div>`).join("");
+  $("#manageGroupMembers").innerHTML = rows.map(p => `<div class="group-member-row"><div>${p.isPublic ? `<button type="button" class="group-member-profile-link" data-view-group-member="${esc(p.uid)}">${esc(p.displayName || "Member")}</button>` : `<b>${esc(p.displayName || "Private member")}</b>`}<small>@${esc(p.username || "member")} ${p.uid === activeConversation.createdBy ? "· Group owner" : ""}</small></div>${p.uid===currentUser?.uid&&p.uid!==activeConversation.createdBy&&!(activeConversation.admins||[]).includes(p.uid) ? `<button class="text-danger" data-leave-group>Leave</button>` : canManage && (activeConversation.participants || []).length > 2 && p.uid !== activeConversation.createdBy ? `<button class="text-danger" data-remove-group-member="${esc(p.uid)}">Remove</button>` : ""}</div>`).join("");
   $("#manageGroupMembers").querySelectorAll("[data-remove-group-member]").forEach(b => b.onclick = () => removeGroupMember(b.dataset.removeGroupMember));
+  $("#manageGroupMembers").querySelector("[data-leave-group]")?.addEventListener("click", leaveActiveGroup);
   $("#manageGroupMembers").querySelectorAll("[data-view-group-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewGroupMember));
   $("#manageGroupSearch").disabled = !canManage;
   $("#manageGroupSearchResults").innerHTML = canManage ? '<p class="muted">Search for a builder to add to this group.</p>' : '<p class="muted">Only group admins can add or remove members.</p>';
   showModal("manageGroupModal");
 }
+async function leaveActiveGroup() {
+  const c=activeConversation; if(!c?.isGroup||!currentUser||c.createdBy===currentUser.uid||(c.admins||[]).includes(currentUser.uid))return;
+  if(!confirm(`Leave ${c.entityType==="team"?"this team":"this group"}? You will no longer be able to read its messages.`))return;
+  try {
+    const participants=(c.participants||[]).filter(uid=>uid!==currentUser.uid);
+    const participantNames={...(c.participantNames||{})}; delete participantNames[currentUser.uid];
+    await updateDoc(doc(db,"conversations",c.id),{participants,participantNames,updatedAt:serverTimestamp()});
+    hideModal("manageGroupModal"); if(stopMessageListener)stopMessageListener(); stopMessageListener=null; activeConversation=null; activeConversationId=null; currentMessages=[];
+    $("#chatActive").hidden=true; $("#chatPlaceholder").hidden=false;
+    currentConversations=currentConversations.filter(item=>item.id!==c.id); renderConversationList(currentConversations); toast(`You left ${c.groupName||"the group"}.`);
+  } catch(error){toast(friendlyError(error));}
+}
+
+function openDeleteGroupConfirmation() {
+  if(!activeConversation?.isGroup||activeConversation.createdBy!==currentUser?.uid){toast("Only the creator can delete this group or team.");return;}
+  const isTeam=activeConversation.entityType==="team", phrase=isTeam?"DELETE TEAM":"DELETE GROUP";
+  $("#deleteGroupTitle").textContent=isTeam?"Delete this team?":"Delete this group?";
+  $("#deleteGroupDescription").textContent=`This is permanent. It removes the ${isTeam?"team":"group"} conversation, member list and message history, and sends a notification to each current member.`;
+  $("#deleteGroupPhraseLabel").textContent=phrase; $("#deleteGroupPhrase").value=""; $("#confirmDeleteGroupBtn").disabled=true; $("#deleteGroupMessage").textContent="";
+  showModal("deleteGroupModal");
+}
+async function deleteActiveGroup() {
+  if(!activeConversation?.isGroup||activeConversation.createdBy!==currentUser?.uid)return;
+  const c=activeConversation, isTeam=c.entityType==="team", phrase=isTeam?"DELETE TEAM":"DELETE GROUP";
+  if($("#deleteGroupPhrase").value!==phrase)return;
+  const btn=$("#confirmDeleteGroupBtn");btn.disabled=true;btn.textContent="Deleting…";
+  try {
+    for(const uid of c.participants||[]){
+      if(uid===currentUser.uid)continue;
+      await addDoc(collection(db,"users",uid,"notifications"),{type:isTeam?"team_deleted":"group_deleted",category:"teams",title:`${isTeam?"Team":"Group"} deleted`,body:`${publicProfile?.displayName||currentUser.displayName||"The creator"} deleted ${c.groupName||"the conversation"}.`,actorUid:currentUser.uid,actorName:publicProfile?.displayName||currentUser.displayName||"Creator",conversationId:c.id,conversationName:c.groupName||"",targetHash:"#messages",createdAt:serverTimestamp(),read:false});
+    }
+    await addDoc(collection(db,"auditLogs"),{action:isTeam?"team_deleted":"group_deleted",actorUid:currentUser.uid,conversationId:c.id,conversationName:c.groupName||"",affectedUsers:c.participants||[],createdAt:serverTimestamp()});
+    const messagesRef=collection(db,"conversations",c.id,"messages");
+    while(true){const batch=await getDocs(query(messagesRef,limit(250)));if(batch.empty)break;await Promise.all(batch.docs.map(d=>deleteDoc(d.ref)));}
+    await deleteDoc(doc(db,"conversations",c.id));
+    hideModal("deleteGroupModal");hideModal("manageGroupModal");
+    if(stopMessageListener)stopMessageListener();stopMessageListener=null;activeConversation=null;activeConversationId=null;currentMessages=[];
+    $("#chatActive").hidden=true;$("#chatPlaceholder").hidden=false;location.hash="#messages";toast(`${isTeam?"Team":"Group"} deleted.`);
+  }catch(error){$("#deleteGroupMessage").textContent=friendlyError(error);btn.disabled=false;}
+  finally{btn.textContent="Delete permanently";}
+}
+
 async function searchPublicProfiles(term, max=50) {
-  const t = String(term || "").trim().toLowerCase().replace(/^@/, "");
+  const t = normalizeSearch(term).replace(/^@/, "");
   const base = collection(db, "publicProfiles");
   let snapshots = [];
   if (!t) {
@@ -675,6 +967,7 @@ async function searchPublicProfiles(term, max=50) {
     const requests = fields.map(field => getDocs(query(base, orderBy(field), startAt(t), endAt(t + "\uf8ff"), limit(30))));
     requests.push(getDocs(query(base, where("skillsLower", "array-contains", t), limit(30))));
     requests.push(getDocs(query(base, where("interestsLower", "array-contains", t), limit(30))));
+    requests.push(getDocs(query(base, orderBy("updatedAt","desc"), limit(max))));
     const digits = t.replace(/\D/g, "");
     if (digits.length >= 7) requests.push(getDocs(query(base, orderBy("publicPhoneDigits"), startAt(digits), endAt(digits + "\uf8ff"), limit(30))));
     snapshots = await Promise.all(requests);
@@ -690,14 +983,17 @@ async function searchPublicProfiles(term, max=50) {
 async function addGroupMember(uid) {
   if (!activeConversation?.isGroup) return;
   const c = activeConversation; const canManage = c.createdBy === currentUser?.uid || (c.admins || []).includes(currentUser?.uid);
-  if (!canManage) { toast("Only group admins can add members."); return; }
+  if (!canManage) { toast("Only group admins can invite members."); return; }
   try {
     const snap = await getDoc(doc(db,"publicProfiles",uid)); if (!snap.exists()) throw new Error("Profile unavailable.");
-    const p = snap.data(); const participants = [...new Set([...(c.participants||[]),uid])];
-    if (participants.length > 11) { toast("Groups can contain up to 11 members including you."); return; }
-    const participantNames = { ...(c.participantNames||{}), [uid]: p.displayName || "Member" };
-    await updateDoc(doc(db,"conversations",c.id),{participants,participantNames,updatedAt:serverTimestamp()});
-    activeConversation = { ...c, participants, participantNames }; renderChatHeading(); await openGroupManager(); toast("Member added to the team.");
+    const profile=snap.data(); const already=(c.participants||[]).length; const maxMembers=Math.min(10,Number(c.teamSize)||10); if(already>=maxMembers){toast(`This ${c.entityType||"group"} has reached its ${maxMembers}-member limit.`);return;}
+    const pending=await getDocs(query(collection(db,"teamInvitations"),where("conversationId","==",c.id),where("fromUid","==",currentUser.uid),where("toUid","==",uid),where("status","==","pending"),limit(1)));
+    if(!pending.empty){toast("An invitation is already pending for this builder.");return;}
+    const invitationRef=doc(collection(db,"teamInvitations"));
+    const invite={conversationId:c.id,conversationName:c.groupName||"HackStop team",entityType:c.entityType||"group",fromUid:currentUser.uid,fromName:publicProfile?.displayName||currentUser.displayName||"A HackStop member",toUid:uid,toName:profile.displayName||"Member",requiredSkills:c.requiredSkills||[],teamSize:c.teamSize||10,status:"pending",createdAt:serverTimestamp(),expiresAt:new Date(Date.now()+7*24*60*60*1000)};
+    await setDoc(invitationRef,invite);
+    await addDoc(collection(db,"users",uid,"notifications"),{type:"team_invite",category:"teams",title:`Invitation to ${invite.conversationName}`,body:`${invite.fromName} invited you to join ${invite.entityType}. Skills: ${(invite.requiredSkills||[]).join(", ")||"not specified"}. Team size: ${invite.teamSize}. Accept to join.`,actorUid:currentUser.uid,actorName:invite.fromName,conversationId:c.id,conversationName:invite.conversationName,invitationId:invitationRef.id,expiresAt:invite.expiresAt,targetHash:"#notifications",createdAt:serverTimestamp(),read:false});
+    toast("Invitation sent. The builder must accept before joining.");
   } catch (error) { toast(friendlyError(error)); }
 }
 async function removeGroupMember(uid) {
@@ -720,13 +1016,14 @@ async function reportMember(profile) {
       createdBy: currentUser.uid, targetUid: profile.uid, targetName: profile.displayName || "Member",
       category: "profile", details: details.trim().slice(0, 1000), status: "new", createdAt: serverTimestamp()
     });
-    hideModal("memberModal"); toast("Report submitted. Thank you for helping keep the community safe.");
+    toast("Report submitted. Thank you for helping keep the community safe.");
   } catch (error) { toast(friendlyError(error)); }
 }
 
 async function startDirectConversation(profile) {
   if (!requireAccount()) return;
   if (!profile?.uid || profile.uid === currentUser.uid) { toast("You cannot start a chat with your own account."); return; }
+  if((privateProfile?.blockedUsers||[]).includes(profile.uid)){toast("You have blocked this member. Unblock them before starting a chat.");return;}
   try {
     const participants = [currentUser.uid, profile.uid].sort();
     const inbox = await getDocs(query(collection(db, "conversations"), where("participants", "array-contains", currentUser.uid)));
@@ -741,20 +1038,23 @@ async function startDirectConversation(profile) {
       isGroup: false, participants, participantNames, groupName: "", lastMessage: "",
       createdAt: serverTimestamp(), updatedAt: serverTimestamp(), lastMessageAt: serverTimestamp()
     });
-    hideModal("memberModal"); location.hash = "#messages";
+    location.hash = "#messages";
     selectConversation(conversation);
   } catch (error) { console.error(error); toast(friendlyError(error)); }
 }
 async function sendMessage(event) {
   event.preventDefault(); if (!requireAccount() || !activeConversationId) { toast("Choose a conversation first."); return; }
   const text = $("#messageText").value.trim(); if (!text) return;
+  if(!activeConversation.isGroup&&(activeConversation.participants||[]).some(uid=>uid!==currentUser.uid&&(privateProfile?.blockedUsers||[]).includes(uid))){toast("You have blocked this member. Unblock them from account settings to message again.");return;}
   if (text.length > 2000) { toast("Messages must be 2,000 characters or fewer."); return; }
   const sendButton = $("#messageForm button"); sendButton.disabled = true;
   try {
     const conversationRef = doc(db, "conversations", activeConversationId);
-    await addDoc(collection(conversationRef, "messages"), { authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Member", text, createdAt: serverTimestamp() });
+    const authorName=publicProfile?.displayName || currentUser.displayName || "Member";
+    await addDoc(collection(conversationRef, "messages"), { authorUid: currentUser.uid, authorName, text, createdAt: serverTimestamp(), ...(replyingToMessage?{replyTo:{messageId:replyingToMessage.id,authorUid:replyingToMessage.authorUid,authorName:replyingToMessage.authorName||"Member",text:(replyingToMessage.text||"").slice(0,180)}:{}) });
     await updateDoc(conversationRef, { lastMessage: text.slice(0, 180), lastMessageSender: currentUser.uid, lastMessageAt: serverTimestamp(), updatedAt: serverTimestamp() });
-    $("#messageText").value = "";
+    await Promise.allSettled((activeConversation.participants||[]).filter(uid=>uid!==currentUser.uid).map(uid=>addDoc(collection(db,"users",uid,"notifications"),{type:"chat_message",category:"chat",title:`New message from ${authorName}`,body:text.slice(0,140),actorUid:currentUser.uid,actorName:authorName,conversationId:activeConversationId,conversationName:conversationLabel(activeConversation),targetHash:"#messages",createdAt:serverTimestamp(),read:false})));
+    $("#messageText").value = ""; replyingToMessage=null; $("#replyingToBar").hidden=true; $("#replyingToText").textContent="";
   } catch (error) { console.error(error); toast(friendlyError(error)); }
   finally { sendButton.disabled = false; }
 }
@@ -769,22 +1069,29 @@ async function searchGroupPicker() {
   try {
     const profiles = await searchPublicProfiles(term,100);
     $("#groupMemberResults").innerHTML = profiles.slice(0,24).map(p => `<button type="button" class="member-picker-option ${selectedGroupMembers.has(p.uid)?"chosen":""}" data-pick-group-member="${esc(p.uid)}"><span><b>${esc(p.displayName||"Member")}</b><small>@${esc(p.username||"member")} · ${esc(p.collegeShort||p.college||"College not listed")}</small></span><strong>${selectedGroupMembers.has(p.uid)?"Selected":"＋ Add"}</strong></button>`).join("") || '<p class="muted">No matching discoverable builders found.</p>';
-    $("#groupMemberResults").querySelectorAll("[data-pick-group-member]").forEach(b => b.onclick = () => { const p=profiles.find(x=>x.uid===b.dataset.pickGroupMember); if(!p)return; if(selectedGroupMembers.has(p.uid))selectedGroupMembers.delete(p.uid); else if(selectedGroupMembers.size<10)selectedGroupMembers.set(p.uid,p); else toast("You can add up to 10 other members."); refreshSelectedGroupMembers(); searchGroupPicker(); });
+    $("#groupMemberResults").querySelectorAll("[data-pick-group-member]").forEach(b => b.onclick = () => { const p=profiles.find(x=>x.uid===b.dataset.pickGroupMember); if(!p)return; if(selectedGroupMembers.has(p.uid))selectedGroupMembers.delete(p.uid); else if(selectedGroupMembers.size<9)selectedGroupMembers.set(p.uid,p); else toast("Choose up to 9 other members (10 total with you)."); refreshSelectedGroupMembers(); searchGroupPicker(); });
   } catch (error) { $("#groupMemberResults").textContent = friendlyError(error); }
 }
-async function createGroupWithMembers(groupName, peopleToAdd) {
+async function createGroupWithMembers(groupName, peopleToAdd, entityType = "group", metadata = {}) {
   if (!requireAccount()) return;
-  const members = [{uid:currentUser.uid,...publicProfile}, ...peopleToAdd.filter(p=>p.uid!==currentUser.uid)];
-  const unique = [...new Map(members.map(p=>[p.uid,p])).values()];
-  if (unique.length < 2) { toast("Choose at least one other builder."); return; }
-  if (unique.length > 11) { toast("A group can contain up to 11 members including you."); return; }
-  const participants = unique.map(p=>p.uid);
-  const participantNames = Object.fromEntries(unique.map(p=>[p.uid,p.displayName||"Member"]));
+  const unique = [...new Map((peopleToAdd || []).filter(p => p?.uid && p.uid !== currentUser.uid).map(p => [p.uid, p])).values()];
+  if (!unique.length) { toast("Choose at least one builder to invite."); return; }
+  if (unique.length > 9) { toast("HackStop groups and teams can have up to 10 members including the creator."); return; }
+  const participants = [currentUser.uid];
+  const participantNames = { [currentUser.uid]: publicProfile?.displayName || currentUser.displayName || "Member" };
   const conversationRef = doc(collection(db,"conversations"));
-  await setDoc(conversationRef,{isGroup:true,groupName,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:"Group created",createdAt:serverTimestamp(),updatedAt:serverTimestamp(),lastMessageAt:serverTimestamp()});
-  const conversation = {id:conversationRef.id,isGroup:true,groupName,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:"Group created",updatedAt:Date.now()};
-  location.hash="#messages"; selectConversation(conversation); toast("Team chat created.");
+  await setDoc(conversationRef,{isGroup:true,entityType,groupName,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:"Invitations sent · waiting for members to accept",createdAt:serverTimestamp(),updatedAt:serverTimestamp(),lastMessageAt:serverTimestamp(),...(entityType==="team"?metadata:{})});
+  const expiresAt = new Date(Date.now() + 7*24*60*60*1000);
+  for (const person of unique) {
+    const invitationRef = doc(collection(db,"teamInvitations"));
+    const invite = { conversationId:conversationRef.id, conversationName:groupName, entityType, fromUid:currentUser.uid, fromName:publicProfile?.displayName || currentUser.displayName || "A HackStop member", toUid:person.uid, toName:person.displayName || "Member", requiredSkills:metadata.requiredSkills||normalizedList($("#teamNeededSkills")?.value || ""), teamSize:Number(metadata.teamSize)||Number($("#teamSize")?.value)||Math.min(10,unique.length+1), status:"pending", createdAt:serverTimestamp(), expiresAt };
+    await setDoc(invitationRef, invite);
+    await addDoc(collection(db,"users",person.uid,"notifications"), { type:"team_invite", category:"teams", title:`Invitation to ${groupName}`, body:`${invite.fromName} invited you to join ${entityType === "team" ? "the team" : "the group"}. Skills: ${(invite.requiredSkills||[]).join(", ")||"not specified"}. Target size: ${invite.teamSize}. ${metadata.teamHackathon?`Hackathon: ${metadata.teamHackathon}. `:""}Availability: ${metadata.availability||"flexible"}. Accept to join.`, actorUid:currentUser.uid, actorName:invite.fromName, conversationId:conversationRef.id, conversationName:groupName, invitationId:invitationRef.id, expiresAt, targetHash:"#notifications", createdAt:serverTimestamp(), read:false });
+  }
+  const conversation = {id:conversationRef.id,isGroup:true,entityType,groupName,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:`${unique.length} invitation${unique.length===1?"":"s"} sent`,updatedAt:Date.now()};
+  location.hash="#messages"; selectConversation(conversation); toast(`${unique.length} invitation${unique.length===1?"":"s"} sent. Members join only after they accept.`);
 }
+
 async function createGroup(event) {
   event.preventDefault(); if (!requireAccount()) return;
   const groupName = $("#groupName").value.trim(); const msg = $("#groupMessage"); msg.textContent = "Creating your group…";
@@ -792,7 +1099,7 @@ async function createGroup(event) {
   if (!groupName) { msg.textContent="Enter a group name."; return; }
   if (!chosen.length) { msg.textContent="Search and select at least one member."; return; }
   try {
-    await createGroupWithMembers(groupName,chosen);
+    await createGroupWithMembers(groupName,chosen,"group");
     hideModal("groupModal"); $("#groupForm").reset(); selectedGroupMembers.clear(); refreshSelectedGroupMembers();
   } catch (error) { console.error(error); msg.textContent = friendlyError(error); }
 }
@@ -810,19 +1117,27 @@ async function searchManageGroupMembers() {
 async function runSmartTeamMatch(event) {
   event.preventDefault(); if(!requireAccount())return;
   if(!publicProfile){toast("Complete your profile first so team matching has your skills.");return;}
-  const needed=normalizedList($("#teamNeededSkills").value); const size=Number($("#teamSize").value)||4; const name=$("#teamProjectName").value.trim();
-  if(!needed.length){toast("Add the skills or roles you need.");return;}
+  const needed=normalizedList($("#teamNeededSkills").value); const size=Number($("#teamSize").value)||4; const name=$("#teamProjectName").value.trim(); const availability=$("#teamAvailability").value;
+  if(!needed.length){toast("Add the skills or roles you need.");return;} if(!availability){toast("Choose the team availability so suggested members know the commitment.");return;}
   $("#teamMatchResults").innerHTML='<p class="muted">Finding complementary builders…</p>'; $("#createMatchedTeamBtn").hidden=true; matchedTeamCandidates=[];
   try{
     const profiles=await searchPublicProfiles("",150);
+    const relatedSkillMap={react:["javascript","next.js","typescript","frontend development","tailwind css"],javascript:["react","next.js","node.js","typescript"],python:["django","fastapi","machine learning","data science"],figma:["ui/ux","user experience","product design"],"machine learning":["python","pytorch","tensorflow","data science"],node:["node.js","express","javascript","backend"],"node.js":["node","express","javascript","backend"],flutter:["dart","mobile development"],firebase:["firestore","authentication","cloud functions"]};
     const scored=profiles.map(p=>{
-      const fields=[...(p.skills||[]),...(p.rolesInterested||[]),...(p.interests||[]),p.bio||""].join(" ").toLowerCase();
-      const matched=needed.filter(skill=>fields.includes(skill));
-      const score=matched.length/needed.length;
-      return {...p,matchScore:score,matchedSkills:matched};
+      const skills=[...(p.skills||[]),...(p.rolesInterested||[]),...(p.interests||[])].map(normalizeSearch);
+      const fields=[...skills,p.bio||""].join(" ").toLowerCase();
+      const matched=needed.filter(skill=>skills.some(x=>x===skill)||fields.includes(skill));
+      const related=needed.filter(skill=>!matched.includes(skill)&&(relatedSkillMap[skill]||[]).some(alias=>skills.some(x=>x.includes(alias))));
+      const score=Math.min(1,(matched.length+related.length*.6)/needed.length);
+      const reasons=[...matched.map(x=>`Knows ${x}`),...related.map(x=>`Related experience for ${x}`)];
+      if(p.availability&&normalizeSearch(p.availability)===normalizeSearch(availability))reasons.push(`Availability matches: ${p.availability}`);
+      if($("#teamPreferredLevel").value&&p.skillLevel&&normalizeSearch($("#teamPreferredLevel").value)===normalizeSearch(p.skillLevel))reasons.push(`Skill level matches: ${p.skillLevel}`);
+      if($("#teamCollege").value.trim()&&p.college&&normalizeSearch($("#teamCollege").value)===normalizeSearch(p.college))reasons.push("College preference matches");
+      if(publicProfile?.college&&p.college&&normalizeSearch(p.college)===normalizeSearch(publicProfile.college))reasons.push("Same college");
+      return {...p,matchScore:score,matchedSkills:matched,relatedSkills:related,matchReasons:reasons};
     }).filter(p=>p.matchScore>0).sort((a,b)=>b.matchScore-a.matchScore||overlapScore(b)-overlapScore(a)).slice(0,Math.max(20,(size-1)*4));
     matchedTeamCandidates=scored.slice(0,size-1);
-    $("#teamMatchResults").innerHTML=matchedTeamCandidates.length?matchedTeamCandidates.map(p=>`<label class="team-match-option"><input type="checkbox" data-team-match="${esc(p.uid)}" checked><span><b>${esc(p.displayName||"Builder")}</b><small>@${esc(p.username||"member")} · ${esc(p.collegeShort||p.college||"College not listed")}</small><span class="skill-tags">${(p.skills||[]).slice(0,5).map(x=>`<i>${esc(x)}</i>`).join("")}</span><small>Matched: ${esc(p.matchedSkills.join(", "))} · ${Math.round(p.matchScore*100)}% skill coverage</small></span></label>`).join(""):'<p class="muted">No matching builders are available yet. Try broader roles or skills.</p>';
+    $("#teamMatchResults").innerHTML=matchedTeamCandidates.length?matchedTeamCandidates.map(p=>`<label class="team-match-option"><input type="checkbox" data-team-match="${esc(p.uid)}" checked><span><b>${esc(p.displayName||"Builder")}</b><small>@${esc(p.username||"member")} · ${esc(p.collegeShort||p.college||"College not listed")}</small><span class="skill-tags">${(p.skills||[]).slice(0,5).map(x=>`<i>${esc(x)}</i>`).join("")}</span><small>Exact: ${esc(p.matchedSkills.join(", ")||"—")} · Related: ${esc(p.relatedSkills.join(", ")||"—")} · ${Math.round(p.matchScore*100)}% match</small><small>${esc(p.matchReasons.slice(0,3).join(" · "))}</small></span></label>`).join(""):'<p class="muted">No matching builders are available yet. Try broader roles or skills.</p>';
     $("#teamMatchResults").dataset.teamName=name;
     $("#createMatchedTeamBtn").hidden=!matchedTeamCandidates.length;
   }catch(error){$("#teamMatchResults").textContent=friendlyError(error);}
@@ -830,7 +1145,7 @@ async function runSmartTeamMatch(event) {
 async function createMatchedTeam() {
   const selected=[...$("#teamMatchResults").querySelectorAll("[data-team-match]:checked")].map(b=>matchedTeamCandidates.find(p=>p.uid===b.dataset.teamMatch)).filter(Boolean);
   if(!selected.length){toast("Select at least one builder.");return;}
-  try{await createGroupWithMembers($("#teamProjectName").value.trim()||"HackVerse project team",selected);hideModal("teamBuilderModal");}
+  try{const metadata={requiredSkills:normalizedList($("#teamNeededSkills").value),teamSize:Number($("#teamSize").value)||4,availability:$("#teamAvailability").value,preferredLevel:$("#teamPreferredLevel").value,teamCollege:$("#teamCollege").value.trim(),teamYear:$("#teamYear").value,teamCourse:$("#teamCourse").value.trim(),teamLocation:$("#teamLocation").value.trim(),teamHackathon:$("#teamHackathon").value.trim(),teamCommunication:$("#teamCommunication").value,teamVisibility:$("#teamVisibility").value,teamJoinMode:$("#teamJoinMode").value,teamDescription:$("#teamDescription").value.trim(),teamIdea:$("#teamIdea").value.trim()};await createGroupWithMembers($("#teamProjectName").value.trim()||"HackStop project team",selected,"team",metadata);hideModal("teamBuilderModal");}
   catch(error){toast(friendlyError(error));}
 }
 
@@ -878,8 +1193,9 @@ async function deleteProject(id) {
 
 function handleRoute() {
   const raw=(location.hash||"#home").slice(1);
-  const aliases={top:"home",discover:"home",opportunities:"opportunities",saved:"saved",people:"people",messages:"messages",profile:"profile"};
-  const view=aliases[raw]||"home";
+  const isMemberRoute=raw.startsWith("member/");
+  const aliases={top:"home",discover:"home",opportunities:"opportunities",saved:"saved",people:"people",messages:"messages",profile:"profile",notifications:"notifications"};
+  const view=isMemberRoute?"member-profile":(aliases[raw]||"home");
   $$('[data-view]').forEach(el=>{
     if(el.id==="discoveryAdminPanel"){el.hidden=!(view==="home"&&isAdminUser);return;}
     el.hidden=el.dataset.view!==view;
@@ -889,7 +1205,9 @@ function handleRoute() {
   window.scrollTo({top:0,behavior:"auto"});
   if(view==="opportunities")renderEvents();
   if(view==="saved")renderSaved();
-  if(view==="people"&&currentUser)searchPeople();
+  if(view==="people" && currentUser && !$("#peopleDirectory").hidden) searchPeople();
+  if(view==="notifications" && currentUser) renderNotifications();
+  if(isMemberRoute){const uid=decodeURIComponent(raw.slice("member/".length));if(uid&&selectedMember?.uid!==uid)viewMember(uid);}
 }
 
 function bindUI() {
@@ -917,11 +1235,12 @@ function bindUI() {
   $("#messageSearch").addEventListener("input",()=>renderMessages(currentMessages));
   $("#groupForm").addEventListener("submit", createGroup);
   $("#messageForm").addEventListener("submit", sendMessage);
+  $("#cancelReplyBtn").onclick=()=>{replyingToMessage=null;$("#replyingToBar").hidden=true;$("#replyingToText").textContent="";};
   $("#addProjectBtn").onclick = () => requireAccount() && showModal("projectModal");
   $("#projectForm").addEventListener("submit", createProject);
   $$("[data-close]").forEach(button => button.addEventListener("click", () => { const id = button.dataset.close; if (id === "profileModal") closeProfileModal(); else hideModal(id); }));
   $$(".modal-backdrop").forEach(modal => modal.addEventListener("click", e => { if (e.target === modal) { if (modal.id === "profileModal") closeProfileModal(); else hideModal(modal.id); } }));
-  document.addEventListener("keydown", e => { if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") closeProfileModal(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal","deleteGroupModal"].forEach(hideModal); if (e.key === "Escape") closeProfileModal(); });
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
@@ -930,9 +1249,19 @@ function bindUI() {
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
   $("#peopleSearch").addEventListener("input", searchPeople); $("#peopleRole").onchange = searchPeople; $("#lookingForTeamOnly").onchange = searchPeople;
+  ["#peopleSkillFilter","#peopleCollegeFilter","#peopleYearFilter","#peopleAvailabilityFilter","#peopleInterestFilter"].forEach(sel=>$(sel).addEventListener("change",renderPeople));
+  $("#clearPeopleFilters").onclick=()=>{["#peopleRole","#peopleSkillFilter","#peopleCollegeFilter","#peopleYearFilter","#peopleAvailabilityFilter","#peopleInterestFilter"].forEach(sel=>$(sel).value="all");$("#lookingForTeamOnly").checked=false;$("#peopleSearch").value="";searchPeople();};
+  $("#viewMembersBtn").onclick = () => { $("#peopleDirectory").hidden=false; searchPeople(); $("#peopleSearch").focus(); };
+  $("#memberProfileBack").onclick = () => { location.hash="#people"; $("#peopleDirectory").hidden=false; };
+  $("#notificationBell").onclick = () => { location.hash="#notifications"; };
+  $("#markAllNotificationsRead").onclick = markAllNotificationsRead;
+  $("#clearNotifications").onclick = clearNotifications;
+  $$('[data-mute-notification-category]').forEach(input=>input.addEventListener("change",async()=>{if(!currentUser)return;const muted=$$('[data-mute-notification-category]').filter(x=>x.checked).map(x=>x.dataset.muteNotificationCategory);try{await updateDoc(doc(db,"users",currentUser.uid),{mutedNotificationCategories:muted});privateProfile={...(privateProfile||{}),mutedNotificationCategories:muted};renderNotifications();toast("Notification preferences saved.");}catch(error){input.checked=!input.checked;toast(friendlyError(error));}}));
+  $$('[data-notification-filter]').forEach(b=>b.onclick=()=>{currentNotificationCategory=b.dataset.notificationFilter;$$('[data-notification-filter]').forEach(x=>{x.classList.toggle("active",x===b);x.setAttribute("aria-selected",String(x===b));});renderNotifications();});
+  $("#openDeleteGroupBtn").onclick = openDeleteGroupConfirmation;
+  $("#deleteGroupPhrase").addEventListener("input",()=>{const expected=activeConversation?.entityType==="team"?"DELETE TEAM":"DELETE GROUP";$("#confirmDeleteGroupBtn").disabled=$("#deleteGroupPhrase").value!==expected;});
+  $("#confirmDeleteGroupBtn").onclick = deleteActiveGroup;
   $("#backToExploreBtn").onclick = () => { location.hash = "#opportunities"; };
-  $("#themeToggle").onclick = () => { document.body.classList.toggle("light"); localStorage.setItem("hackverse-theme", document.body.classList.contains("light") ? "light" : "dark"); };
-  if (localStorage.getItem("hackverse-theme") === "light") document.body.classList.add("light");
   $("#menuToggle").onclick = () => { document.querySelector(".desktop-nav").classList.toggle("mobile-open"); };
   $$(".desktop-nav a").forEach(a => a.addEventListener("click", () => document.querySelector(".desktop-nav").classList.remove("mobile-open")));
   window.addEventListener("hashchange",handleRoute); handleRoute();

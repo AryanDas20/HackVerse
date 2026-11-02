@@ -1,3 +1,4 @@
-HackVerse v5.1.0
-
-Opportunity directory, learning catalogues, profile privacy, messaging and team collaboration update.
+HackStop v5.2.3
+Brand: HackStop
+UI: sky blue + soft pink, responsive light/dark theme
+Dark mode: persistent, mobile-accessible, pre-paint theme initialization
