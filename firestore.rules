@@ -10,13 +10,18 @@ service cloud.firestore {
       return signedIn() && request.auth.uid in
         get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
     }
+    function profileDisplayName(uid) {
+      return exists(/databases/$(database)/documents/publicProfiles/$(uid))
+        ? get(/databases/$(database)/documents/publicProfiles/$(uid)).data.displayName
+        : get(/databases/$(database)/documents/users/$(uid)).data.profileData.displayName;
+    }
 
     match /hackathons/{eventId} {
       allow read: if resource.data.visibility == 'public' || isAdmin();
       allow create, update, delete: if isAdmin();
     }
 
-    // Private account record: email and phone are stored here, never in publicProfiles.
+    // Private account record. Email/phone source values and private profile snapshots stay here; only opt-in contact fields are copied to publicProfiles.
     match /users/{userId} {
       allow read: if isSelf(userId) || isAdmin();
       allow create: if isSelf(userId) && request.resource.data.role == 'participant';
@@ -41,9 +46,9 @@ service cloud.firestore {
         && request.resource.data.uid == userId
         && request.resource.data.keys().hasOnly([
           'uid','displayName','nameLower','username','usernameLower','college','collegeLower',
-          'course','courseLower','studyLevel','graduationYear','city','country','bio','skills','skillsLower',
-          'rolesInterested','rolesLower','interests','interestsLower','availability','preferredMode','avatarUrl',
-          'github','linkedin','portfolio','lookingForTeam','profileConsentAt','updatedAt'
+          'course','courseLower','collegeShort','collegeShortLower','studyLevel','graduationYear','city','country','bio','skills','skillsLower',
+          'rolesInterested','rolesLower','interests','interestsLower','availability','preferredMode','avatarUrl','profileVisibility',
+          'github','linkedin','portfolio','lookingForTeam','publicEmail','publicEmailLower','publicPhone','publicPhoneDigits','profileConsentAt','updatedAt'
         ])
         && request.resource.data.usernameLower is string
         && request.resource.data.usernameLower.size() >= 3
@@ -65,25 +70,44 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Direct and group conversations. Membership is fixed on creation in this starter release.
+    // Direct messages and group chats. Group owners/admins can manage membership.
     match /conversations/{conversationId} {
       allow read: if signedIn() && request.auth.uid in resource.data.participants;
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly([
           'isGroup','groupName','participants','participantNames','lastMessage',
-          'createdAt','updatedAt','lastMessageAt'
+          'createdAt','updatedAt','lastMessageAt','createdBy','admins','lastMessageSender'
         ])
         && request.resource.data.participants is list
         && request.resource.data.participants.size() >= 2
         && request.resource.data.participants.size() <= 11
         && request.auth.uid in request.resource.data.participants
-        && request.resource.data.isGroup is bool;
+        && request.resource.data.isGroup is bool
+        && (request.resource.data.isGroup == false || (
+          request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.admins is list
+          && request.auth.uid in request.resource.data.admins
+        ));
       allow update: if signedIn()
         && request.auth.uid in resource.data.participants
-        && request.resource.data.participants == resource.data.participants
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'lastMessage','lastMessageSender','lastMessageAt','updatedAt'
-        ]);
+        && (
+          (request.resource.data.participants == resource.data.participants
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'lastMessage','lastMessageSender','lastMessageAt','updatedAt'
+            ]))
+          ||
+          (resource.data.isGroup == true
+            && (request.auth.uid == resource.data.createdBy || request.auth.uid in resource.data.admins)
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.admins == resource.data.admins
+            && request.resource.data.participants is list
+            && request.resource.data.participants.size() >= 2
+            && request.resource.data.participants.size() <= 11
+            && resource.data.createdBy in request.resource.data.participants
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'participants','participantNames','updatedAt'
+            ]))
+        );
       allow delete: if false;
 
       match /messages/{messageId} {
@@ -93,9 +117,20 @@ service cloud.firestore {
           && request.resource.data.text is string
           && request.resource.data.text.size() > 0
           && request.resource.data.text.size() <= 2000
-          && request.resource.data.authorName == get(/databases/$(database)/documents/publicProfiles/$(request.auth.uid)).data.displayName
+          && request.resource.data.authorName == profileDisplayName(request.auth.uid)
           && request.resource.data.keys().hasOnly(['authorUid','authorName','text','createdAt']);
-        allow update, delete: if false;
+        allow update: if isConversationMember(conversationId)
+          && resource.data.authorUid == request.auth.uid
+          && request.time < resource.data.createdAt + duration.value(15, 'm')
+          && request.resource.data.authorUid == resource.data.authorUid
+          && request.resource.data.authorName == resource.data.authorName
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'text','edited','editedAt','deleted','deletedAt'
+          ])
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 2000;
+        allow delete: if false;
       }
     }
 

@@ -1,29 +1,47 @@
-# Firebase deployment guide
+# HackVerse v5 deployment guide
 
-**Firebase Cloud Storage is not part of this project.** Do not create a Storage bucket or run Storage deployment commands. The app uses Firebase Authentication, Cloud Firestore, and Cloud Functions only; image/avatar fields are URLs and this starter does not upload binary files.
+Firebase Cloud Storage is not used or required. The app uses Firebase Authentication and Cloud Firestore. The automatic discovery schedule runs through GitHub Actions so the project can remain on Firebase Spark.
 
-1. Create a Firebase project and add a Web app.
-2. Paste the Web app config into `public/firebase-config.js`.
-3. Enable Google and Email/Password in Authentication.
-4. Add localhost and your deployed hostname to Authentication authorized domains.
-5. Create Cloud Firestore in Production mode.
-6. From the project root, run `firebase login` and `firebase use --add`.
-7. Deploy Hosting, rules and indexes: `firebase deploy --only firestore:rules,firestore:indexes,hosting`. If Vercel hosts the frontend, deploy only `firestore:rules,firestore:indexes` here and deploy the frontend via Vercel.
-8. For automatic discovery, enable the Firebase Blaze plan, review billing, and set budget alerts. From the root run `cd functions && npm install && cd .. && firebase deploy --only functions`. Optionally create `functions/.env.<project-id>` from `.env.example` to enable YouTube Data API discovery.
-9. Assign your trusted account the admin custom claim using `functions/scripts/set-admin.js` (instructions in README.md). Sign out and sign in again.
-10. Add approved public RSS/Atom feeds in the Admin Control Center, click **Run discovery now**, and inspect the source-attributed listings. The scheduled job repeats every six hours.
+## Preserve existing project settings
 
-## Important limits
+Before replacing the old local folder, back it up and copy your existing `public/firebase-config.js` and hidden `.firebaserc` into the v5 folder. This ZIP intentionally includes a placeholder Web App config, not your real Firebase project settings. Do not overwrite the user's actual config with the placeholder.
 
-This release implements automatic RSS/Atom discovery only. Social networks are not automatically searchable without their official APIs, provider approval, credentials and specific adapters. No website scraping or unofficial social bots are used. RSS text parsing is heuristic: deadlines and tags can be missed, and source attribution is not independent verification.
+## Frontend and Firestore
 
-## Test before launch
+1. Keep the existing Firebase project and Vercel deployment.
+2. Confirm Google and Email/Password are enabled in Firebase Authentication and your Vercel domain is in Authorized domains.
+3. Deploy the updated Firestore rules and indexes from the project root:
 
-- Verify the admin panel is hidden for non-admin accounts.
-- Add a permitted feed and run discovery manually.
-- Confirm only relevant hackathon announcements are published and duplicates reuse the same event.
-- Confirm event cards link to the original source.
-- Confirm expired deadlines are hidden.
-- Check `ingestionRuns` and source last-run/error fields.
-- Test with two non-admin accounts and ensure they cannot write source registry or event documents.
-- Configure Firebase App Check, abuse controls, monitoring, backups, Terms and Privacy Policy before inviting public users.
+   ```bash
+   firebase use hackverseneo
+   firebase deploy --only firestore:rules,firestore:indexes
+   ```
+
+4. Push the updated source to the existing GitHub `main` branch. Vercel should build from the connected repository.
+5. Test two accounts to verify public/private profiles, direct chats, group membership changes and message editing/deletion.
+
+## Automatic discovery on Firebase Spark
+
+The GitHub Actions workflow in `.github/workflows/hackathon-discovery.yml` executes every six hours and has a manual `workflow_dispatch` option. It authenticates using the existing GitHub Workload Identity Federation provider and the `hackverse-discovery` service account. No service-account key is required. Its three RSS sources are Hackalendar, Brabble's hackathons feed and Brabble's Delhi-NCR feed.
+
+Open GitHub → Actions → **HackVerse Automatic Hackathon Discovery** to monitor or manually run the job. The cron is UTC: 00:00, 06:00, 12:00 and 18:00 UTC (approximately 05:30, 11:30, 17:30 and 23:30 India time).
+
+Do not run `firebase deploy --only functions` while staying on Spark. Firebase Cloud Functions / Cloud Scheduler deployments require Blaze billing. The source retains Cloud Functions exports for a future migration, but the GitHub Actions workflow is the scheduler for this release. The browser-based admin source-management callables are optional and not needed for the scheduled runner.
+
+## Local discovery test (optional)
+
+On a trusted computer with Node.js 22 and Google Application Default Credentials configured for the project:
+
+```bash
+npm install --prefix functions
+HACKVERSE_RSS_FEEDS="https://hackalendar.com/feed.xml,https://brabble.ai/rss/hackathons.xml,https://brabble.ai/rss/in/delhi-ncr.xml" node functions/scripts/run-discovery.js
+```
+
+Never commit `.env.*`, service-account JSON, private API tokens or admin credentials.
+
+## Limits and launch checklist
+
+- RSS classification is heuristic and source-attributed, not independently fact-checked.
+- Dedicated bootcamp/course feeds are not configured yet; categories are supported if suitable sources are added.
+- Private profiles are intentionally excluded from public directory and client-side team matching. Securely matching private profiles needs a trusted server-side endpoint.
+- Before a public launch, publish real Terms and Privacy Policy, replace the example footer email, add moderation/rate limiting, test rules in the Emulator Suite, configure backups/monitoring and review applicable privacy requirements.

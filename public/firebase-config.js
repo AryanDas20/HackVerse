@@ -1,8 +1,10 @@
-
+// Replace values with your Firebase project's Web app config.
+// Firebase Console → Project settings → General → Your apps → Web app.
 export const firebaseConfig = {
-  apiKey: "AIzaSyCjQlqcHeh6MYNGRkozbDPccg6YQAstwn4",
-  authDomain: "hackverseneo.firebaseapp.com",
-  projectId: "hackverseneo",
-  messagingSenderId: "132626670005",
-  appId: "1:132626670005:web:f125a68db8b0399be4b9fc"
+  apiKey: "YOUR_FIREBASE_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+
+  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+  appId: "YOUR_FIREBASE_APP_ID"
 };
