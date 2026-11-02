@@ -13,7 +13,7 @@ if (!getApps().length) initializeApp();
 const db = getFirestore();
 const parser = new Parser({
   timeout: 15000,
-  headers: { "User-Agent": "HackStopDiscovery/2.0 (+https://hackstop.example; contact: support@hackstop.example)" },
+  headers: { "User-Agent": "HackVerseDiscovery/2.0 (+https://hackverse.example; contact: admin@hackverse.example)" },
   customFields: { item: [["content:encoded", "contentEncoded"], ["media:description", "mediaDescription"]] }
 });
 const LEGACY_FEEDS = process.env.HACKVERSE_STANDALONE === "1"
@@ -173,7 +173,7 @@ function parseCandidate(item, source) {
   return {
     id, titleKey, title, category: relevance.category, opportunityType: relevance.category,
     organizer: extractOrganizer(summary, organizerFallback),
-    summary: summary || "An opportunity announcement was discovered by HackStop. Visit the source for complete details.",
+    summary: summary || "An opportunity announcement was discovered by HackVerse. Visit the source for complete details.",
     description: summary || "Open the original listing for details.",
     sourceUrl, officialEventUrl: null, officialRegistrationUrl: null,
     registrationDeadline: deadline ? Timestamp.fromDate(deadline) : null,
@@ -376,7 +376,7 @@ async function runDiscovery() {
         await db.collection("discoverySources").doc(source.id).set({ lastRunAt: SERVER_TIME(), lastError: null, lastItemCount: items.length }, { merge: true }).catch(() => {});
       } catch (error) {
         summary.errors.push({ source: source.name || source.id, message: String(error.message || error).slice(0, 180) });
-        logger.warn("HackStop source ingestion failed", { sourceId: source.id, error: error.message });
+        logger.warn("HackVerse source ingestion failed", { sourceId: source.id, error: error.message });
         if (source.id && !source.id.match(/^[a-f0-9]{20}$/)) {
           await db.collection("discoverySources").doc(source.id).set({ lastRunAt: SERVER_TIME(), lastError: String(error.message || error).slice(0, 180) }, { merge: true }).catch(() => {});
         }
@@ -395,12 +395,12 @@ async function runDiscovery() {
 }
 function requireAdmin(request) {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in first.");
-  if (request.auth.token.admin !== true) throw new HttpsError("permission-denied", "This action requires a HackStop admin account.");
+  if (request.auth.token.admin !== true) throw new HttpsError("permission-denied", "This action requires a HackVerse admin account.");
 }
 if (process.env.HACKVERSE_STANDALONE === "1") {
   runDiscovery()
-    .then(result => { console.log("HackStop discovery result:"); console.log(JSON.stringify(result, null, 2)); if (result.errors?.length) process.exitCode = 1; })
-    .catch(error => { console.error("HackStop discovery failed:", error); process.exitCode = 1; });
+    .then(result => { console.log("HackVerse discovery result:"); console.log(JSON.stringify(result, null, 2)); if (result.errors?.length) process.exitCode = 1; })
+    .catch(error => { console.error("HackVerse discovery failed:", error); process.exitCode = 1; });
 } else {
 exports.scheduledRssIngestion = onSchedule({ schedule: "every 6 hours", timeZone: "Asia/Kolkata", timeoutSeconds: 540, memory: "512MiB" }, async () => runDiscovery());
 exports.runDiscoveryNow = onCall({ enforceAppCheck: false }, async request => { requireAdmin(request); return runDiscovery(); });
