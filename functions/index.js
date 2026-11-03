@@ -322,15 +322,17 @@ function directListingCandidate(platform, item) {
   const org = firstValue(item.organisation?.name, item.organization?.name, item.organizer?.name,
     item.organizer, item.company?.name, item.company, item.host, item.creator, platform.name);
   const title = cleanText(firstValue(item.title, item.name, item.hackathon_name, item.event_name), 180);
-  const description = cleanText(firstValue(item.details, item.description, item.summary, item.about, item.tagline), 1800);
-  let link = firstValue(item.seo_url, item.url, item.link, item.public_url, item.short_url, item.event_url, item.href);
+  const description = cleanText(firstValue(item.details, item.description, item.summary, item.about, item.tagline, item.desc), 1800);
+  let link = platform.platform.toLowerCase() === "devfolio"
+    ? firstValue(item.hackathon_setting?.site, item.slug ? `https://${item.slug}.devfolio.co/` : null, item.seo_url, item.url, item.link, item.public_url, item.short_url, item.event_url, item.href)
+    : firstValue(item.seo_url, item.url, item.link, item.public_url, item.short_url, item.event_url, item.href);
   if (link && !/^https:\/\//i.test(link)) link = `https://${platform.platform.toLowerCase() === "unstop" ? "unstop.com" : platform.platform.toLowerCase() === "devpost" ? "devpost.com" : platform.platform.toLowerCase() === "devfolio" ? "devfolio.co" : "hackerearth.com"}/${String(link).replace(/^\//, "")}`;
   const sourceUrl = canonicalUrl(link || "");
   if (!title || !sourceUrl) return null;
 
   const req = item.regnRequirements || item.registration || item.registration_details || {};
   const deadlineRaw = firstValue(req.end_regn_dt, req.deadline, item.registration_deadline, item.deadline,
-    item.submission_period_dates?.end, item.ends_at, item.end_utc_tz, item.end_date);
+    item.submission_period_dates?.end, item.hackathon_setting?.reg_ends_at, item.ends_at, item.end_utc_tz, item.end_date);
   const startRaw = firstValue(item.start_tz, item.start_timestamp, item.start_date, item.startDate, item.starts_at, item.start_at,
     item.submission_period_dates?.start, item.festival?.start_date);
   const endRaw = firstValue(item.end_tz, item.end_timestamp, item.end_date, item.endDate, item.ends_at, item.end_at,
@@ -361,7 +363,12 @@ function directListingCandidate(platform, item) {
     .map(skill => cleanText(skill.skill_name || skill.name || skill.skill || skill, 60)).filter(Boolean).slice(0, 12);
   const prizeRows = Array.isArray(item.prizes) ? item.prizes : [];
   const prize = prizeRows.map(row => [row.rank, row.cash, row.currencyCode || row.currency].filter(Boolean).join(" ")).filter(Boolean).join("; ").slice(0, 200);
-  const isFree = item.isPaid === false || item.is_paid === false ? true : item.isPaid === true || item.is_paid === true ? false : null;
+  const devfolioPaid = item.hackathon_setting?.paid;
+  const isFree = devfolioPaid === false || item.isPaid === false || item.is_paid === false
+    ? true
+    : devfolioPaid === true || item.isPaid === true || item.is_paid === true
+      ? false
+      : null;
   const text = `${title} ${description}`;
   const titleKey = sha(`hackathon:${title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`).slice(0, 40);
   const id = sha(sourceUrl).slice(0, 40);
