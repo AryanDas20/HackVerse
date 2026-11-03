@@ -8,6 +8,8 @@ const { initializeApp, getApps } = require("firebase-admin/app");
 const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
 const Parser = require("rss-parser");
 const crypto = require("node:crypto");
+const { resolveEventId } = require("./lib/event-id");
+const { cleanText } = require("./lib/clean-text");
 
 if (!getApps().length) initializeApp();
 const db = getFirestore();
@@ -31,10 +33,7 @@ const OPENHPI_COURSE_FEED = process.env.HACKVERSE_STANDALONE === "1"
 const SERVER_TIME = FieldValue.serverTimestamp;
 
 function sha(value) { return crypto.createHash("sha256").update(String(value)).digest("hex"); }
-function cleanText(value, max = 1200) {
-  return String(value || "").replace(/<[^>]*>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&")
-    .replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"').replace(/\s+/g, " ").trim().slice(0, max);
-}
+
 function safeHttps(value) {
   try {
     const url = new URL(value);
@@ -67,15 +66,23 @@ function extractDeadline(text) {
   }
   return null;
 }
+const OPPORTUNITY_CATEGORIES = new Set([
+  "hackathon", "coding-event", "case-competition", "bootcamp", "course", "certification"
+]);
 function classify(text, sourceCategories = []) {
   const value = String(text || "").toLowerCase();
-  const categories = (Array.isArray(sourceCategories) ? sourceCategories : [sourceCategories]).map(x => String(x || "").toLowerCase()).join(" ");
-  if (/\bhackathon\b|\bhack-a-thon\b/.test(`${value} ${categories}`)) return { relevant: true, category: "hackathon", score: 95 };
-  if (/boot\s?camp|developer intensive|coding intensive/.test(value)) return { relevant: true, category: "bootcamp", score: 88 };
-  if (/professional certification|certification exam|certificate programme|certificate program|certification course/.test(value)) return { relevant: true, category: "certification", score: 86 };
-  if (/online course|self[- ]paced course|course enrollment|course enrolment|learning path|massive open online course|\bmooc\b/.test(value)) return { relevant: true, category: "course", score: 85 };
-  if (/case\s?(study|competition|challenge)|business case/.test(value) || /case study/.test(categories)) return { relevant: true, category: "case-competition", score: 84 };
-  if (/coding contest|programming contest|code jam|coding challenge|\bctf\b|capture the flag|algorithm contest|developer challenge|open source sprint/.test(value) || /\bcoding\b|\bcontest\b/.test(categories) && /code|program|developer|software|algorithm|security/.test(value)) return { relevant: true, category: "coding-event", score: 82 };
+  const categoryList = (Array.isArray(sourceCategories) ? sourceCategories : [sourceCategories])
+    .map(x => String(x || "").toLowerCase().trim()).filter(Boolean);
+  const categories = categoryList.join(" ");
+  const combined = `${value} ${categories}`;
+  if (/\bhackathon\b|\bhack-a-thon\b/.test(combined)) return { relevant: true, category: "hackathon", score: 95 };
+  if (/boot\s?camp|developer intensive|coding intensive/.test(combined)) return { relevant: true, category: "bootcamp", score: 88 };
+  if (/professional certification|certification exam|certificate programme|certificate program|certification course/.test(combined)) return { relevant: true, category: "certification", score: 86 };
+  if (/online course|self[- ]paced course|course enrollment|course enrolment|learning path|massive open online course|\bmooc\b/.test(combined)) return { relevant: true, category: "course", score: 85 };
+  if (/case\s?(study|competition|challenge)|business case/.test(combined)) return { relevant: true, category: "case-competition", score: 84 };
+  if (/coding contest|programming contest|code jam|coding challenge|\bctf\b|capture the flag|algorithm contest|developer challenge|open source sprint/.test(combined) || /\bcoding\b|\bcontest\b/.test(categories) && /code|program|developer|software|algorithm|security/.test(value)) return { relevant: true, category: "coding-event", score: 82 };
+  const explicitCategory = categoryList.find(category => OPPORTUNITY_CATEGORIES.has(category));
+  if (explicitCategory) return { relevant: true, category: explicitCategory, score: 80 };
   const weak = /\bhack\b.{0,30}\b(build|event|challenge|competition)\b/.test(value);
   return { relevant: weak, category: weak ? "hackathon" : "", score: weak ? 65 : 0 };
 }
@@ -126,7 +133,7 @@ function extractLocation(text, source) {
   const region = /delhi-ncr/i.test(sourceUrl) ? "Delhi NCR" :
     (parts.length > 1 && !/^india$/i.test(parts[1]) ? parts[1] :
       (india ? (indianCityRegions.find(([, re]) => re.test(location))?.[0] || "") : ""));
-  const country = india ? "India" : (parts.length > 2 ? parts[parts.length - 1] : (/\bonline\b/i.test(text) ? "Global / Online" : ""));
+  const country = india ? "India" : (parts.length > 2 ? parts[parts.length - 1] : "");
   return { location, city, region, country };
 }
 
@@ -141,6 +148,7 @@ function parseCandidate(item, source) {
   const categories = item.categories || item.category || [];
   const sourceHint = String(source.feedUrl || "");
   const categoryHints = [...(Array.isArray(categories) ? categories : [categories])];
+  if (OPPORTUNITY_CATEGORIES.has(String(source.category || "").toLowerCase())) categoryHints.push(source.category);
   if (/coding-contests/i.test(sourceHint)) categoryHints.push("coding contest");
   if (/case-competitions/i.test(sourceHint)) categoryHints.push("case competition");
   if (/bootcamps/i.test(sourceHint)) categoryHints.push("bootcamp");
@@ -154,7 +162,7 @@ function parseCandidate(item, source) {
   const now = new Date();
   const expired = deadline && deadline.getTime() < now.getTime();
   const id = sha(sourceUrl).slice(0, 40);
-  const titleKey = sha(title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()).slice(0, 40);
+  const titleKey = sha(`${relevance.category}:${title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`).slice(0, 40);
   const organizerFallback = item.creator || item.author || source.organizer || source.name || "Source publisher";
   const prize = extractPrize(text);
   const location = extractLocation(text, source);
@@ -199,38 +207,95 @@ function isDuplicateCandidate(data) {
   return Boolean(data && data.title && data.sourceUrl && data.discoveryScore >= 65 && ["hackathon","coding-event","case-competition","bootcamp","course","certification"].includes(data.category));
 }
 async function storeCandidate(candidate) {
-  const urlFingerprint = db.collection("eventFingerprints").doc(sha(candidate.sourceUrl));
-  const titleFingerprint = db.collection("eventFingerprints").doc(`title_${candidate.titleKey}`);
+  const fingerprints = db.collection("eventFingerprints");
+  const events = db.collection("hackathons");
+  const urlFingerprint = fingerprints.doc(sha(candidate.sourceUrl));
+  const titleFingerprint = fingerprints.doc(`title_${candidate.titleKey}`);
   let eventId = candidate.id;
+
   await db.runTransaction(async tx => {
-    const [urlSnap, titleSnap] = await Promise.all([tx.get(urlFingerprint), tx.get(titleFingerprint)]);
-    eventId = urlSnap.exists ? urlSnap.data().eventId : (titleSnap.exists ? titleSnap.data().eventId : candidate.id);
-    const eventRef = db.collection("hackathons").doc(eventId);
-    const existing = await tx.get(eventRef);
-    const previous = existing.exists ? existing.data() : {};
-    const sources = [...new Set([...(previous.sourceIds || []), ...(candidate.sourceIds || [])])].slice(0, 20);
+    const [urlSnap, titleSnap] = await Promise.all([
+      tx.get(urlFingerprint),
+      tx.get(titleFingerprint)
+    ]);
+
+    const urlEventId = urlSnap.exists ? urlSnap.data().eventId : null;
+    const titleEventId = titleSnap.exists ? titleSnap.data().eventId : null;
+    const categoryEventId = sha(`${candidate.category}:${candidate.sourceUrl}`).slice(0, 40);
+    const possibleIds = [...new Set([
+      urlEventId, titleEventId, candidate.id, categoryEventId
+    ].filter(Boolean))];
+
+    const possibleRefs = possibleIds.map(id => events.doc(id));
+    const possibleSnaps = await Promise.all(possibleRefs.map(ref => tx.get(ref)));
+
+    const compatible = new Map();
+    for (let i = 0; i < possibleIds.length; i++) {
+      const snap = possibleSnaps[i];
+      if (snap.exists && snap.data().category === candidate.category) {
+        compatible.set(possibleIds[i], snap);
+      }
+    }
+
+    // Resolve IDs using the locally tested category-isolation helper.
+    const categoriesById = Object.fromEntries(
+      possibleIds.flatMap((id, i) =>
+        possibleSnaps[i].exists
+          ? [[id, possibleSnaps[i].data().category]]
+          : []
+      )
+    );
+
+    eventId = resolveEventId({
+      candidateCategory: candidate.category,
+      candidateId: candidate.id,
+      categoryEventId,
+      urlEventId,
+      titleEventId,
+      categoriesById
+    });
+
+    const eventRef = events.doc(eventId);
+    const existing = compatible.get(eventId);
+
+    if (existing && existing.data().category !== candidate.category) {
+      throw new Error("Refusing to merge an event from a different category.");
+    }
+
+    const previous = existing ? existing.data() : {};
+
+    const sources = [...new Set([
+      ...(previous.sourceIds || []),
+      ...(candidate.sourceIds || [])
+    ])].slice(0, 20);
+
     const merged = {
       ...candidate,
-      ...(!candidate.registrationDeadline && previous.registrationDeadline ? { registrationDeadline: previous.registrationDeadline } : {}),
-      ...(previous.officialRegistrationUrl ? { officialRegistrationUrl: previous.officialRegistrationUrl } : {}),
+      ...(!candidate.registrationDeadline && previous.registrationDeadline
+        ? { registrationDeadline: previous.registrationDeadline } : {}),
+      ...(previous.officialRegistrationUrl
+        ? { officialRegistrationUrl: previous.officialRegistrationUrl } : {}),
       ...(previous.startAt ? { startAt: previous.startAt } : {}),
       ...(previous.endAt ? { endAt: previous.endAt } : {}),
       ...(previous.mode ? { mode: previous.mode } : {}),
       sourceIds: sources,
       firstSeenAt: previous.firstSeenAt || SERVER_TIME(),
-      updatedAt: SERVER_TIME(), lastSeenAt: SERVER_TIME()
+      updatedAt: SERVER_TIME(),
+      lastSeenAt: SERVER_TIME()
     };
-    // Once a human/admin enriches official details, RSS refreshes do not overwrite them.
+
     if (previous.organizerVerified === true) {
       merged.organizer = previous.organizer;
       merged.officialEventUrl = previous.officialEventUrl;
       merged.officialRegistrationUrl = previous.officialRegistrationUrl;
       merged.verificationStatus = previous.verificationStatus;
     }
+
     tx.set(eventRef, merged, { merge: true });
     tx.set(urlFingerprint, { eventId, updatedAt: SERVER_TIME() }, { merge: true });
     tx.set(titleFingerprint, { eventId, updatedAt: SERVER_TIME() }, { merge: true });
   });
+
   return eventId;
 }
 async function readEnabledSources() {
@@ -289,8 +354,16 @@ function directListingCandidate(platform, item) {
   if (endAt && endAt.getTime() < Date.now()) return null;
 
   const address = item.address_with_country_logo || item.address || item.location || {};
-  const country = cleanText(firstValue(address.country?.name, address.country_name, item.country, item.country_name,
-    platform.platform === "Unstop" ? "India" : "Global / Online"), 80);
+  const countryValue = firstValue(
+    address.country?.name,
+    address.country_name,
+    typeof item.country === "object" && item.country !== null ? item.country.name : item.country,
+    item.country_name
+  );
+  const country = cleanText(
+    typeof countryValue === "string" || typeof countryValue === "number" ? countryValue : "",
+    80
+  );
   const city = cleanText(firstValue(address.city, item.city, item.location?.city), 100);
   const region = cleanText(firstValue(address.state, item.state, item.location?.state), 100);
   const modeRaw = String(firstValue(item.region, item.mode, item.format, item.event_mode, "") || "").toLowerCase();
@@ -301,7 +374,7 @@ function directListingCandidate(platform, item) {
   const prize = prizeRows.map(row => [row.rank, row.cash, row.currencyCode || row.currency].filter(Boolean).join(" ")).filter(Boolean).join("; ").slice(0, 200);
   const isFree = item.isPaid === false || item.is_paid === false ? true : item.isPaid === true || item.is_paid === true ? false : null;
   const text = `${title} ${description}`;
-  const titleKey = sha(title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()).slice(0, 40);
+  const titleKey = sha(`hackathon:${title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`).slice(0, 40);
   const id = sha(sourceUrl).slice(0, 40);
   const expired = deadline && deadline.getTime() < Date.now();
   return {
@@ -315,7 +388,9 @@ function directListingCandidate(platform, item) {
     tracks: skills, technologies: skills, tags: skills, skills,
     level: "Check eligibility on provider site", teamSize: cleanText(firstValue(req.max_team_size, item.team_size, item.team), 40),
     prize, prizePool: null, currency: null, isFree, price: isFree === true ? "Free" : isFree === false ? "Paid" : "Check provider",
-    eligibility: cleanText(firstValue(item.eligibility, item.eligibility_text, "Check the organiser's eligibility rules"), 500),
+    eligibility: cleanText(firstValue(item.eligibility, item.eligibility_text, item.eligibility_criteria, "Check the organiser's eligibility rules"), 500),
+    eligibleCountries: Array.isArray(item.eligible_countries) ? item.eligible_countries.map(v => cleanText(v?.name || v, 80)).filter(Boolean).slice(0, 50) : [],
+    isWorldwide: item.is_worldwide === true || item.worldwide === true,
     sourcePlatform: platform.platform, sourceType: "hackathon", sourceName: platform.name,
     attributionText: `Listing imported directly from ${platform.name}; confirm details on the organiser's page.`,
     verificationStatus: "source-attributed", status: expired ? "expired" : "upcoming", visibility: "public", autoPublished: true,
@@ -404,7 +479,7 @@ async function ingestOpenHpiCourses(summary) {
       const description = cleanText(course.description || course.abstract || "", 2200);
       const abstract = cleanText(course.abstract || description, 1400);
       const id = sha(url).slice(0, 40);
-      const titleKey = sha(title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()).slice(0, 40);
+      const titleKey = sha(`course:${title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`).slice(0, 40);
       const candidate = {
         id, titleKey, title, category: "course", opportunityType: "course",
         organizer: "Hasso Plattner Institute / openHPI", summary: abstract || "Online course listing from openHPI.",
@@ -413,7 +488,7 @@ async function ingestOpenHpiCourses(summary) {
         registrationDeadline: null,
         startAt: validStart ? Timestamp.fromDate(validStart) : null,
         endAt: validEnd ? Timestamp.fromDate(validEnd) : null,
-        timezone: "UTC", mode: "Online", location: "Online", city: "", region: "", country: "Global / Online",
+        timezone: "UTC", mode: "Online", location: "Online", city: "", region: "", country: "",
         tracks: categories, technologies: [], tags: categories, skills: categories,
         level: "Open to all", teamSize: "", prize: "", prizePool: null, currency: null,
         isFree: null, price: "Check provider",
@@ -539,14 +614,16 @@ exports.addDiscoverySource = onCall({ enforceAppCheck: false }, async request =>
   requireAdmin(request);
   const name = cleanText(request.data?.name, 100);
   const feedUrl = safeHttps(request.data?.feedUrl);
+  const requestedCategory = String(request.data?.category || "").trim().toLowerCase();
+  const category = OPPORTUNITY_CATEGORIES.has(requestedCategory) ? requestedCategory : "Community";
   if (!name || !feedUrl) throw new HttpsError("invalid-argument", "Provide a source name and a valid HTTPS RSS feed URL.");
   const id = sha(canonicalUrl(feedUrl)).slice(0, 32);
   await db.collection("discoverySources").doc(id).set({
-    name, type: "rss", platform: "RSS", category: "Community", feedUrl,
+    name, type: "rss", platform: "RSS", category, feedUrl,
     enabled: true, autoPublish: request.data?.autoPublish !== false,
     createdAt: SERVER_TIME(), updatedAt: SERVER_TIME()
   }, { merge: true });
-  return { id, name, feedUrl, autoPublish: request.data?.autoPublish !== false };
+  return { id, name, feedUrl, category, autoPublish: request.data?.autoPublish !== false };
 });
 exports.setDiscoverySourceEnabled = onCall({ enforceAppCheck: false }, async request => {
   requireAdmin(request);

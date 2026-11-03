@@ -303,7 +303,7 @@ function eventCategoryValue(event) {
   if (/case competition|case study challenge|business case/.test(text)) return "case-competition";
   if (/hackathon|hack-a-thon/.test(text)) return "hackathon";
   if (/code jam|coding contest|programming contest|ctf|capture the flag|developer meetup|tech conference|open source sprint|code challenge/.test(text)) return "coding-event";
-  return "hackathon";
+  return "other";
 }
 function eventModeValue(event) {
   const value = String(event.mode || event.format || "").toLowerCase();
@@ -322,7 +322,7 @@ function populateEventFilterOptions() {
     el.innerHTML = `<option value="all">${label}</option>` + values.filter(Boolean).sort((a,b) => a.localeCompare(b)).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
     if ([...el.options].some(o => o.value === selected)) el.value = selected;
   };
-  setOptions("#eventCountry", [...new Set(events.map(e => e.country || "").filter(Boolean))], "All countries");
+  setOptions("#eventCountry", [...new Set(events.map(e => e.country || "").filter(Boolean))], "All event countries");
   setOptions("#eventRegion", [...new Set(events.map(e => e.region || e.state || "").filter(Boolean))], "All regions");
   setOptions("#eventTrack", [...new Set(events.flatMap(e => e.tracks || e.tags || []))], "All tracks");
   setOptions("#eventSource", [...new Set(events.map(e => e.sourceName || e.sourcePlatform || "").filter(Boolean))], "All sources");
@@ -334,6 +334,7 @@ function filteredEvents() {
   const category = get("#eventCategory"); const mode = get("#eventMode"); const track = get("#eventTrack");
   const country = get("#eventCountry"); const region = get("#eventRegion"); const level = get("#eventLevel");
   const cost = get("#eventCost"); const deadlineFilter = get("#eventDeadline"); const source = get("#eventSource");
+  const eligibilityFilter = get("#eventEligibility");
   const now = Date.now();
   let list = events.filter(event => {
     if (event.status === "expired") return false;
@@ -341,6 +342,12 @@ function filteredEvents() {
     const eventMode = eventModeValue(event);
     const eventCountry = String(event.country || "").toLowerCase();
     const eventRegion = String(event.region || event.state || "").toLowerCase();
+    const eligibilityText = String(event.eligibility || "").toLowerCase();
+    const eligibleCountries = Array.isArray(event.eligibleCountries) ? event.eligibleCountries.map(v => String(v).toLowerCase()) : [];
+    const eligibilityScope = event.isWorldwide === true || /worldwide|open to (?:all|everyone)|global eligibility|any country/.test(eligibilityText) ? "worldwide"
+      : (eligibleCountries.length ? (eligibleCountries.includes("india") ? "india" : "country-specific")
+      : (/india(?:n)? (?:students|residents|citizens)|only.*india|india-based|eligible in india/.test(eligibilityText) ? "india"
+      : (/only (?:residents|citizens)|must be (?:a )?resident|country-specific|restricted to/.test(eligibilityText) ? "country-specific" : "unknown")));
     const searchable = [event.title,event.organizer,event.summary,event.description,event.sourceName,event.location,event.city,event.region,event.country,event.eligibility,event.level,...(event.tracks||[]),...(event.technologies||[]),...(event.tags||[]),...(event.skills||[])].join(" ").toLowerCase();
     const trackMatch = track === "all" || (event.tracks || event.tags || []).some(t => t.toLowerCase() === track.toLowerCase());
     const deadline = tsMillis(event.registrationDeadline);
@@ -355,6 +362,7 @@ function filteredEvents() {
       && (source === "all" || String(event.sourceName || event.sourcePlatform || "").toLowerCase() === source.toLowerCase())
       && (country === "all" || eventCountry === country.toLowerCase())
       && (region === "all" || eventRegion === region.toLowerCase())
+      && (eligibilityFilter === "all" || eligibilityScope === eligibilityFilter || (eligibilityFilter === "india" && eligibilityScope === "worldwide"))
       && (level === "all" || String(event.level || "Open to all").toLowerCase() === level.toLowerCase())
       && (cost === "all" || (cost === "free" ? explicitlyFree : explicitlyPaid))
       && (deadlineFilter === "all" || (deadlineFilter === "open" ? !deadline : deadline && deadline >= now && deadline <= now + Number(deadlineFilter)*86400000));
@@ -1016,8 +1024,8 @@ function bindUI() {
   $$("[data-close]").forEach(button => button.addEventListener("click", () => { const id = button.dataset.close; if (id === "profileModal") closeProfileModal(); else hideModal(id); }));
   $$(".modal-backdrop").forEach(modal => modal.addEventListener("click", e => { if (e.target === modal) { if (modal.id === "profileModal") closeProfileModal(); else hideModal(modal.id); } }));
   document.addEventListener("keydown", e => { if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") closeProfileModal(); });
-  ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
-  $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
+  ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
+  $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
   $("#refreshEventsBtn").onclick = loadEvents;
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);

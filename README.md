@@ -133,3 +133,11 @@ This release is based on the supplied v5.1 ZIP. It refreshes the interface with 
 - Existing Firestore rules must be deployed for the group soft-delete feature to work. Review `firestore.rules` before deployment and test against a non-production Firebase project first.
 
 See `docs/HACKSTOP_COMPLETE_UPGRADE_PROMPT.md` for the full requested product specification, including the features still to implement.
+
+
+## Opportunity directory data notes
+
+- `country` represents the event's actual country/location when the source supplies it; online delivery does not imply a country. Unknown event countries are left blank rather than stored as `Global / Online`.
+- `eligibility` is organiser-provided text. `eligibleCountries` and `isWorldwide` are optional structured fields when a source supplies them. The directory's eligibility filter is best-effort and users should confirm rules on the organiser's page.
+- Unrecognised opportunity categories are displayed under `Other / unclassified`, not silently labelled as hackathons.
+- Provider connectors are public-source integrations and can change when providers change their APIs or response formats. A successful import is source-attributed, not an independent verification of event details.

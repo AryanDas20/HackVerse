@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local Firebase files
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# macOS files
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
