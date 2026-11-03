@@ -10,6 +10,7 @@ const Parser = require("rss-parser");
 const crypto = require("node:crypto");
 const { resolveEventId } = require("./lib/event-id");
 const { cleanText } = require("./lib/clean-text");
+const { findListingArray } = require("./lib/listing-array");
 
 if (!getApps().length) initializeApp();
 const db = getFirestore();
@@ -313,22 +314,10 @@ async function readEnabledSources() {
 const DIRECT_PLATFORM_SOURCES = [
   { id: "direct-unstop", name: "Unstop", platform: "Unstop", url: "https://unstop.com/api/public/opportunity/search-result?opportunity=hackathons&per_page=100&oppstatus=open", parser: "unstop" },
   { id: "direct-devpost", name: "Devpost", platform: "Devpost", url: "https://devpost.com/api/hackathons", parser: "devpost" },
-  { id: "direct-devfolio", name: "Devfolio", platform: "Devfolio", url: "https://api.devfolio.co/api/hackathons", parser: "generic" },
+  { id: "direct-devfolio", name: "Devfolio", platform: "Devfolio", url: "https://api.devfolio.co/api/hackathons?page=1", parser: "generic" },
   { id: "direct-hackerearth", name: "HackerEarth", platform: "HackerEarth", url: "https://www.hackerearth.com/chrome-extension/events/", parser: "generic" }
 ];
 function firstValue(...values) { return values.find(v => v !== undefined && v !== null && v !== ""); }
-function findListingArray(body) {
-  if (Array.isArray(body)) return body;
-  const keys = ["data", "results", "hackathons", "events", "items", "opportunities"];
-  for (const key of keys) {
-    const value = body && body[key];
-    if (Array.isArray(value)) return value;
-    if (value && typeof value === "object") {
-      for (const nested of keys) if (Array.isArray(value[nested])) return value[nested];
-    }
-  }
-  return [];
-}
 function directListingCandidate(platform, item) {
   const org = firstValue(item.organisation?.name, item.organization?.name, item.organizer?.name,
     item.organizer, item.company?.name, item.company, item.host, item.creator, platform.name);
@@ -342,9 +331,9 @@ function directListingCandidate(platform, item) {
   const req = item.regnRequirements || item.registration || item.registration_details || {};
   const deadlineRaw = firstValue(req.end_regn_dt, req.deadline, item.registration_deadline, item.deadline,
     item.submission_period_dates?.end, item.ends_at, item.end_utc_tz, item.end_date);
-  const startRaw = firstValue(item.start_date, item.startDate, item.starts_at, item.start_at,
+  const startRaw = firstValue(item.start_tz, item.start_timestamp, item.start_date, item.startDate, item.starts_at, item.start_at,
     item.submission_period_dates?.start, item.festival?.start_date);
-  const endRaw = firstValue(item.end_date, item.endDate, item.ends_at, item.end_at,
+  const endRaw = firstValue(item.end_tz, item.end_timestamp, item.end_date, item.endDate, item.ends_at, item.end_at,
     item.festival?.end_date);
   const parseDate = value => { const date = value ? new Date(value) : null; return date && !Number.isNaN(date.getTime()) ? date : null; };
   const deadline = parseDate(deadlineRaw);
