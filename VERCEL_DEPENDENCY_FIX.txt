@@ -1,0 +1,11 @@
+HackVerse Vercel dependency fix
+================================
+
+Changed the root package.json firebase-admin dependency from ^14.5.0 to exact 13.5.0.
+Reason: the deployed firebase-admin 14.x dependency tree resolved jwks-rsa 4.x and jose 6.x,
+which triggered ERR_REQUIRE_ESM in the Vercel CommonJS function runtime.
+
+Deploy from the repository root so Vercel uses this root package.json.
+After deployment, inspect the Vercel runtime logs and test /api/agent37/chat.
+This change addresses the observed module-loading crash only; it does not verify
+Agent37 credentials/API availability or repair Firestore history rules.
