@@ -15,9 +15,15 @@ service cloud.firestore {
         ? get(/databases/$(database)/documents/publicProfiles/$(uid)).data.displayName
         : get(/databases/$(database)/documents/users/$(uid)).data.profileData.displayName;
     }
+    function ownsAiConversation(conversationId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/aiConversations/$(conversationId))
+        && get(/databases/$(database)/documents/aiConversations/$(conversationId)).data.ownerUid == request.auth.uid;
+    }
 
     match /hackathons/{eventId} {
-      allow read: if resource.data.visibility == 'public' || isAdmin();
+      // Opportunity details are members-only. Admins can still read all listings.
+      allow read: if signedIn() && (resource.data.visibility == 'public' || isAdmin());
       allow create, update, delete: if isAdmin();
     }
 
@@ -95,6 +101,10 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'lastMessage','lastMessageSender','lastMessageAt','updatedAt'
             ]))
+          || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAtBy'])
+            && request.resource.data.readAtBy is map
+            && request.resource.data.readAtBy.diff(resource.data.get('readAtBy', {})).affectedKeys().hasOnly([request.auth.uid])
+            && request.resource.data.readAtBy.get(request.auth.uid, null) is timestamp)
           ||
           (resource.data.isGroup == true
             && request.auth.uid == resource.data.createdBy
@@ -126,23 +136,95 @@ service cloud.firestore {
         allow create: if isConversationMember(conversationId)
           && request.resource.data.authorUid == request.auth.uid
           && request.resource.data.text is string
-          && request.resource.data.text.size() > 0
           && request.resource.data.text.size() <= 2000
+          && (request.resource.data.text.size() > 0 || ('attachment' in request.resource.data && request.resource.data.attachment is map))
           && request.resource.data.authorName == profileDisplayName(request.auth.uid)
-          && request.resource.data.keys().hasOnly(['authorUid','authorName','text','createdAt']);
-        allow update: if isConversationMember(conversationId)
-          && resource.data.authorUid == request.auth.uid
-          && request.time < resource.data.createdAt + duration.value(15, 'm')
-          && request.resource.data.authorUid == resource.data.authorUid
-          && request.resource.data.authorName == resource.data.authorName
-          && request.resource.data.createdAt == resource.data.createdAt
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'text','edited','editedAt','deleted','deletedAt'
-          ])
-          && request.resource.data.text is string
-          && request.resource.data.text.size() <= 2000;
+          && request.resource.data.keys().hasOnly(['authorUid','authorName','text','createdAt','kind','attachment','replyTo','forwarded'])
+          && (!('attachment' in request.resource.data) || (
+            request.resource.data.attachment is map
+            && request.resource.data.attachment.keys().hasOnly(['name','type','size','storagePath'])
+            && request.resource.data.attachment.name is string
+            && request.resource.data.attachment.name.size() <= 120
+            && request.resource.data.attachment.type is string
+            && request.resource.data.attachment.storagePath is string
+            && request.resource.data.attachment.storagePath.size() <= 300
+            && request.resource.data.attachment.storagePath.matches('chat-media/' + conversationId + '/' + request.auth.uid + '/.*')
+            && request.resource.data.attachment.size <= 15728640
+          ))
+          && (!('replyTo' in request.resource.data) || request.resource.data.replyTo.keys().hasOnly(['messageId','authorName','text']))
+          && (!('kind' in request.resource.data) || request.resource.data.kind in ['text','image','video','audio','voice','file'])
+          && (!('forwarded' in request.resource.data) || request.resource.data.forwarded is bool);
+        allow update: if isConversationMember(conversationId) && (
+          (resource.data.authorUid == request.auth.uid
+            && request.time < resource.data.createdAt + duration.value(15, 'm')
+            && request.resource.data.authorUid == resource.data.authorUid
+            && request.resource.data.authorName == resource.data.authorName
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text','edited','editedAt','deleted','deletedAt'])
+            && request.resource.data.text is string
+            && request.resource.data.text.size() <= 2000)
+          || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions'])
+            && request.resource.data.reactions is map
+            && request.resource.data.reactions.diff(resource.data.get('reactions', {})).affectedKeys().hasOnly([request.auth.uid])
+            && request.resource.data.reactions.get(request.auth.uid, '') in ['', '👍','❤️','😂','😮','😢','🔥','🎉','🤝','🚀'])
+        );
         allow delete: if false;
       }
+      match /typing/{userId} {
+        allow read: if isConversationMember(conversationId);
+        allow create, update: if isSelf(userId) && isConversationMember(conversationId)
+          && request.resource.data.keys().hasOnly(['uid','displayName','updatedAt'])
+          && request.resource.data.uid == userId
+          && request.resource.data.displayName is string
+          && request.resource.data.updatedAt is timestamp;
+        allow delete: if isSelf(userId) && isConversationMember(conversationId);
+      }
+    }
+
+    // Private Agent37 conversation history. Only its owner can read or write it.
+    match /aiConversations/{conversationId} {
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'ownerUid','title','preview','mode','agentSessionId','createdAt','updatedAt'
+        ])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() <= 100
+        && request.resource.data.preview is string
+        && request.resource.data.preview.size() <= 160
+        && request.resource.data.mode in ['chat','wish']
+        && request.resource.data.agentSessionId == ''
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+      allow read, delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'title','preview','mode','updatedAt'
+        ])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() <= 100
+        && request.resource.data.preview is string
+        && request.resource.data.preview.size() <= 160
+        && request.resource.data.mode in ['chat','wish']
+        && request.resource.data.updatedAt is timestamp;
+
+      match /messages/{messageId} {
+        allow read, delete: if ownsAiConversation(conversationId);
+        allow create: if ownsAiConversation(conversationId)
+          && request.resource.data.keys().hasOnly(['role','content','createdAt'])
+          && request.resource.data.role in ['user','assistant']
+          && request.resource.data.content is string
+          && request.resource.data.content.size() > 0
+          && request.resource.data.content.size() <= 12000;
+        allow update: if false;
+      }
+    }
+
+    // Daily AI usage is counted only by the trusted Vercel API route.
+    match /aiUsageDaily/{usageId} {
+      allow read, write: if false;
     }
 
     match /projects/{projectId} {

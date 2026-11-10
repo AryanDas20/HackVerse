@@ -1,6 +1,18 @@
-# HackVerse v5 — Opportunity discovery and builder community
+# HackVerse v5.5 — Agent37, messaging and builder community
 
-HackVerse is a mobile-first web app built with HTML, CSS, JavaScript modules, Firebase Authentication and Cloud Firestore. It uses no Firebase Cloud Storage and does not require a Firebase Blaze upgrade for the scheduled discovery pipeline included in this package.
+HackVerse is a mobile-first web app built with HTML, CSS, JavaScript modules, Firebase Authentication and Cloud Firestore. Chat attachments are stored in a private Supabase Storage bucket; the Firebase project does not need Firebase Storage.
+
+## Current v5.5 release additions
+- Agent37 Website Help chatbot and AI Wish action planner, with per-user conversation history. AI Wish requires review and explicit approval before supported website actions are applied.
+- WhatsApp-inspired realtime messaging: direct/group chats, replies, emoji reactions, edit/soft-delete, text forwarding, starred items, typing and read indicators, files/media and voice notes. Media uses Firebase-ID-token-verified Vercel endpoints and short-lived Supabase signed URLs.
+- Separate hash-routed areas for Explore, Saved, Community, Messages, Profile, Activity and Settings.
+- Nine-step guided website tour which navigates to and spotlights each feature.
+- Activity centre for unread/recent chats and reminders for saved opportunities approaching their registration deadline. Browser notifications and sound work only while the site is open and permitted by browser settings.
+- Settings for theme, animation intensity, text size, profile visibility and notification preferences.
+- Automatic skill-coverage team suggestions, with balanced team allocation and candidate review before group creation. This matcher is deterministic profile matching, not a generative AI model.
+- A standalone illustrated guide in `public/HackVerse-Website-Guide.pdf` and `public/guide.html`. The PDF can be downloaded from the home hero or footer. Its UI visuals are explanatory mockups, not live production screenshots.
+
+See `docs/AGENT37_AI_SETUP.md`, `docs/WHATSAPP_INSPIRED_MESSAGING.md`, and `docs/WEBSITE_TOUR_AND_GUIDE.md` before deploying.
 
 ## What changed in v5
 
@@ -26,7 +38,7 @@ HackVerse is a mobile-first web app built with HTML, CSS, JavaScript modules, Fi
 - Group creators/admins can add and remove members. Group creation includes a searchable member picker and selected-member chips; groups support up to 11 people including the creator.
 - Smart team matching lets the user specify the project name, team size and needed skills/roles, review candidates, select members and create a team chat.
 
-The current chat is text-only. It does not include attachments, voice/video calls, typing indicators, read receipts, reactions, message forwarding or push notifications. No image/file uploads are provided because Firebase Storage is intentionally not used.
+The current messaging implementation includes replies, reactions, edit/soft-delete, text forwarding, attachments, voice notes, typing indicators, read receipts and inbox filters. Private media uses Supabase Storage; see the Agent37 setup guide for its required bucket and Vercel variables. It is not WhatsApp parity and does not include end-to-end encryption, calls, disappearing messages, offline push or cloud backup.
 
 ## Existing discovery automation retained
 
@@ -44,15 +56,15 @@ The discovery engine includes independent direct public-listing connectors for U
 
 ## Important: preserve your existing Firebase configuration before replacing files
 
-This ZIP intentionally contains a placeholder `public/firebase-config.js`; it does not contain your private deployment state or actual Web App config. Before replacing your old project folder:
+This ZIP includes a browser-side Firebase Web App configuration for project `hackverseneo`, and `.firebaserc` is also set to `hackverseneo`. Compare these values with your Firebase Console before deployment; if your live app uses another Firebase project, restore that project's `public/firebase-config.js` and `.firebaserc` from your backup. Before replacing your old project folder:
 
 1. Make a backup copy of the existing `HackVerse` folder.
-2. Copy your working `public/firebase-config.js` from the old folder into the new v5 folder, replacing the placeholder.
-3. Copy your existing hidden `.firebaserc` file into the new folder if you use Firebase CLI locally. Do not overwrite it with `.firebaserc.example`.
+2. Preserve or restore the correct `public/firebase-config.js` for the Firebase project you intend to use.
+3. Preserve or restore your existing hidden `.firebaserc` file if you use Firebase CLI locally. Do not overwrite it with `.firebaserc.example`.
 4. Keep your existing Firebase project `hackverseneo`, Vercel project and GitHub repository connection. This ZIP does not change those cloud resources.
 5. Preserve any local-only files you need, such as `.env.*`, `functions/package-lock.json`, or editor settings. Do not add private environment files or service-account keys to Git.
 
-The code and Firestore schema are updated, but no cloud database is changed by extracting this ZIP.
+The code and Firestore schema are updated, but no cloud database or Supabase project is changed by extracting this ZIP. Configure your own Supabase project before testing chat attachments.
 
 ## Deploying the updated version
 
@@ -76,7 +88,7 @@ The rules update adds public/private profile handling, group membership administ
 The project is connected to `https://github.com/AryanDas20/VerseNeo.git`. Review changes before committing. Then:
 
 ```bash
-git add README.md docs firestore.rules functions public .github/workflows/hackathon-discovery.yml
+git add README.md VERSION.txt .env.example docs firestore.rules firestore.indexes.json functions public api package.json vercel.json .gitignore .github/workflows/hackathon-discovery.yml
 git commit -m "Upgrade HackVerse opportunity and social workspace"
 git push origin main
 ```
@@ -108,8 +120,9 @@ Open your Vercel site and confirm:
 
 - Frontend: vanilla JavaScript ES modules, Firebase Web SDK 13.1, Firestore realtime listeners.
 - Backend discovery: Node.js 22, `firebase-admin` modular API v14, `firebase-functions` v2 exports, `rss-parser`.
-- Hosting: compatible with Vercel static deployment or Firebase Hosting.
-- Storage: no Firebase Storage import, bucket, upload code or dependency.
+- Hosting: static frontend can be served by Vercel or Firebase Hosting; the Agent37 connector in this release requires the Vercel `/api/agent37/chat` function (or an equivalent separately deployed secure API).
+- AI backend: `api/agent37/chat.js` (Firebase Admin ID-token verification, private Agent37 proxy, session continuity and per-user daily rate limiting).
+- Chat media: private Supabase Storage bucket (`chat-media`) accessed through `/api/chat-media`; Firebase Storage is not used.
 - Rules: `firestore.rules`; indexes: `firestore.indexes.json`.
 - Discovery runner: `functions/scripts/run-discovery.js`.
 - Admin claim helper: `functions/scripts/set-admin.js` (uses Application Default Credentials; keep credentials outside this project).
@@ -141,3 +154,14 @@ See `docs/HACKSTOP_COMPLETE_UPGRADE_PROMPT.md` for the full requested product sp
 - `eligibility` is organiser-provided text. `eligibleCountries` and `isWorldwide` are optional structured fields when a source supplies them. The directory's eligibility filter is best-effort and users should confirm rules on the organiser's page.
 - Unrecognised opportunity categories are displayed under `Other / unclassified`, not silently labelled as hackathons.
 - Provider connectors are public-source integrations and can change when providers change their APIs or response formats. A successful import is source-attributed, not an independent verification of event details.
+
+
+## v5.4.0 — Agent37 AI workspace and member-only opportunities
+
+This update adds a floating **HackVerse AI** assistant with Website Help and **AI Wish** modes. The Vercel serverless endpoint verifies the caller's Firebase ID token, calls the user's Agent37 instance without exposing its key to the browser, stores the Agent37 session ID against a private per-user conversation, defaults to Agent37 `ultra` reasoning/orchestration (configurable), and enforces a server-side daily request limit. Conversation headers and messages are stored in owner-only Firestore paths.
+
+AI Wish currently supports reviewed/approved navigation, opportunity search/open/save, public builder search and project creation (private by default). It does not have unrestricted access to every feature, cannot perform destructive/admin/payment actions, and never applies an action until the member confirms.
+
+Opportunity cards and details are now hidden from signed-out visitors, and `firestore.rules` requires authentication for the `hackathons` collection. The `/api/agent37/chat` Vercel Function is required; a Firebase Hosting static deployment alone does not provide that endpoint.
+
+**Setup:** follow [`docs/AGENT37_AI_SETUP.md`](docs/AGENT37_AI_SETUP.md) for the personal Agent37 instance, server-only Vercel environment variables, Firebase service account, rules deployment and test checklist. An instance ID alone is not API authentication; confirm that your Agent37 personal plan exposes a server-to-server key before deploying. No card details or secrets belong in this ZIP. Automated checks and live-service test limitations are recorded in [`docs/RELEASE_TEST_REPORT_v5.4.0.md`](docs/RELEASE_TEST_REPORT_v5.4.0.md).

@@ -14,7 +14,7 @@
 - Message retention controls and notification preferences.
 
 ## Release 3 — collaboration depth
-- Image/document attachments using Firebase Storage and strict file validation.
+- Image/document attachments using private Supabase Storage and membership-verified signed URLs (implemented in v5.5; add retention and quota monitoring next).
 - Typing indicators, read receipts, reactions, message editing/deletion, group membership management.
 - Team recruitment posts, join requests, role slots, and project workspaces.
 

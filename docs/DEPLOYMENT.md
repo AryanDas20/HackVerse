@@ -4,7 +4,7 @@ Firebase Cloud Storage is not used or required. The app uses Firebase Authentica
 
 ## Preserve existing project settings
 
-Before replacing the old local folder, back it up and copy your existing `public/firebase-config.js` and hidden `.firebaserc` into the v5 folder. This ZIP intentionally includes a placeholder Web App config, not your real Firebase project settings. Do not overwrite the user's actual config with the placeholder.
+Before replacing the old local folder, back it up and compare `public/firebase-config.js` and `.firebaserc` with your Firebase Console. This archive is configured for the `hackverseneo` project; restore your backed-up values if your live app uses a different Firebase project.
 
 ## Frontend and Firestore
 

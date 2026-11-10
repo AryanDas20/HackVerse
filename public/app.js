@@ -9,17 +9,21 @@ import {
   startAt, endAt, limit, serverTimestamp, addDoc, setDoc, deleteDoc,
   onSnapshot, updateDoc, runTransaction
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { supabaseConfig } from "./supabase-config.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-functions.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const CONFIGURED = Boolean(firebaseConfig.apiKey && !String(firebaseConfig.apiKey).startsWith("YOUR_") && firebaseConfig.projectId && !String(firebaseConfig.projectId).startsWith("YOUR_"));
-let app = null, auth = null, db = null, functions = null, currentUser = null, authMode = "signin", isAdminUser = false;
+let app = null, auth = null, db = null, functions = null, supabaseClient = null, currentUser = null, authMode = "signin", isAdminUser = false;
 let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [];
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
 let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
+let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [];
+let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false;
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const listFrom = value => String(value || "").split(",").map(x => x.trim()).filter(Boolean).slice(0, 30);
@@ -51,10 +55,11 @@ const friendlyError = error => {
 function initFirebase() {
   if (!CONFIGURED) {
     setSystemNotice("Firebase is not configured yet. Add your Web App settings in public/firebase-config.js to enable live data, registration, profiles, and chat.");
-    renderEvents(); renderSaved(); renderPeopleEmpty(); return;
+    updateEventAccessUI(); updateAiAccessUI(); renderEvents(); renderSaved(); renderPeopleEmpty(); return;
   }
   try {
     app = initializeApp(firebaseConfig); auth = getAuth(app); db = getFirestore(app); functions = getFunctions(app);
+    if (supabaseConfig.url && !supabaseConfig.url.startsWith("YOUR_") && supabaseConfig.anonKey && !supabaseConfig.anonKey.startsWith("YOUR_")) supabaseClient = createClient(supabaseConfig.url, supabaseConfig.anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
     onAuthStateChanged(auth, async user => {
       currentUser = user;
       isAdminUser = false;
@@ -65,14 +70,18 @@ function initFirebase() {
       $("#authButton").textContent = user ? "Sign out" : "Sign in";
       $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
       if (!user) {
-        privateProfile = null; publicProfile = null; savedIds.clear(); profileIsMandatory = false; hideModal("profileModal");
+        privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[];renderNotificationCenter(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
+        $("#eventModalContent").innerHTML = "";
         detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
         $("#chatPlaceholder").hidden = false; $("#chatActive").hidden = true;
-        setSystemNotice(""); renderEvents(); searchPeople(); return;
+        activeAiConversationId = null; currentAiMessages = []; pendingAiActions = []; updateAiAccessUI(); renderAiMessages();
+        setSystemNotice(""); updateEventAccessUI(); renderEvents(); searchPeople(); return;
       }
+      updateEventAccessUI();
+      await loadEvents();
       await loadAccountWorkspace();
+      await loadAiHistory();
     });
-    loadEvents();
   } catch (error) {
     console.error("Firebase initialization failed", error);
     setSystemNotice("Firebase could not start. Check the values in public/firebase-config.js.");
@@ -136,7 +145,7 @@ async function loadAccountWorkspace() {
     const pubSnap = await getDoc(doc(db, "publicProfiles", currentUser.uid));
     publicProfile = pubSnap.exists() ? pubSnap.data() : (privateProfile?.profileVisibility === "private" ? (privateProfile?.profileData || null) : null);
     await loadSaved();
-    renderMyProfile();
+    renderMyProfile(); loadSettingsUI(); renderNotificationCenter();
     if (!privateProfile?.profileComplete || !publicProfile) {
       openProfileEditor(true);
     } else {
@@ -273,13 +282,25 @@ async function runDiscoveryManually() {
   finally { button.disabled = false; button.textContent = "Run discovery now ↻"; }
 }
 
+function updateEventAccessUI() {
+  const signedIn = Boolean(currentUser);
+  const homeContent = $("#homeEventsContent"); const homeGate = $("#homeEventsSignInGate");
+  const directoryContent = $("#opportunitiesContent"); const directoryGate = $("#opportunitiesSignInGate");
+  if (homeContent) homeContent.hidden = !signedIn;
+  if (homeGate) homeGate.hidden = signedIn;
+  if (directoryContent) directoryContent.hidden = !signedIn;
+  if (directoryGate) directoryGate.hidden = signedIn;
+}
+
 async function loadEvents() {
   const grid = $("#eventGrid");
+  if (!currentUser) { events = []; updateEventAccessUI(); renderEvents(); renderSaved(); return; }
   if (!db) {
-    grid.innerHTML = '<div class="loading-card">Connect Firebase to load real opportunities. No sample events are bundled with this website.</div>';
+    if (grid) grid.innerHTML = '<div class="loading-card">Connect Firebase to load real opportunities. No sample events are bundled with this website.</div>';
     $("#eventGridAll").innerHTML = '<div class="loading-card">Connect Firebase to load the live opportunity directory.</div>';
     return;
   }
+  updateEventAccessUI();
   grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
     const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(500)));
@@ -459,7 +480,8 @@ function renderEvents() {
   });
 }
 function viewEvent(eventId) {
-  const event = events.find(e => e.id === eventId); if (!event) return;
+  if (!requireAccount()) return;
+  const event = events.find(e => e.id === eventId); if (!event) { toast("Sign in and reload the opportunity directory first."); return; }
   const cat = eventCategoryValue(event).replace("-"," ");
   const rows = [
     ["Opportunity type",cat], ["Organiser",event.organizer || event.sourceName], ["Country",event.country],
@@ -485,7 +507,7 @@ async function loadSaved() {
     try { const snap = await getDocs(collection(db, "users", currentUser.uid, "savedEvents")); snap.forEach(d => savedIds.add(d.id)); }
     catch (error) { console.warn("Saved events unavailable", error); }
   }
-  renderSaved(); renderEvents();
+  renderSaved(); renderEvents(); renderNotificationCenter(); notifyUpcomingDeadlines();
 }
 async function saveEvent(eventId) {
   if (!requireAccount()) return;
@@ -493,8 +515,9 @@ async function saveEvent(eventId) {
   try {
     if (savedIds.has(eventId)) { await deleteDoc(ref); savedIds.delete(eventId); toast("Removed from your shortlist."); }
     else { await setDoc(ref, { eventId, savedAt: serverTimestamp() }); savedIds.add(eventId); toast("Saved to your shortlist."); }
-    renderSaved(); renderEvents();
-  } catch (error) { toast(friendlyError(error)); }
+    renderSaved(); renderEvents(); renderNotificationCenter(); notifyUpcomingDeadlines();
+    return true;
+  } catch (error) { toast(friendlyError(error)); return false; }
 }
 function renderSaved() {
   $("#savedCount").textContent = `${savedIds.size} SAVED`;
@@ -576,8 +599,8 @@ async function viewMember(uid) {
 }
 
 function detachRealtimeListeners() {
-  if (stopInboxListener) stopInboxListener(); if (stopMessageListener) stopMessageListener();
-  stopInboxListener = null; stopMessageListener = null; activeConversationId = null; activeConversation = null;
+  if (stopInboxListener) stopInboxListener(); if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
+  stopInboxListener = null; stopMessageListener = null; stopTypingListener = null; activeConversationId = null; activeConversation = null;
 }
 function beginInboxListener() {
   if (!currentUser || !db) return;
@@ -586,6 +609,10 @@ function beginInboxListener() {
   stopInboxListener = onSnapshot(inboxQuery, snapshot => {
     currentConversations = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(c => !c.deleted).sort((a,b) => tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
     renderConversationList(currentConversations);
+    renderNotificationCenter();
+    const notificationBaselineKey=`hv-inbox-baseline-${currentUser.uid}`;
+    if(localStorage.getItem(notificationBaselineKey)==="1") notifyIncomingActivity(currentConversations);
+    else { currentConversations.forEach(c=>{const stamp=tsMillis(c.lastMessageAt);if(stamp)localStorage.setItem(`hv-notified-${currentUser.uid}-${c.id}`,String(stamp));});localStorage.setItem(notificationBaselineKey,"1"); }
     if (activeConversationId) {
       const latest = currentConversations.find(x => x.id === activeConversationId);
       if (latest) { activeConversation = latest; renderChatHeading(); }
@@ -598,13 +625,40 @@ function conversationLabel(conversation) {
   const otherUid = (conversation.participants || []).find(uid => uid !== currentUser?.uid);
   return names[otherUid] || "Direct message";
 }
+function getChatPreferences() {
+  try { return JSON.parse(localStorage.getItem(`hv-chat-settings-${currentUser?.uid || "guest"}`) || "{}"); }
+  catch { return {}; }
+}
+function setChatPreference(key, value) {
+  const prefs = getChatPreferences(); prefs[key] = value;
+  localStorage.setItem(`hv-chat-settings-${currentUser?.uid || "guest"}`, JSON.stringify(prefs));
+}
+function chatIsUnread(c) {
+  if (!currentUser || c.lastMessageSender === currentUser.uid) return false;
+  return tsMillis(c.lastMessageAt) > tsMillis(c.readAtBy?.[currentUser.uid]);
+}
 function renderConversationList(rows) {
   const term = $("#conversationSearch")?.value.trim().toLowerCase() || "";
-  const visible = rows.filter(c => `${conversationLabel(c)} ${c.lastMessage || ""} ${(c.participantNames ? Object.values(c.participantNames) : []).join(" ")}`.toLowerCase().includes(term));
+  const prefs = getChatPreferences(); const archived = new Set(prefs.archived || []); const pinned = new Set(prefs.pinned || []);
+  let visible = rows.filter(c => `${conversationLabel(c)} ${c.lastMessage || ""} ${(c.participantNames ? Object.values(c.participantNames) : []).join(" ")}`.toLowerCase().includes(term));
+  visible = visible.filter(c => {
+    if (activeChatFilter === "archived") return archived.has(c.id);
+    if (archived.has(c.id)) return false;
+    if (activeChatFilter === "unread") return chatIsUnread(c);
+    if (activeChatFilter === "groups") return c.isGroup;
+    return true;
+  });
+  visible.sort((a,b) => Number(pinned.has(b.id))-Number(pinned.has(a.id)) || tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
   $("#conversationCount").textContent = String(visible.length);
   const list = $("#conversationList");
-  if (!visible.length) { list.innerHTML = `<div class="empty-note">${term ? "No chats match that search." : "No conversations yet. Find a builder and send the first message."}</div>`; return; }
-  list.innerHTML = visible.map(c => `<button class="conversation-item ${c.id === activeConversationId ? "selected" : ""}" data-conversation="${esc(c.id)}"><span class="conversation-avatar">${esc(initials(conversationLabel(c)))}</span><span class="conversation-copy"><b>${esc(conversationLabel(c))}</b><small>${esc(c.lastMessage || (c.isGroup ? "Group created" : "Conversation started"))}</small></span><span class="conversation-kind">${c.isGroup ? "GROUP" : "DM"}</span></button>`).join("");
+  if (!visible.length) { list.innerHTML = `<div class="empty-note">${term ? "No chats match that search." : activeChatFilter === "archived" ? "No archived chats." : "No conversations yet. Find a builder and send the first message."}</div>`; return; }
+  list.innerHTML = visible.map(c => {
+    const unread = chatIsUnread(c); const otherUid = (c.participants || []).find(uid => uid !== currentUser?.uid);
+    const avatar = c.isGroup ? "✦" : initials(c.participantNames?.[otherUid] || conversationLabel(c));
+    const time = tsMillis(c.lastMessageAt) ? new Date(tsMillis(c.lastMessageAt)).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "";
+    const preview = c.lastMessageSender === currentUser?.uid ? `You: ${c.lastMessage || ""}` : (c.lastMessage || (c.isGroup ? "Group created" : "Say hello"));
+    return `<button class="conversation-item ${c.id === activeConversationId ? "selected" : ""} ${unread ? "has-unread" : ""}" data-conversation="${esc(c.id)}"><span class="conversation-avatar ${c.isGroup ? "group-avatar" : ""}">${esc(avatar)}</span><span class="conversation-copy"><b>${esc(conversationLabel(c))}</b><small>${esc(preview)}</small></span><span class="conversation-side-meta"><time>${esc(time)}</time>${unread ? '<i class="unread-dot"></i>' : (pinned.has(c.id) ? '<i class="pinned-mark">⌖</i>' : '')}</span></button>`;
+  }).join("");
   list.querySelectorAll("[data-conversation]").forEach(b => b.onclick = () => selectConversation(visible.find(c => c.id === b.dataset.conversation)));
 }
 function renderChatHeading() {
@@ -617,32 +671,161 @@ function renderChatHeading() {
 }
 function selectConversation(conversation) {
   if (!conversation || !currentUser) return;
-  activeConversation = conversation; activeConversationId = conversation.id;
-  $("#chatPlaceholder").hidden = true; $("#chatActive").hidden = false; renderChatHeading();
-  if (stopMessageListener) stopMessageListener();
-  const messagesQuery = query(collection(db, "conversations", conversation.id, "messages"), orderBy("createdAt", "desc"), limit(200));
+  activeConversation = conversation; activeConversationId = conversation.id; replyingToMessageId = null;
+  $("#chatPlaceholder").hidden = true; $("#chatActive").hidden = false; renderChatHeading(); updateReplyPreview();
+  if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
+  const messagesQuery = query(collection(db, "conversations", conversation.id, "messages"), orderBy("createdAt", "desc"), limit(300));
   stopMessageListener = onSnapshot(messagesQuery, snapshot => {
     currentMessages = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).reverse();
-    renderMessages(currentMessages);
+    renderMessages(currentMessages); hydrateChatAttachmentUrls(conversation.id, currentMessages).catch(error => console.warn("Chat attachment preview unavailable", error)); markConversationRead(conversation.id).catch(()=>{});
   }, error => { console.error("Messages listener", error); $("#messageList").innerHTML = '<div class="empty-note">Could not load messages. Check Firestore rules.</div>'; });
+  startTypingListener(conversation.id);
   renderConversationListFromSnapshotSelection();
 }
 function renderConversationListFromSnapshotSelection() { $$(".conversation-item").forEach(b => b.classList.toggle("selected", b.dataset.conversation === activeConversationId)); }
+function updateReplyPreview() {
+  const preview = $("#replyPreview"); if (!preview) return;
+  const message = currentMessages.find(m => m.id === replyingToMessageId);
+  preview.hidden = !message;
+  if (message) { $("#replyAuthor").textContent = message.authorUid === currentUser?.uid ? "yourself" : (message.authorName || "member"); $("#replyText").textContent = message.deleted ? "Deleted message" : (message.text || message.attachment?.name || "Attachment"); }
+}
 function renderMessages(messages) {
   const term = $("#messageSearch")?.value.trim().toLowerCase() || "";
-  const visible = messages.filter(m => !term || String(m.text || "").toLowerCase().includes(term) || String(m.authorName || "").toLowerCase().includes(term));
-  const box = $("#messageList"); $("#messageSearchCount").textContent = term ? `${visible.length} matches` : `${messages.length} messages`;
-  if (!visible.length) { box.innerHTML = `<div class="empty-note message-empty">${term ? "No messages match your search." : "This is the start of the conversation. Say hello."}</div>`; return; }
+  const visible = messages.filter(m => !term || String(m.text || "").toLowerCase().includes(term) || String(m.authorName || "").toLowerCase().includes(term) || String(m.attachment?.name || "").toLowerCase().includes(term));
+  const box = $("#messageList"); if (!box) return;
+  if ($("#messageSearchCount")) $("#messageSearchCount").textContent = term ? `${visible.length} matches` : `${messages.length} messages`;
+  if (!visible.length) { box.innerHTML = `<div class="empty-note message-empty">${term ? "No messages match your search." : "This is the beginning of this chat. Say hello 👋"}</div>`; return; }
+  const prefs = getChatPreferences(); const starred = new Set(prefs.starred || []);
   box.innerHTML = visible.map(m => {
-    const mine = m.authorUid === currentUser?.uid;
-    const created = tsMillis(m.createdAt); const time = created ? new Date(created).toLocaleString([], { dateStyle:"short", timeStyle:"short" }) : "Sending…";
+    const mine = m.authorUid === currentUser?.uid; const created = tsMillis(m.createdAt); const time = created ? new Date(created).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "Sending…";
     const canEdit = mine && !m.deleted && created && Date.now() - created <= 15*60*1000;
-    return `<div class="message-row ${mine ? "mine" : "theirs"}"><div class="message-bubble"><small>${mine ? "You" : esc(m.authorName || "Teammate")}${m.edited ? " · edited" : ""}</small><p>${m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || "")}</p><div class="message-meta"><time>${esc(time)}</time>${canEdit ? `<span class="message-actions"><button type="button" data-edit-message="${esc(m.id)}">Edit</button><button type="button" data-delete-message="${esc(m.id)}">Delete</button></span>` : ""}</div></div></div>`;
+    const reply = m.replyTo ? `<div class="message-reply-quote"><b>${esc(m.replyTo.authorName || "Reply")}</b><span>${esc(m.replyTo.text || "Original message")}</span></div>` : "";
+    let attachment = "";
+    if (m.attachment?.url) {
+      const url = validUrl(m.attachment.url); const type = String(m.attachment.type || "");
+      if (type.startsWith("image/")) attachment = `<a class="chat-attachment-image" href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${esc(m.attachment.name || "Shared image")}" loading="lazy"></a>`;
+      else if (type.startsWith("audio/")) attachment = `<audio class="chat-audio" controls preload="none" src="${esc(url)}"></audio>`;
+      else if (type.startsWith("video/")) attachment = `<video class="chat-video" controls preload="metadata" src="${esc(url)}"></video>`;
+      else attachment = `<a class="chat-file-card" href="${esc(url)}" target="_blank" rel="noopener"><span>↧</span><span><b>${esc(m.attachment.name || "Shared file")}</b><small>${esc(formatFileSize(m.attachment.size || 0))}</small></span></a>`;
+    }
+    const reactions = Object.entries(m.reactions || {}).reduce((acc,[uid,emoji]) => { if (emoji) acc[emoji]=(acc[emoji]||0)+1; return acc; }, {});
+    const reactionHtml = Object.entries(reactions).map(([emoji,count])=>`<button class="reaction-chip ${(m.reactions||{})[currentUser?.uid]===emoji?"mine":""}" type="button" data-react-message="${esc(m.id)}" data-emoji="${esc(emoji)}">${esc(emoji)} <span>${count}</span></button>`).join("");
+    const readAt = activeConversation?.readAtBy || {}; const recipients = (activeConversation?.participants || []).filter(uid=>uid!==currentUser?.uid);
+    const readByAll = recipients.length && recipients.every(uid=>tsMillis(readAt[uid])>=created && created>0);
+    const status = mine ? `<span class="message-ticks ${readByAll?"read":""}" title="${readByAll?"Read":"Sent"}">${readByAll?"✓✓":"✓"}</span>` : "";
+    const messageText = m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || "");
+    return `<article class="message-row ${mine ? "mine" : "theirs"}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<small class="message-author">${esc(m.authorName || "Teammate")}</small>`:""}${reply}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine?`${canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete">⌫</button>`:""}<button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
   }).join("");
   box.querySelectorAll("[data-edit-message]").forEach(b => b.onclick = () => editMessage(b.dataset.editMessage));
   box.querySelectorAll("[data-delete-message]").forEach(b => b.onclick = () => deleteMessage(b.dataset.deleteMessage));
+  box.querySelectorAll("[data-reply-message]").forEach(b => b.onclick = () => setReply(b.dataset.replyMessage));
+  box.querySelectorAll("[data-react-message]").forEach(b => b.onclick = () => toggleMessageReaction(b.dataset.reactMessage,b.dataset.emoji || "👍"));
+  box.querySelectorAll("[data-copy-message]").forEach(b => b.onclick = () => copyMessage(b.dataset.copyMessage));
+  box.querySelectorAll("[data-star-message]").forEach(b => b.onclick = () => toggleStarMessage(b.dataset.starMessage));
+  box.querySelectorAll("[data-forward-message]").forEach(b => b.onclick = () => forwardMessage(b.dataset.forwardMessage));
   box.scrollTop = box.scrollHeight;
 }
+function formatFileSize(bytes) { if (!bytes) return "File"; const units=["B","KB","MB","GB"]; let value=bytes,index=0; while(value>=1024&&index<units.length-1){value/=1024;index++;} return `${value.toFixed(index?1:0)} ${units[index]}`; }
+function setReply(messageId) { const message=currentMessages.find(m=>m.id===messageId); if(!message)return; replyingToMessageId=messageId; updateReplyPreview(); $("#messageText").focus(); }
+async function toggleMessageReaction(messageId, emoji) {
+  if (!requireAccount() || !activeConversationId) return;
+  const message=currentMessages.find(m=>m.id===messageId); if(!message)return;
+  const reactions={...(message.reactions||{})}; if(reactions[currentUser.uid]===emoji) delete reactions[currentUser.uid]; else reactions[currentUser.uid]=emoji;
+  try { await updateDoc(doc(db,"conversations",activeConversationId,"messages",messageId),{reactions}); }
+  catch(error){toast(friendlyError(error));}
+}
+async function copyMessage(messageId) { const m=currentMessages.find(x=>x.id===messageId); if(!m)return; try{await navigator.clipboard.writeText(m.text||m.attachment?.url||"");toast("Message copied.");}catch{toast("Clipboard access was blocked by your browser.");} }
+function toggleStarMessage(messageId) { const prefs=getChatPreferences();const starred=new Set(prefs.starred||[]);const key=`${activeConversationId}:${messageId}`;starred.has(key)?starred.delete(key):starred.add(key);setChatPreference("starred",[...starred]);renderMessages(currentMessages);toast(starred.has(key)?"Message saved to starred items.":"Removed from starred items."); }
+async function forwardMessage(messageId) {
+  const m=currentMessages.find(x=>x.id===messageId); if(!m)return;
+  const choices=currentConversations.filter(c=>c.id!==activeConversationId).slice(0,20);
+  if(!choices.length){toast("Open another conversation before forwarding.");return;}
+  if(m.attachment){toast("For privacy, download the attachment and upload it again in the destination chat. Only text messages can be forwarded directly.");return;}
+  const listing=choices.map((c,i)=>`${i+1}. ${conversationLabel(c)}`).join("\n");
+  const choice=Number(prompt(`Forward to which conversation?\n${listing}\n\nEnter a number:`));
+  const target=choices[choice-1]; if(!target)return;
+  try{await addDoc(collection(db,"conversations",target.id,"messages"),{authorUid:currentUser.uid,authorName:publicProfile?.displayName||currentUser.displayName||"Member",text:m.text||"",kind:"text",createdAt:serverTimestamp(),forwarded:true});await updateDoc(doc(db,"conversations",target.id),{lastMessage:(m.text||"").slice(0,180),lastMessageSender:currentUser.uid,lastMessageAt:serverTimestamp(),updatedAt:serverTimestamp()});toast("Message forwarded.");}
+  catch(error){toast(friendlyError(error));}
+}
+async function markConversationRead(conversationId) { if(!currentUser||!db||!conversationId)return; try{await updateDoc(doc(db,"conversations",conversationId),{[`readAtBy.${currentUser.uid}`]:serverTimestamp()});}catch(error){console.warn("Read receipt update was blocked",error);} }
+function startTypingListener(conversationId) {
+  if(stopTypingListener)stopTypingListener();
+  stopTypingListener=onSnapshot(collection(db,"conversations",conversationId,"typing"),snapshot=>{
+    const active=snapshot.docs.map(d=>d.data()).filter(d=>d.uid!==currentUser?.uid&&Date.now()-tsMillis(d.updatedAt)<7000);
+    const indicator=$("#typingIndicator"); if(indicator){indicator.hidden=!active.length;indicator.textContent=active.length===1?`${active[0].displayName||"Someone"} is typing…`:`${active.length} people are typing…`;}
+  },()=>{});
+}
+async function publishTyping() {
+  if(!currentUser||!activeConversationId||!db)return;
+  try{await setDoc(doc(db,"conversations",activeConversationId,"typing",currentUser.uid),{uid:currentUser.uid,displayName:publicProfile?.displayName||currentUser.displayName||"Member",updatedAt:serverTimestamp()},{merge:true});}catch{}
+  clearTimeout(typingStopTimer); typingStopTimer=setTimeout(()=>{if(activeConversationId&&currentUser)deleteDoc(doc(db,"conversations",activeConversationId,"typing",currentUser.uid)).catch(()=>{});},4500);
+}
+async function chatMediaRequest(payload) {
+  if (!currentUser) throw new Error("Sign in to share chat media.");
+  const idToken = await currentUser.getIdToken();
+  const response = await fetch("/api/chat-media", { method:"POST", headers:{"Content-Type":"application/json","Authorization":`Bearer ${idToken}`}, body:JSON.stringify(payload) });
+  const data = await response.json().catch(()=>({}));
+  if (!response.ok) throw new Error(data.error || `Media service returned ${response.status}.`);
+  return data;
+}
+async function uploadChatFile(file, kindOverride="file") {
+  if (!supabaseClient) throw new Error("Chat media storage is not configured yet. Complete the Supabase setup in docs/AGENT37_AI_SETUP.md.");
+  if (!activeConversationId || !currentUser) throw new Error("Choose a conversation before uploading.");
+  const allowed = file.type.startsWith("image/") || file.type.startsWith("video/") || file.type.startsWith("audio/") || ["application/pdf","text/plain","application/zip","application/msword","application/vnd.ms-excel","application/vnd.ms-powerpoint","application/vnd.openxmlformats-officedocument.wordprocessingml.document","application/vnd.openxmlformats-officedocument.presentationml.presentation","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"].includes(file.type);
+  if (!allowed) throw new Error("That file type is not supported.");
+  if (file.size > 15 * 1024 * 1024) throw new Error("Attachments must be 15 MB or smaller.");
+  const data = await chatMediaRequest({action:"create-upload",conversationId:activeConversationId,fileName:file.name,contentType:file.type,size:file.size});
+  const { error } = await supabaseClient.storage.from(supabaseConfig.bucket || "chat-media").uploadToSignedUrl(data.path,data.token,file,{contentType:file.type,upsert:false});
+  if (error) throw new Error(error.message || "Supabase upload failed.");
+  return {name:String(file.name||`${kindOverride}.bin`).slice(0,120),type:file.type,size:file.size,storagePath:data.path};
+}
+async function hydrateChatAttachmentUrls(conversationId, messages) {
+  if (!supabaseClient || !currentUser) return;
+  const paths=[...new Set(messages.map(m=>m.attachment?.storagePath).filter(Boolean))].slice(-40);
+  if (!paths.length) return;
+  try {
+    const data=await chatMediaRequest({action:"create-downloads",conversationId,paths});
+    if (activeConversationId!==conversationId) return;
+    const byPath=new Map((data.urls||[]).map(item=>[item.path,item.signedUrl]));
+    currentMessages=messages.map(m=>m.attachment?.storagePath?{...m,attachment:{...m.attachment,url:byPath.get(m.attachment.storagePath)||""}}:m);
+    renderMessages(currentMessages);
+  } catch(error) { console.warn("Could not sign private media URLs",error); }
+}
+async function sendMessage(event) {
+  event.preventDefault(); if (!requireAccount() || !activeConversationId) { toast("Choose a conversation first."); return; }
+  const text = $("#messageText").value.trim(); if (!text) return;
+  if (text.length > 2000) { toast("Messages must be 2,000 characters or fewer."); return; }
+  await submitChatMessage({text,kind:"text"});
+}
+async function submitChatMessage(payload) {
+  const sendButton = $("#messageForm button"); if(sendButton)sendButton.disabled=true;
+  try {
+    const conversationRef = doc(db, "conversations", activeConversationId);
+    const reply=replyingToMessageId?currentMessages.find(m=>m.id===replyingToMessageId):null;
+    const replyTo=reply?{messageId:reply.id,authorName:reply.authorName||"Member",text:(reply.text||reply.attachment?.name||"Attachment").slice(0,160)}:null;
+    const body={authorUid:currentUser.uid,authorName:publicProfile?.displayName||currentUser.displayName||"Member",text:String(payload.text||"").slice(0,2000),kind:payload.kind||"text",createdAt:serverTimestamp(),...(replyTo?{replyTo}:{}),...(payload.attachment?{attachment:payload.attachment}:{})};
+    await addDoc(collection(conversationRef,"messages"),body);
+    await updateDoc(conversationRef,{lastMessage:(payload.text||payload.attachment?.name||"Attachment").slice(0,180),lastMessageSender:currentUser.uid,lastMessageAt:serverTimestamp(),updatedAt:serverTimestamp()});
+    $("#messageText").value=""; replyingToMessageId=null;updateReplyPreview();
+    if(typingStopTimer)clearTimeout(typingStopTimer);deleteDoc(doc(db,"conversations",activeConversationId,"typing",currentUser.uid)).catch(()=>{});
+  } catch(error) { console.error(error);toast(friendlyError(error)); }
+  finally { if(sendButton)sendButton.disabled=false; }
+}
+async function handleChatFile(file) {
+  if(!file||!requireAccount()||!activeConversationId)return;
+  toast("Uploading attachment…");
+  try{const attachment=await uploadChatFile(file);await submitChatMessage({text:"",kind:file.type.startsWith("image/")?"image":file.type.startsWith("video/")?"video":file.type.startsWith("audio/")?"audio":"file",attachment});toast("Attachment sent.");}
+  catch(error){toast(error.message||friendlyError(error));}
+  finally{$("#chatFileInput").value="";}
+}
+async function toggleVoiceRecording() {
+  if(voiceRecorder?.state==="recording"){voiceRecorder.stop();$("#voiceRecordBtn").classList.remove("recording");$("#voiceRecordBtn").innerHTML="◉<span>Voice</span>";return;}
+  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast("Voice recording is not supported in this browser.");return;}
+  if(!activeConversationId||!requireAccount())return;
+  try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});voiceChunks=[];voiceRecorder=new MediaRecorder(stream);voiceRecorder.ondataavailable=e=>{if(e.data.size)voiceChunks.push(e.data);};voiceRecorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());const blob=new Blob(voiceChunks,{type:voiceRecorder.mimeType||"audio/webm"});const file=new File([blob],`voice-${Date.now()}.webm`,{type:blob.type});try{toast("Uploading voice note…");const attachment=await uploadChatFile(file,"voice");await submitChatMessage({text:"",kind:"voice",attachment});}catch(error){toast(error.message||friendlyError(error));}};voiceRecorder.start();$("#voiceRecordBtn").classList.add("recording");$("#voiceRecordBtn").innerHTML="■<span>Stop</span>";}
+  catch(error){toast(`Microphone access unavailable: ${error.message}`);}
+}
+
 async function editMessage(messageId) {
   const message = currentMessages.find(m => m.id === messageId); if (!message || message.authorUid !== currentUser?.uid) return;
   const created = tsMillis(message.createdAt); if (!created || Date.now()-created > 15*60*1000) { toast("Messages can only be edited within 15 minutes."); return; }
@@ -762,19 +945,7 @@ async function startDirectConversation(profile) {
     selectConversation(conversation);
   } catch (error) { console.error(error); toast(friendlyError(error)); }
 }
-async function sendMessage(event) {
-  event.preventDefault(); if (!requireAccount() || !activeConversationId) { toast("Choose a conversation first."); return; }
-  const text = $("#messageText").value.trim(); if (!text) return;
-  if (text.length > 2000) { toast("Messages must be 2,000 characters or fewer."); return; }
-  const sendButton = $("#messageForm button"); sendButton.disabled = true;
-  try {
-    const conversationRef = doc(db, "conversations", activeConversationId);
-    await addDoc(collection(conversationRef, "messages"), { authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Member", text, createdAt: serverTimestamp() });
-    await updateDoc(conversationRef, { lastMessage: text.slice(0, 180), lastMessageSender: currentUser.uid, lastMessageAt: serverTimestamp(), updatedAt: serverTimestamp() });
-    $("#messageText").value = "";
-  } catch (error) { console.error(error); toast(friendlyError(error)); }
-  finally { sendButton.disabled = false; }
-}
+
 function refreshSelectedGroupMembers() {
   $("#groupMembers").value = [...selectedGroupMembers.values()].map(p => p.username).join(",");
   $("#groupSelectedMembers").innerHTML = selectedGroupMembers.size ? [...selectedGroupMembers.values()].map(p => `<span class="selected-member-chip">${esc(p.displayName || p.username)} <button type="button" data-unselect-group-member="${esc(p.uid)}" aria-label="Remove ${esc(p.displayName||p.username)}">×</button></span>`).join("") : "No members selected yet.";
@@ -893,23 +1064,38 @@ async function runSmartTeamMatch(event) {
       "firebase":["firestore","authentication","google cloud"],"data science":["analytics","python","sql"]
     };
     const expand = skill => [skill,...(synonyms[skill]||[])].map(x=>x.toLowerCase());
-    const scored=profiles.map(p=>{
+    const poolOnlyOpen=$("#teamCandidatePool")?.value==="open";
+    const preferredMode=$("#teamPreferredMode")?.value||"any";
+    const strategy=$("#teamMatchStrategy")?.value||"balanced";
+    const projectBrief=String($("#teamProjectBrief")?.value||"").toLowerCase();
+    const scored=profiles.filter(p=>!poolOnlyOpen||p.lookingForTeam).map(p=>{
       const fields=[...(p.skills||[]),...(p.rolesInterested||[]),...(p.interests||[]),p.bio||""].join(" ").toLowerCase();
       const matched=needed.filter(skill=>expand(skill).some(alias=>fields.includes(alias)));
       const collegeBonus=preferredCollege && String(p.college||"").toLowerCase().includes(preferredCollege) ? 0.08 : 0;
       const yearBonus=preferredYear && String(p.collegeYear||p.studyYear||p.yearOfStudy||"").toLowerCase()===preferredYear ? 0.04 : 0;
-      const score=Math.min(1,matched.length/needed.length+collegeBonus+yearBonus);
+      const modeBonus=preferredMode!=="any"&&String(p.preferredMode||"").toLowerCase()===preferredMode.toLowerCase()?0.06:0;
+      const briefTokens=projectBrief.split(/[^a-z0-9+#.]+/).filter(x=>x.length>3).slice(0,30);
+      const briefMatches=briefTokens.filter(token=>fields.includes(token)).length;
+      const briefBonus=briefTokens.length?Math.min(.08,briefMatches/briefTokens.length*.08):0;
+      const score=Math.min(1,matched.length/needed.length+collegeBonus+yearBonus+modeBonus+briefBonus);
       return {...p,matchScore:score,matchedSkills:matched,relatedSkills:(p.skills||[]).filter(s=>!matched.some(m=>expand(m).includes(String(s).toLowerCase())) && needed.some(m=>expand(m).some(a=>String(s).toLowerCase().includes(a))))};
     }).filter(p=>p.matchScore>0).sort((a,b)=>b.matchScore-a.matchScore||overlapScore(b)-overlapScore(a));
     const required=teamCount*(size-1);
-    matchedTeamCandidates=scored.slice(0,Math.max(required,required*2));
-    const groups=[];
-    for(let i=0;i<teamCount;i++){
-      const group=matchedTeamCandidates.slice(i*(size-1),(i+1)*(size-1));
-      if(group.length) groups.push(group);
+    matchedTeamCandidates=scored.slice(0,Math.max(required,required*3));
+    let groups=[];
+    if(strategy==="best-fit"||strategy==="manual"){
+      for(let i=0;i<teamCount;i++){const group=matchedTeamCandidates.slice(i*(size-1),(i+1)*(size-1));if(group.length)groups.push(group);}
+    }else{
+      groups=Array.from({length:teamCount},()=>[]);const remaining=[...matchedTeamCandidates];
+      for(let slot=0;slot<size-1;slot++)for(let teamIndex=0;teamIndex<teamCount;teamIndex++){
+        if(!remaining.length)break;const covered=new Set(groups[teamIndex].flatMap(p=>p.matchedSkills));
+        remaining.sort((a,b)=>{const gainA=a.matchedSkills.filter(x=>!covered.has(x)).length;const gainB=b.matchedSkills.filter(x=>!covered.has(x)).length;return (gainB*.24+b.matchScore)-(gainA*.24+a.matchScore);});
+        const chosen=remaining.shift();if(chosen)groups[teamIndex].push(chosen);
+      }
+      groups=groups.filter(g=>g.length);
     }
     const actual=groups.length;
-    $("#teamMatchResults").innerHTML=groups.length?groups.map((group,i)=>`<section class="generated-team"><h3>Suggested team ${i+1}</h3><p class="muted">${group.length+1} members including you</p>${group.map(p=>`<label class="team-match-option"><input type="checkbox" data-team-match="${esc(p.uid)}" data-team-index="${i}" checked><span><b>${esc(p.displayName||"Builder")}</b><small>@${esc(p.username||"member")} · ${esc(p.collegeShort||p.college||"College not listed")}${p.collegeYear||p.studyYear ? ` · Year ${esc(p.collegeYear||p.studyYear)}` : ""}</small><span class="skill-tags">${(p.skills||[]).slice(0,6).map(x=>`<i>${esc(x)}</i>`).join("")}</span><small>Matched: ${esc(p.matchedSkills.join(", ")||"Related skills")} · ${Math.round(p.matchScore*100)}% fit${p.relatedSkills?.length ? ` · Related: ${esc(p.relatedSkills.join(", "))}` : ""}</small></span></label>`).join("")}</section>`).join(""):'<p class="muted">No matching builders are available yet. Try broader roles or skills.</p>';
+    $("#teamMatchResults").innerHTML=groups.length?`<div class="team-match-summary"><b>${strategy==="balanced"?"Balanced team allocation complete":"Best-fit candidates ranked"}</b><span>${groups.length} team suggestion(s) · ${groups.reduce((n,g)=>n+g.length,0)} builder matches</span><small>Scores are profile-based estimates, not guarantees. Review availability and ask people before adding them to a chat.</small></div>`+groups.map((group,i)=>{const covered=[...new Set(group.flatMap(p=>p.matchedSkills))];const missing=needed.filter(x=>!covered.includes(x));return `<section class="generated-team"><div class="generated-team-head"><div><h3>Suggested team ${i+1}</h3><p class="muted">${group.length+1} members including you · ${Math.round(group.reduce((n,p)=>n+p.matchScore,0)/Math.max(1,group.length)*100)}% average fit</p></div><span class="team-balance-score">${covered.length}/${needed.length} roles covered</span></div><div class="team-coverage"><div class="team-coverage-bar"><span style="width:${Math.round(covered.length/needed.length*100)}%"></span></div><small>${covered.map(esc).join(" · ")}${missing.length?` <em>Missing: ${missing.map(esc).join(", ")}</em>`:""}</small></div>${group.map(p=>`<label class="team-match-option"><input type="checkbox" data-team-match="${esc(p.uid)}" data-team-index="${i}" checked><span><b>${esc(p.displayName||"Builder")}</b><small>@${esc(p.username||"member")} · ${esc(p.collegeShort||p.college||"College not listed")}${p.collegeYear||p.studyYear ? ` · Year ${esc(p.collegeYear||p.studyYear)}` : ""}</small><span class="skill-tags">${(p.skills||[]).slice(0,6).map(x=>`<i>${esc(x)}</i>`).join("")}</span><small>Matched: ${esc(p.matchedSkills.join(", ")||"Related skills")} · ${Math.round(p.matchScore*100)}% fit${p.relatedSkills?.length ? ` · Related: ${esc(p.relatedSkills.join(", "))}` : ""}</small></span></label>`).join("")}</section>`;}).join(""):'<p class="muted">No matching builders are available yet. Try broader roles or invite more people to complete their skills profiles.</p>';
     $("#teamMatchResults").dataset.teamName=name;
     $("#teamMatchResults").dataset.teamCount=String(actual);
     $("#createMatchedTeamBtn").hidden=!groups.length;
@@ -976,9 +1162,418 @@ async function deleteProject(id) {
   catch (error) { toast(friendlyError(error)); }
 }
 
+function updateAiAccessUI() {
+  const signedIn = Boolean(currentUser && db);
+  const gate = $("#aiLoginGate");
+  const form = $("#aiForm");
+  const messages = $("#aiMessages");
+  if (gate) gate.hidden = signedIn;
+  if (form) form.hidden = !signedIn;
+  if (messages) messages.hidden = !signedIn;
+  $("#aiNewChatBtn").disabled = !signedIn;
+  if (!signedIn) {
+    $("#aiHistoryList").innerHTML = '<p class="ai-history-empty">Sign in to keep your conversations.</p>';
+    $("#aiActionReview").hidden = true;
+  }
+}
+
+function setAiMode(mode) {
+  aiMode = mode === "wish" ? "wish" : "chat";
+  const chatButton = $("#aiChatModeBtn");
+  const wishButton = $("#aiWishModeBtn");
+  chatButton.classList.toggle("active", aiMode === "chat");
+  wishButton.classList.toggle("active", aiMode === "wish");
+  chatButton.setAttribute("aria-selected", String(aiMode === "chat"));
+  wishButton.setAttribute("aria-selected", String(aiMode === "wish"));
+  $("#aiInput").placeholder = aiMode === "wish"
+    ? "Tell HackVerse what you want done…"
+    : "Ask anything about HackVerse…";
+  $("#aiComposerHint").textContent = aiMode === "wish"
+    ? "Describe a task · review the plan · apply it"
+    : "Enter to send · Shift + Enter for a new line";
+  $("#aiModeIntro").innerHTML = aiMode === "wish"
+    ? "<b>What would you like HackVerse to do?</b><span>Describe a goal in plain language. I’ll prepare supported actions for you to review before anything changes.</span>"
+    : "<b>What can I help you with?</b><span>Ask how HackVerse works, find a feature or get help with your account.</span>";
+  pendingAiActions = [];
+  renderAiActionReview();
+}
+
+function renderAiMessages() {
+  const box = $("#aiMessages");
+  if (!box) return;
+  const messages = currentAiMessages.length ? currentAiMessages : [{ role: "assistant", content: aiMode === "wish"
+    ? "Tell me what you want to accomplish in HackVerse. I’ll show you a clear action plan and wait for your approval before applying it."
+    : "Hi! I’m your HackVerse assistant. I can explain the platform, help you discover opportunities and guide you through your workspace." }];
+  box.innerHTML = messages.map(message => {
+    const isUser = message.role === "user";
+    return `<div class="ai-message ${isUser ? "ai-message-user" : "ai-message-agent"}"><span class="ai-message-avatar">${isUser ? "You" : "✦"}</span><div class="ai-message-bubble">${esc(message.content || "")}</div></div>`;
+  }).join("");
+  box.scrollTop = box.scrollHeight;
+}
+
+async function loadAiHistory() {
+  updateAiAccessUI();
+  const list = $("#aiHistoryList");
+  if (!currentUser || !db) return;
+  list.innerHTML = '<p class="ai-history-empty">Loading your history…</p>';
+  try {
+    const snapshot = await getDocs(query(
+      collection(db, "aiConversations"),
+      where("ownerUid", "==", currentUser.uid),
+      orderBy("updatedAt", "desc"),
+      limit(30)
+    ));
+    const rows = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    if (!rows.length) {
+      list.innerHTML = '<p class="ai-history-empty">Your chats will appear here. Start a new conversation whenever you need a fresh task.</p>';
+      return;
+    }
+    list.innerHTML = rows.map(item => `<button type="button" class="ai-history-item ${item.id === activeAiConversationId ? "active" : ""}" data-ai-conversation="${esc(item.id)}"><b>${esc(item.title || "New conversation")}</b><small>${item.mode === "wish" ? "AI Wish" : "Website help"} · ${esc(item.preview || "Open conversation")}</small></button>`).join("");
+    list.querySelectorAll("[data-ai-conversation]").forEach(button => button.addEventListener("click", () => openAiConversation(button.dataset.aiConversation)));
+  } catch (error) {
+    console.warn("AI history could not load", error);
+    list.innerHTML = '<p class="ai-history-empty">Could not load history. Check your Firestore rules.</p>';
+  }
+}
+
+async function startAiConversation(mode = aiMode) {
+  if (!requireAccount()) return null;
+  try {
+    const conversationRef = doc(collection(db, "aiConversations"));
+    await setDoc(conversationRef, {
+      ownerUid: currentUser.uid,
+      title: mode === "wish" ? "New AI Wish" : "New website help chat",
+      preview: "",
+      mode,
+      agentSessionId: "",
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    activeAiConversationId = conversationRef.id;
+    activeAiConversationMode = mode;
+    currentAiMessages = [];
+    pendingAiActions = [];
+    renderAiMessages();
+    renderAiActionReview();
+    await loadAiHistory();
+    return conversationRef.id;
+  } catch (error) {
+    toast(`Could not start AI conversation: ${friendlyError(error)}`);
+    return null;
+  }
+}
+
+async function openAiConversation(conversationId) {
+  if (!requireAccount()) return;
+  try {
+    const parent = await getDoc(doc(db, "aiConversations", conversationId));
+    if (!parent.exists() || parent.data().ownerUid !== currentUser.uid) throw new Error("This conversation is not available to your account.");
+    const data = parent.data();
+    activeAiConversationId = conversationId;
+    activeAiConversationMode = data.mode === "wish" ? "wish" : "chat";
+    setAiMode(activeAiConversationMode);
+    const snapshot = await getDocs(query(collection(db, "aiConversations", conversationId, "messages"), orderBy("createdAt", "asc"), limit(150)));
+    currentAiMessages = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    pendingAiActions = [];
+    renderAiMessages();
+    renderAiActionReview();
+    await loadAiHistory();
+  } catch (error) {
+    toast(`Could not open conversation: ${friendlyError(error)}`);
+  }
+}
+
+async function persistAiMessage(role, content) {
+  if (!activeAiConversationId || !currentUser || !db) return;
+  const messageRef = doc(collection(db, "aiConversations", activeAiConversationId, "messages"));
+  await setDoc(messageRef, { role, content: String(content || "").slice(0, 12000), createdAt: serverTimestamp() });
+  currentAiMessages.push({ id: messageRef.id, role, content: String(content || "").slice(0, 12000), createdAt: Date.now() });
+  renderAiMessages();
+}
+
+function validateAiActions(actions) {
+  if (!Array.isArray(actions)) return [];
+  const pages = new Set(["home", "opportunities", "saved", "people", "messages", "profile", "notifications", "settings"]);
+  const categories = new Set(["hackathon", "case-competition", "coding-event", "bootcamp", "course", "certification", "other"]);
+  const eventIds = new Set(events.map(event => event.id));
+  return actions.slice(0, 8).map(action => {
+    if (!action || typeof action !== "object") return null;
+    const type = String(action.type || "");
+    if (type === "navigate" && pages.has(action.page)) return { type, page: action.page };
+    if (type === "search_opportunities") return {
+      type,
+      query: String(action.query || "").slice(0, 100),
+      skill: String(action.skill || "").slice(0, 60),
+      category: categories.has(action.category) ? action.category : "all",
+      country: String(action.country || "").slice(0, 60)
+    };
+    if ((type === "open_opportunity" || type === "save_opportunity") && eventIds.has(String(action.eventId || "")))
+      return { type, eventId: String(action.eventId) };
+    if (type === "search_builders" && String(action.query || "").trim())
+      return { type, query: String(action.query).trim().slice(0, 100) };
+    if (type === "create_project" && String(action.title || "").trim() && String(action.description || "").trim())
+      return {
+        type,
+        title: String(action.title).trim().slice(0, 100),
+        description: String(action.description).trim().slice(0, 600),
+        techStack: Array.isArray(action.techStack) ? action.techStack.map(value => String(value).slice(0, 40)).slice(0, 12) : [],
+        visibility: action.visibility === "public" ? "public" : "private"
+      };
+    if (type === "create_group" && String(action.groupName || "").trim() && Array.isArray(action.memberUids)) {
+      const allowed = new Set(aiAvailableBuilders.map(p => p.uid));
+      const memberUids = [...new Set(action.memberUids.map(String))].filter(uid => allowed.has(uid) && uid !== currentUser?.uid).slice(0,10);
+      if (memberUids.length) return { type, groupName: String(action.groupName).trim().slice(0,60), memberUids };
+    }
+    if (type === "send_message" && currentConversations.some(c => c.id === String(action.conversationId)) && String(action.text || "").trim())
+      return { type, conversationId: String(action.conversationId), text: String(action.text).trim().slice(0,2000) };
+    if (type === "update_settings") {
+      const next = {};
+      if (["dark","light"].includes(action.theme)) next.theme=action.theme;
+      if (["full","reduced"].includes(action.motion)) next.motion=action.motion;
+      if (["normal","large","larger"].includes(action.textSize)) next.textSize=action.textSize;
+      if (Object.keys(next).length) return { type, ...next };
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+function aiActionLabel(action) {
+  if (action.type === "navigate") return `Open the ${action.page} section`;
+  if (action.type === "search_opportunities") return `Search opportunities${action.query ? ` for “${action.query}”` : ""}${action.category !== "all" ? ` · ${action.category}` : ""}`;
+  if (action.type === "open_opportunity") return `Open: ${events.find(item => item.id === action.eventId)?.title || "selected opportunity"}`;
+  if (action.type === "save_opportunity") return `Save: ${events.find(item => item.id === action.eventId)?.title || "selected opportunity"}`;
+  if (action.type === "search_builders") return `Search community for “${action.query}”`;
+  if (action.type === "create_project") return `Create ${action.visibility === "public" ? "public" : "private"} project: ${action.title}`;
+  if (action.type === "create_group") return `Create group “${action.groupName}” with ${action.memberUids.length} selected builders`;
+  if (action.type === "send_message") return `Send a message in ${conversationLabel(currentConversations.find(c=>c.id===action.conversationId)||{})}: “${action.text.slice(0,90)}”`;
+  if (action.type === "update_settings") return `Update interface settings${action.theme?` · ${action.theme} theme`:""}${action.motion?` · ${action.motion} motion`:""}${action.textSize?` · ${action.textSize} text`:""}`;
+  return "Apply website action";
+}
+
+function renderAiActionReview() {
+  const panel = $("#aiActionReview");
+  if (!panel) return;
+  if (!pendingAiActions.length || !currentUser) { panel.hidden = true; panel.innerHTML = ""; return; }
+  panel.hidden = false;
+  panel.innerHTML = `<b>Ready for your review · ${pendingAiActions.length} action${pendingAiActions.length === 1 ? "" : "s"}</b><ul>${pendingAiActions.map(action => `<li>${esc(aiActionLabel(action))}</li>`).join("")}</ul><button type="button" class="btn btn-primary" id="aiApplyActionsBtn">Apply these actions →</button><small>Nothing changes until you press Apply. Project records are created as private unless you explicitly asked for public visibility.</small>`;
+  $("#aiApplyActionsBtn").onclick = applyAiActions;
+}
+
+async function sendAiMessage(event) {
+  event.preventDefault();
+  if (!requireAccount() || isAiSending) return;
+  const input = $("#aiInput");
+  const message = input.value.trim();
+  if (!message) return;
+  if (message.length > 4000) { toast("Keep each AI request under 4,000 characters."); return; }
+  if (!activeAiConversationId || activeAiConversationMode !== aiMode) {
+    const created = await startAiConversation(aiMode);
+    if (!created) return;
+  }
+  isAiSending = true;
+  $("#aiSendBtn").disabled = true;
+  $("#aiSendBtn").textContent = "…";
+  input.value = "";
+  pendingAiActions = [];
+  renderAiActionReview();
+  try {
+    await persistAiMessage("user", message);
+    const conversationRef = doc(db, "aiConversations", activeAiConversationId);
+    await updateDoc(conversationRef, {
+      title: currentAiMessages.filter(item => item.role === "user").length <= 1 ? message.slice(0, 48) : (activeAiConversationMode === "wish" ? "AI Wish · " : "Help · ") + message.slice(0, 34),
+      preview: message.slice(0, 120),
+      mode: aiMode,
+      updatedAt: serverTimestamp()
+    });
+    if (aiMode === "wish") {
+      try { aiAvailableBuilders = await searchPublicProfiles("", 200); } catch { aiAvailableBuilders = []; }
+    }
+    const token = await currentUser.getIdToken();
+    const response = await fetch("/api/agent37/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      body: JSON.stringify({ conversationId: activeAiConversationId, mode: aiMode, message, page: (location.hash || "#home").slice(1) })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `AI service returned ${response.status}.`);
+    const reply = String(data.reply || "I could not prepare a response. Please try again.").slice(0, 12000);
+    await persistAiMessage("assistant", reply);
+    if (aiMode === "wish") {
+      pendingAiActions = validateAiActions(data.actions);
+      renderAiActionReview();
+      if (Array.isArray(data.actions) && data.actions.length && !pendingAiActions.length) {
+        await persistAiMessage("assistant", "I couldn't validate the requested website actions. Try describing a search, navigation, save, community lookup or project creation task more specifically.");
+      }
+    }
+    await updateDoc(conversationRef, { preview: reply.slice(0, 120), updatedAt: serverTimestamp() });
+    await loadAiHistory();
+  } catch (error) {
+    console.error("Agent37 assistant request failed", error);
+    const messageText = error?.message || "The AI service could not complete this request.";
+    const help = messageText.includes("404") || messageText.toLowerCase().includes("not found")
+      ? `${messageText}\n\nThe /api/agent37/chat endpoint must be deployed on Vercel. A static Firebase Hosting deployment does not run this API route.`
+      : messageText;
+    await persistAiMessage("assistant", `I couldn't complete that request. ${help}`.slice(0, 12000)).catch(() => {});
+  } finally {
+    isAiSending = false;
+    $("#aiSendBtn").disabled = false;
+    $("#aiSendBtn").textContent = "↑";
+    input.focus();
+  }
+}
+
+async function applyAiActions() {
+  if (!requireAccount() || !pendingAiActions.length) return;
+  const actions = pendingAiActions.slice();
+  const summary = actions.map(aiActionLabel).join("\n• ");
+  if (!confirm(`Apply these ${actions.length} HackVerse action${actions.length === 1 ? "" : "s"}?\n\n• ${summary}\n\nYou can review project visibility before sharing it.`)) return;
+  const completed = [];
+  try {
+    for (const action of actions) {
+      if (action.type === "navigate") {
+        location.hash = `#${action.page}`;
+        completed.push(`Opened ${action.page}`);
+      } else if (action.type === "search_opportunities") {
+        $("#eventSearch").value = action.query;
+        $("#eventSkill").value = action.skill;
+        $("#eventCategory").value = action.category;
+        if (action.country) {
+          const option = [...$("#eventCountry").options].find(item => item.value.toLowerCase() === action.country.toLowerCase());
+          if (option) $("#eventCountry").value = option.value;
+        }
+        allEventsVisible = 24;
+        renderEvents();
+        location.hash = "#opportunities";
+        completed.push("Applied opportunity search filters");
+      } else if (action.type === "open_opportunity") {
+        location.hash = "#opportunities";
+        viewEvent(action.eventId);
+        completed.push("Opened opportunity details");
+      } else if (action.type === "save_opportunity") {
+        if (!savedIds.has(action.eventId)) {
+          const saved = await saveEvent(action.eventId);
+          if (!saved) throw new Error("HackVerse could not save that opportunity. Check your connection and Firestore rules.");
+          completed.push("Saved an opportunity to your shortlist");
+        } else {
+          completed.push("Opportunity was already in your shortlist");
+        }
+      } else if (action.type === "search_builders") {
+        $("#peopleSearch").value = action.query;
+        location.hash = "#people";
+        searchPeople();
+        completed.push("Started a community search");
+      } else if (action.type === "create_project") {
+        await addDoc(collection(db, "projects"), {
+          ownerUid: currentUser.uid,
+          ownerName: publicProfile?.displayName || currentUser.displayName || "Member",
+          title: action.title,
+          description: action.description,
+          techStack: action.techStack,
+          projectUrl: "",
+          githubUrl: "",
+          visibility: action.visibility,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+        await loadProjects();
+        location.hash = "#profile";
+        completed.push(`Created ${action.visibility} project “${action.title}”`);
+      } else if (action.type === "create_group") {
+        const selected = aiAvailableBuilders.filter(p=>action.memberUids.includes(p.uid));
+        if(selected.length!==action.memberUids.length)throw new Error("One or more suggested builders are no longer available in the public directory.");
+        await createGroupWithMembers(action.groupName,selected);
+        completed.push(`Created group “${action.groupName}”`);
+      } else if (action.type === "send_message") {
+        const conversation=currentConversations.find(c=>c.id===action.conversationId);
+        if(!conversation || !(conversation.participants||[]).includes(currentUser.uid))throw new Error("That conversation is no longer available to your account.");
+        await addDoc(collection(db,"conversations",action.conversationId,"messages"),{authorUid:currentUser.uid,authorName:publicProfile?.displayName||currentUser.displayName||"Member",text:action.text,kind:"text",createdAt:serverTimestamp()});
+        await updateDoc(doc(db,"conversations",action.conversationId),{lastMessage:action.text.slice(0,180),lastMessageSender:currentUser.uid,lastMessageAt:serverTimestamp(),updatedAt:serverTimestamp()});
+        completed.push(`Sent a message in ${conversationLabel(conversation)}`);
+      } else if (action.type === "update_settings") {
+        const prefs=readAppPrefs();Object.assign(prefs,{...(action.theme?{theme:action.theme}:{}),...(action.motion?{motion:action.motion}:{}),...(action.textSize?{textSize:action.textSize}:{})});localStorage.setItem("hackverse-app-preferences",JSON.stringify(prefs));applyAppPrefs();loadSettingsUI();
+        completed.push("Updated interface settings");
+      }
+    }
+    pendingAiActions = [];
+    renderAiActionReview();
+    toast(`${completed.length} AI action${completed.length === 1 ? "" : "s"} applied.`);
+    const resultText = `Done. ${completed.join("; ")}.`;
+    await persistAiMessage("assistant", resultText);
+    await updateDoc(doc(db, "aiConversations", activeAiConversationId), { preview: resultText.slice(0, 120), updatedAt: serverTimestamp() });
+    await loadAiHistory();
+  } catch (error) {
+    toast(`Some actions could not be applied: ${friendlyError(error)}`);
+    await persistAiMessage("assistant", `I applied ${completed.length} action(s), but the remaining work stopped because: ${friendlyError(error)}`).catch(() => {});
+  }
+}
+
+
+
+function readAppPrefs(){try{return JSON.parse(localStorage.getItem("hackverse-app-preferences")||"{}");}catch{return {};}}
+function applyAppPrefs(){const p=readAppPrefs();document.body.classList.toggle("light",p.theme==="light");document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");}
+function saveAppPrefs(){const p={theme:$("#settingTheme").value,motion:$("#settingMotion").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked};localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));applyAppPrefs();renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
+function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme|| (document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";}
+function upcomingSavedDeadlines(){if(!currentUser||readAppPrefs().opportunity===false)return [];const now=Date.now();return events.filter(e=>savedIds.has(e.id)).map(e=>({...e,deadlineMs:tsMillis(e.registrationDeadline)})).filter(e=>e.deadlineMs>now&&e.deadlineMs<=now+14*86400000).sort((a,b)=>a.deadlineMs-b.deadlineMs);}
+function notifyUpcomingDeadlines(){const prefs=readAppPrefs();if(!currentUser||!prefs.desktop||!("Notification" in window)||Notification.permission!=="granted")return;for(const e of upcomingSavedDeadlines()){const key=`hv-deadline-notified-${currentUser.uid}-${e.id}`;const stamp=String(e.deadlineMs);if(localStorage.getItem(key)===stamp)continue;localStorage.setItem(key,stamp);try{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));const n=new Notification("Saved opportunity deadline",{body:`${e.title||"A saved opportunity"} closes in ${days} day${days===1?"":"s"}.`,tag:`deadline-${e.id}`});n.onclick=()=>{window.focus();location.hash="#opportunities";viewEvent(e.id);};}catch{}}}
+function renderNotificationCenter(){
+  const feed=$("#notificationFeed");if(!feed)return;const prefs=readAppPrefs();
+  if(!currentUser){feed.innerHTML='<div class="empty-note">Sign in to view your notifications and chat activity.</div>';$("#notificationBadge").hidden=true;$("#unreadChatCount").textContent="0";$("#activeChatCount").textContent="0";$("#savedOpportunityCount").textContent="0";return;}
+  const unread=currentConversations.filter(chatIsUnread);const unreadCount=unread.length;const reminders=upcomingSavedDeadlines();
+  $("#unreadChatCount").textContent=String(unreadCount);$("#activeChatCount").textContent=String(currentConversations.length);$("#savedOpportunityCount").textContent=String(savedIds.size);
+  const badge=$("#notificationBadge");const totalAlerts=unreadCount+reminders.length;badge.hidden=totalAlerts===0;badge.textContent=totalAlerts>9?"9+":String(totalAlerts);
+  if(prefs.inApp===false){feed.innerHTML='<div class="empty-note">In-app activity is paused in your preferences.</div>';return;}
+  const rows=[...currentConversations].sort((a,b)=>tsMillis(b.lastMessageAt)-tsMillis(a.lastMessageAt)).slice(0,30);
+  const chatHtml=rows.length?'<div class="notification-section-heading">MESSAGES & CONVERSATIONS</div>'+rows.map(c=>{const unreadNow=chatIsUnread(c);const when=tsMillis(c.lastMessageAt)?new Date(tsMillis(c.lastMessageAt)).toLocaleString():"Recently";const preview=c.lastMessage||"Conversation updated";return `<button class="notification-item ${unreadNow?"unread":""}" type="button" data-open-notification-chat="${esc(c.id)}"><span class="notification-icon">${c.isGroup?"✦":"↗"}</span><span><b>${esc(conversationLabel(c))}${unreadNow?" · New message":""}</b><small>${esc(preview)}</small><time>${esc(when)}</time></span><i>${unreadNow?"NEW":"CHAT"}</i></button>`;}).join("") : "";
+  const deadlineHtml=reminders.length?'<div class="notification-section-heading">SAVED OPPORTUNITY DEADLINES</div>'+reminders.map(e=>{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));return `<button class="notification-item deadline-item" type="button" data-open-notification-event="${esc(e.id)}"><span class="notification-icon">◷</span><span><b>${esc(e.title||"Saved opportunity")}</b><small>Registration closes in ${days} day${days===1?"":"s"} · ${esc(e.organizer||e.sourceName||"Organiser not listed")}</small><time>${new Date(e.deadlineMs).toLocaleDateString()}</time></span><i>DEADLINE</i></button>`;}).join("") : "";
+  feed.innerHTML=chatHtml+deadlineHtml||'<div class="empty-note">You are all caught up. New chat activity and saved-opportunity deadlines will appear here.</div>';
+  feed.querySelectorAll("[data-open-notification-chat]").forEach(b=>b.onclick=()=>{const c=currentConversations.find(x=>x.id===b.dataset.openNotificationChat);if(c){location.hash="#messages";selectConversation(c);}});
+  feed.querySelectorAll("[data-open-notification-event]").forEach(b=>b.onclick=()=>{location.hash="#opportunities";viewEvent(b.dataset.openNotificationEvent);});
+}
+function playAppNotificationTone(){try{const AudioContextClass=window.AudioContext||window.webkitAudioContext;if(!AudioContextClass)return;const context=new AudioContextClass();const oscillator=context.createOscillator();const gain=context.createGain();oscillator.type="sine";oscillator.frequency.value=740;gain.gain.setValueAtTime(0.0001,context.currentTime);gain.gain.exponentialRampToValueAtTime(0.08,context.currentTime+0.02);gain.gain.exponentialRampToValueAtTime(0.0001,context.currentTime+0.16);oscillator.connect(gain);gain.connect(context.destination);oscillator.start();oscillator.stop(context.currentTime+0.17);oscillator.onended=()=>context.close().catch(()=>{});}catch{}}
+function notifyIncomingActivity(rows){if(!currentUser)return;const prefs=readAppPrefs();for(const c of rows){if(c.lastMessageSender===currentUser.uid||!chatIsUnread(c))continue;const stamp=tsMillis(c.lastMessageAt);const key=`hv-notified-${currentUser.uid}-${c.id}`;if(!stamp||Number(localStorage.getItem(key)||0)>=stamp)continue;localStorage.setItem(key,String(stamp));if(prefs.sound)playAppNotificationTone();if(prefs.desktop&&"Notification" in window&&Notification.permission==="granted"){try{const n=new Notification(conversationLabel(c),{body:c.lastMessage||"New message",tag:c.id});n.onclick=()=>{window.focus();location.hash="#messages";selectConversation(c);};}catch{}}}}
+function showSettingsTab(tab){$$('[data-settings-panel]').forEach(p=>p.classList.toggle("active",p.dataset.settingsPanel===tab));$$('[data-settings-tab]').forEach(b=>b.classList.toggle("active",b.dataset.settingsTab===tab));}
+const tourSteps=[
+ {route:"home",selector:".hero-copy",title:"Welcome to HackVerse",text:"Your builder network starts here. Discover opportunities, build your profile, meet collaborators and turn your ideas into real projects. The top navigation opens dedicated sections rather than stacking every feature on one screen."},
+ {route:"opportunities",selector:"#opportunitiesContent, #opportunitiesSignInGate",title:"Opportunity radar",text:"Explore hackathons, case competitions, coding events, bootcamps and courses. Filter by skill, country, format, eligibility, cost and deadline. Event listings and details require a signed-in member account."},
+ {route:"people",selector:"#people .section-heading",title:"Community directory",text:"Search discoverable builders by their public profile, interests and skills. Open a profile to understand a builder's background, then start a direct conversation or invite them to a project group."},
+ {route:"people",selector:"#smartTeamBtn",title:"Automatic team builder",text:"Describe your project, choose team size and roles, and run the matching engine. Balanced mode spreads complementary skills across teams; you can review and select people before creating chats."},
+ {route:"messages",selector:".chat-workspace",title:"Messaging workspace",text:"Your chat area supports direct and group conversations, live message updates, replies, reactions, edit/delete, files, voice notes, read receipts and typing indicators. Open Group info to manage participants."},
+ {route:"profile",selector:"#myProfilePanel",title:"Your builder profile",text:"Your profile is your professional identity on HackVerse. Add skills, education, interests, links and availability, then showcase the projects you build. Your public visibility is controlled in Settings."},
+ {route:"notifications",selector:"#activitySummary",title:"Notification centre",text:"Track unread chats and saved opportunity deadlines here. Desktop alerts work while HackVerse is open and your browser has granted notification permission."},
+ {route:"settings",selector:".settings-grid",title:"Settings and personalisation",text:"Choose the theme, motion level, text size, notification preferences and profile visibility. Changes are stored in this browser, while your profile visibility is stored with your Firebase profile."},
+ {route:"home",selector:"#aiLaunchBtn",title:"Meet HackVerse AI",text:"Open the Agent37 assistant for website help or AI Wish. Ask questions about HackVerse, plan tasks and review supported website actions before applying them. AI access depends on the server credentials being configured."}
+];
+let activeTourIndex=-1;
+function removeTourHighlight(){document.querySelectorAll(".tour-highlight").forEach(el=>el.classList.remove("tour-highlight"));}
+function renderTourStep(index){activeTourIndex=Math.max(0,Math.min(index,tourSteps.length-1));const step=tourSteps[activeTourIndex];removeTourHighlight();if(location.hash!==`#${step.route}`)location.hash=`#${step.route}`;setTimeout(()=>{const target= [...document.querySelectorAll(step.selector)].find(el=>!el.hidden&&el.getClientRects().length) || document.querySelector("main");target?.scrollIntoView({behavior:readAppPrefs().motion==="reduced"?"auto":"smooth",block:"center"});target?.classList.add("tour-highlight");$("#tourStepCount").textContent=`GUIDE ${activeTourIndex+1} / ${tourSteps.length}`;$("#tourProgressBar").style.width=`${((activeTourIndex+1)/tourSteps.length)*100}%`;$("#tourTitle").textContent=step.title;$("#tourDescription").textContent=step.text;$("#tourBackBtn").disabled=activeTourIndex===0;$("#tourNextBtn").textContent=activeTourIndex===tourSteps.length-1?"Finish tour ✓":"Next →";},180);}
+function startWebsiteTour(){activeTourIndex=0;$("#tourOverlay").hidden=false;renderTourStep(0);}
+function endWebsiteTour(){removeTourHighlight();$("#tourOverlay").hidden=true;activeTourIndex=-1;localStorage.setItem("hackverse-tour-complete","1");}
+function initAdvancedUI(){
+  applyAppPrefs();loadSettingsUI();
+  $("#notificationBell").onclick=()=>location.hash="#notifications";
+  $("#notificationSettingsBtn").onclick=()=>{location.hash="#settings";setTimeout(()=>showSettingsTab("notifications"),100);};
+  $("#openNotificationPreferences").onclick=$("#notificationSettingsBtn").onclick;
+  $("#markAllReadBtn").onclick=async()=>{if(!requireAccount())return;await Promise.all(currentConversations.map(c=>markConversationRead(c.id)));toast("Your conversation activity is marked as read.");};
+  $("#saveSettingsBtn").onclick=saveAppPrefs;["#settingTheme","#settingMotion","#settingTextSize","#prefReduceMotion"].forEach(sel=>$(sel).addEventListener("change",()=>{const p=readAppPrefs();p.theme=$("#settingTheme").value;p.motion=$("#settingMotion").value;p.textSize=$("#settingTextSize").value;p.reduceMotion=$("#prefReduceMotion").checked;localStorage.setItem("hackverse-app-preferences",JSON.stringify({...p}));applyAppPrefs();}));
+  $("#privacyEditProfile").onclick=$("#settingsEditProfile").onclick=()=>currentUser?openProfileEditor(false):openAuth();
+  $("#settingsSignOut").onclick=()=>currentUser&&signOut(auth).then(()=>toast("Signed out.")).catch(e=>toast(friendlyError(e)));
+  $("#settingProfileVisibility").addEventListener("change",async e=>{if(!requireAccount())return;if(!publicProfile){toast("Complete your profile first.");return;}try{await updateDoc(doc(db,"publicProfiles",currentUser.uid),{profileVisibility:e.target.value,updatedAt:serverTimestamp()});publicProfile.profileVisibility=e.target.value;toast("Profile visibility updated.");}catch(error){toast(friendlyError(error));}});
+  $$('[data-settings-tab]').forEach(b=>b.onclick=()=>showSettingsTab(b.dataset.settingsTab));
+  $("#tourLaunchBtn").onclick=startWebsiteTour;$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);
+  $("#newDirectChatBtn").onclick=()=>location.hash="#people";$("#chatMenuBtn").onclick=()=>{const c=activeConversation;if(!c){toast("Choose a chat first.");return;}const action=prompt("Chat options: type pin, archive, or unarchive");if(!action)return;const prefs=getChatPreferences();const key=action.trim().toLowerCase();for(const list of ["pinned","archived"]){prefs[list]=prefs[list]||[];}const list=key==="pin"?"pinned":key==="archive"||key==="unarchive"?"archived":null;if(!list){toast("Choose pin, archive or unarchive.");return;}const ids=new Set(prefs[list]);if(key==="unarchive")ids.delete(c.id);else if(ids.has(c.id))ids.delete(c.id);else ids.add(c.id);prefs[list]=[...ids];localStorage.setItem(`hv-chat-settings-${currentUser?.uid||"guest"}`,JSON.stringify(prefs));renderConversationList(currentConversations);toast(key==="pin"?"Chat pin updated.":"Chat archive updated.");};
+  $$('[data-chat-filter]').forEach(b=>b.onclick=()=>{activeChatFilter=b.dataset.chatFilter;$$('[data-chat-filter]').forEach(x=>x.classList.toggle("active",x===b));renderConversationList(currentConversations);});
+  $("#chatSearchToggle").onclick=()=>{$("#messageSearchWrap").hidden=!$("#messageSearchWrap").hidden;if(!$("#messageSearchWrap").hidden)$("#messageSearch").focus();};$("#chatDetailsBtn").onclick=openChatIdentity;
+  $("#cancelReply").onclick=()=>{replyingToMessageId=null;updateReplyPreview();};
+  $("#chatFileInput").addEventListener("change",e=>handleChatFile(e.target.files?.[0]));$("#attachFileBtn").onclick=()=>activeConversationId?$("#chatFileInput").click():toast("Choose a conversation first.");
+  $("#voiceRecordBtn").onclick=toggleVoiceRecording;
+  $("#emojiToggle").onclick=()=>$("#emojiTray").hidden=!$("#emojiTray").hidden;
+  $$("#emojiTray button").forEach(b=>b.onclick=()=>{const input=$("#messageText"),start=input.selectionStart,end=input.selectionEnd;input.value=input.value.slice(0,start)+b.textContent+input.value.slice(end);input.focus();input.selectionStart=input.selectionEnd=start+b.textContent.length;$("#emojiTray").hidden=true;});
+  $("#messageText").addEventListener("input",()=>{if($("#messageText").value.trim())publishTyping();});
+}
+
 function handleRoute() {
   const raw=(location.hash||"#home").slice(1);
-  const aliases={top:"home",discover:"home",opportunities:"opportunities",saved:"saved",people:"people",messages:"messages",profile:"profile"};
+  const aliases={top:"home",discover:"home",opportunities:"opportunities",saved:"saved",people:"people",messages:"messages",profile:"profile",notifications:"notifications",settings:"settings"};
   const view=aliases[raw]||"home";
   $$('[data-view]').forEach(el=>{
     if(el.id==="discoveryAdminPanel"){el.hidden=!(view==="home"&&isAdminUser);return;}
@@ -987,14 +1582,20 @@ function handleRoute() {
   $$("[data-route]").forEach(a=>a.classList.toggle("active",a.dataset.route===view));
   document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
   window.scrollTo({top:0,behavior:"auto"});
-  if(view==="opportunities")renderEvents();
+  if(view==="opportunities"){ updateEventAccessUI(); if(currentUser)renderEvents(); }
   if(view==="saved")renderSaved();
   if(view==="people"&&currentUser)searchPeople();
+  if(view==="notifications")renderNotificationCenter();
+  if(view==="settings")loadSettingsUI();
 }
 
 function bindUI() {
+  document.addEventListener("visibilitychange",()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);});
+  window.setInterval(()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);},10*60*1000);
   $("#year").textContent = new Date().getFullYear();
+  initAdvancedUI();
   $("#authButton").onclick = () => currentUser ? signOut(auth).then(() => toast("Signed out.")) : openAuth();
+  $$('[data-open-auth]').forEach(button => button.addEventListener("click", () => openAuth()));
   $("#accountButton").onclick = () => currentUser ? location.hash = "#profile" : openAuth("signup");
   $("#ctaJoin").onclick = () => currentUser ? location.hash = "#profile" : openAuth("signup");
   $("#profileStartBtn").onclick = () => currentUser ? openProfileEditor(false) : openAuth("signup");
@@ -1023,23 +1624,30 @@ function bindUI() {
   $("#projectForm").addEventListener("submit", createProject);
   $$("[data-close]").forEach(button => button.addEventListener("click", () => { const id = button.dataset.close; if (id === "profileModal") closeProfileModal(); else hideModal(id); }));
   $$(".modal-backdrop").forEach(modal => modal.addEventListener("click", e => { if (e.target === modal) { if (modal.id === "profileModal") closeProfileModal(); else hideModal(modal.id); } }));
-  document.addEventListener("keydown", e => { if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") closeProfileModal(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); $("#aiPanel").hidden = true; $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } });
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
-  $("#refreshEventsBtn").onclick = loadEvents;
+  $("#refreshEventsBtn").onclick = () => requireAccount() && loadEvents();
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
+  $("#aiLaunchBtn").onclick = () => { const panel = $("#aiPanel"); panel.hidden = !panel.hidden; $("#aiLaunchBtn").setAttribute("aria-expanded", String(!panel.hidden)); if (!panel.hidden && currentUser) loadAiHistory(); };
+  $("#aiCloseBtn").onclick = () => { $("#aiPanel").hidden = true; $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); };
+  $("#aiChatModeBtn").onclick = () => setAiMode("chat");
+  $("#aiWishModeBtn").onclick = () => setAiMode("wish");
+  $("#aiNewChatBtn").onclick = () => currentUser ? startAiConversation(aiMode) : (openAuth(), toast("Sign in to keep a private AI history."));
+  $("#aiForm").addEventListener("submit", sendAiMessage);
+  $("#aiInput").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#aiForm").requestSubmit(); } });
   $("#peopleSearch").addEventListener("input", searchPeople); $("#peopleRole").onchange = searchPeople; $("#lookingForTeamOnly").onchange = searchPeople;
   $("#backToExploreBtn").onclick = () => { location.hash = "#opportunities"; };
-  $("#themeToggle").onclick = () => { document.body.classList.toggle("light"); localStorage.setItem("hackverse-theme", document.body.classList.contains("light") ? "light" : "dark"); };
+  $("#themeToggle").onclick = () => { document.body.classList.toggle("light"); const prefs=readAppPrefs();prefs.theme=document.body.classList.contains("light")?"light":"dark";localStorage.setItem("hackverse-app-preferences",JSON.stringify(prefs));localStorage.setItem("hackverse-theme",prefs.theme); };
   if (localStorage.getItem("hackverse-theme") === "light") document.body.classList.add("light");
   $("#menuToggle").onclick = () => { document.querySelector(".desktop-nav").classList.toggle("mobile-open"); };
   $$(".desktop-nav a").forEach(a => a.addEventListener("click", () => document.querySelector(".desktop-nav").classList.remove("mobile-open")));
   window.addEventListener("hashchange",handleRoute); handleRoute();
 }
-function runHeroSearch() { $("#eventSearch").value = $("#heroSearch").value; renderEvents(); location.hash = "#opportunities"; }
+function runHeroSearch() { if (!requireAccount()) return; $("#eventSearch").value = $("#heroSearch").value; renderEvents(); location.hash = "#opportunities"; }
 
 bindUI();
 initFirebase();

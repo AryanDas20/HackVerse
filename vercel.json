@@ -1,0 +1,8 @@
+{
+  "outputDirectory": "public",
+  "functions": {
+    "api/agent37/chat.js": {
+      "maxDuration": 300
+    }
+  }
+}

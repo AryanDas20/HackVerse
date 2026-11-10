@@ -2,7 +2,7 @@
 
 ## Current release topology
 
-Browser (HTML/CSS/ES modules, Firebase Web SDK) → Firebase Authentication → Cloud Firestore.
+Browser (HTML/CSS/ES modules, Firebase Web SDK + Supabase JS for signed uploads) → Firebase Authentication → Cloud Firestore; chat media is stored in private Supabase Storage through a Vercel API.
 
 - Firebase Hosting serves the static site.
 - Firestore stores private user accounts, public member profiles, username reservations, events, saved events, conversations/messages, project cards, and profile reports.
@@ -29,4 +29,4 @@ This starter is a single-page static client. It has no backend search service, m
 2. Add Firebase App Check and rules/emulator tests to CI.
 3. Add Cloud Tasks/Pub/Sub for ingestion retry and source fan-out.
 4. Add dedicated search indexing (Algolia, Typesense, or Meilisearch).
-5. Add Firebase Storage only when validated upload and retention rules are ready.
+5. Add App Check, signed-URL rate limits, media retention/deletion and Supabase quota monitoring before scaling chat attachments.

@@ -28,7 +28,7 @@ The author can edit or soft-delete their own message within 15 minutes. Deleted 
 
 ## Projects and safety
 
-Members can create public/private project cards and manage their own projects. Firestore rules restrict private user documents to the owner/admin, public directory fields to the curated whitelist, and conversations/messages to participants. Admin claims must be assigned from a trusted Admin SDK environment. The app does not upload to Firebase Storage.
+Members can create public/private project cards and manage their own projects. Firestore rules restrict private user documents to the owner/admin, public directory fields to the curated whitelist, and conversations/messages to participants. Admin claims must be assigned from a trusted Admin SDK environment. Chat attachments use private Supabase Storage through a server-side Firebase-membership check; Firebase Storage is not used.
 
 The starter does not yet include a complete moderation operations dashboard, rate limiting, appeals workflow, account data export/deletion UI or anti-abuse automation. These are needed before large-scale public launch.
 
