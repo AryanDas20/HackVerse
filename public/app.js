@@ -2,7 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/13.1.0/firebas
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword,
   signInWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged,
-  sendEmailVerification, updateProfile as updateAuthProfile
+  sendEmailVerification, reload, updateProfile as updateAuthProfile
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, query, where, orderBy,
@@ -24,6 +24,8 @@ let stopInboxListener = null, profileIsMandatory = false, selectedMember = null,
 let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
 let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [];
 let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false;
+let emailVerificationGuard = false;
+let dialogResolver = null;
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const listFrom = value => String(value || "").split(",").map(x => x.trim()).filter(Boolean).slice(0, 30);
@@ -33,6 +35,28 @@ const initials = name => String(name || "HV").trim().split(/\s+/).slice(0, 2).ma
 const toast = message => { const el = $("#toast"); el.textContent = message; el.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove("show"), 3000); };
 const showModal = id => { const el = document.getElementById(id); if (el) el.hidden = false; };
 const hideModal = id => { const el = document.getElementById(id); if (el) el.hidden = true; };
+function chooseInApp(title, message, choices = [{value:"cancel",label:"Cancel",variant:"outline"}], inputConfig = null) {
+  const modal=$("#appDialog"); if(!modal) return Promise.resolve(null);
+  if(dialogResolver) dialogResolver(null);
+  $("#appDialogTitle").textContent=title; $("#appDialogMessage").textContent=message;
+  $("#appDialogInputWrap").hidden=!inputConfig;
+  if(inputConfig){$("#appDialogInputLabel").textContent=inputConfig.label||"Your answer";$("#appDialogInput").value=inputConfig.value||"";}
+  const actions=$("#appDialogActions"); actions.innerHTML="";
+  choices.forEach(choice=>{const button=document.createElement("button");button.type="button";button.className=`btn ${choice.variant==="danger"?"btn-danger":choice.variant==="primary"?"btn-primary":"btn-outline"}`;button.textContent=choice.label;button.addEventListener("click",()=>{modal.hidden=true;const resolve=dialogResolver;dialogResolver=null;resolve?.(choice.value);},{once:true});actions.append(button);});
+  modal.hidden=false;
+  return new Promise(resolve=>{dialogResolver=resolve;});
+}
+async function promptInApp(title, message, initialValue="", inputLabel="Your answer") {
+  const choice=await chooseInApp(title,message,[{value:"cancel",label:"Cancel",variant:"outline"},{value:"save",label:"Continue",variant:"primary"}],{value:initialValue,label:inputLabel});
+  const value=$("#appDialogInput")?.value||"";
+  return choice==="save"?value:null;
+}
+
+function confirmInApp(message,title="Are you sure?") {
+  return chooseInApp(title,message,[{value:false,label:"Cancel",variant:"outline"},{value:true,label:"Continue",variant:"danger"}]);
+}
+function closeInAppDialog(){const modal=$("#appDialog");if(modal)modal.hidden=true;const resolve=dialogResolver;dialogResolver=null;resolve?.(null);}
+
 const requireAccount = () => { if (!currentUser) { openAuth(); toast("Sign in to use this feature."); return false; } if (!db) { toast("Connect Firebase before using account features."); return false; } return true; };
 const tsMillis = value => value?.toMillis ? value.toMillis() : value?.seconds ? value.seconds * 1000 : (value ? new Date(value).getTime() : 0);
 const friendlyError = error => {
@@ -61,7 +85,21 @@ function initFirebase() {
     app = initializeApp(firebaseConfig); auth = getAuth(app); db = getFirestore(app); functions = getFunctions(app);
     if (supabaseConfig.url && !supabaseConfig.url.startsWith("YOUR_") && supabaseConfig.anonKey && !supabaseConfig.anonKey.startsWith("YOUR_")) supabaseClient = createClient(supabaseConfig.url, supabaseConfig.anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
     onAuthStateChanged(auth, async user => {
+      if (user && emailVerificationGuard) return;
+      if (user && user.providerData?.some(p => p.providerId === "password")) {
+        try { await reload(user); } catch (error) { console.warn("Could not refresh email verification state", error); }
+        if (!user.emailVerified) {
+          emailVerificationGuard = true;
+          try { await sendEmailVerification(user).catch(()=>{}); await signOut(auth); }
+          finally { emailVerificationGuard = false; }
+          $("#authMessage").textContent = "Please verify your email before using HackVerse. We sent a verification link.";
+          showModal("authModal");
+          return;
+        }
+      }
       currentUser = user;
+      // Re-evaluate member-only routes immediately after Firebase auth changes.
+      handleRoute();
       isAdminUser = false;
       $("#discoveryAdminPanel").hidden = true;
       if (user) { try { const token = await user.getIdTokenResult(); isAdminUser = token.claims.admin === true; } catch (e) { console.warn("Admin claim check failed", e); } }
@@ -75,11 +113,12 @@ function initFirebase() {
         detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
         $("#chatPlaceholder").hidden = false; $("#chatActive").hidden = true;
         activeAiConversationId = null; currentAiMessages = []; pendingAiActions = []; updateAiAccessUI(); renderAiMessages();
-        setSystemNotice(""); updateEventAccessUI(); renderEvents(); searchPeople(); return;
+        setSystemNotice(""); updateEventAccessUI(); renderEvents(); searchPeople(); handleRoute(); return;
       }
       updateEventAccessUI();
       await loadEvents();
       await loadAccountWorkspace();
+      handleRoute();
       await loadAiHistory();
     });
   } catch (error) {
@@ -113,22 +152,48 @@ async function authSubmit(event) {
   event.preventDefault();
   if (!auth || !db) return;
   const email = $("#authEmail").value.trim(); const password = $("#authPassword").value;
-  $("#authMessage").textContent = "";
+  const submit = $("#authSubmit");
+  if (submit.disabled) return;
+  const originalLabel = authMode === "signup" ? "Create account →" : "Sign in →";
+  submit.disabled = true;
+  submit.setAttribute("aria-busy", "true");
+  submit.textContent = authMode === "signup" ? "Creating account…" : "Signing in…";
+  $("#authMessage").textContent = authMode === "signup" ? "Creating your account and preparing email verification…" : "Checking your sign-in…";
   try {
     if (authMode === "signup") {
+      emailVerificationGuard = true;
       const credential = await createUserWithEmailAndPassword(auth, email, password);
-      try { await sendEmailVerification(credential.user); } catch (verificationError) { console.warn("Verification email could not be sent", verificationError); }
-      hideModal("authModal"); toast("Account created. Complete your builder profile to continue.");
-    } else {
-      await signInWithEmailAndPassword(auth, email, password); hideModal("authModal"); toast("Welcome back.");
+      await sendEmailVerification(credential.user);
+      await signOut(auth);
+      $("#authMessage").textContent = "Verification email sent. Open the link in your inbox, then return here and sign in. Check Spam if it is missing.";
+      setAuthMode("signin");
+      return;
     }
+    const credential = await signInWithEmailAndPassword(auth, email, password);
+    await reload(credential.user);
+    if (!credential.user.emailVerified) {
+      await sendEmailVerification(credential.user).catch(()=>{});
+      await signOut(auth);
+      $("#authMessage").textContent = "Your email is not verified yet. We sent another verification link. Verify it, then sign in again.";
+      return;
+    }
+    hideModal("authModal"); toast("Welcome back.");
   } catch (error) { $("#authMessage").textContent = friendlyError(error); }
+  finally {
+    emailVerificationGuard = false;
+    submit.disabled = false;
+    submit.removeAttribute("aria-busy");
+    submit.textContent = authMode === "signup" ? "Create account →" : "Sign in →";
+  }
 }
 
 async function googleSignIn() {
   if (!auth || !db) return;
+  const button=$("#googleSignIn"); if(button.disabled)return;
+  button.disabled=true; button.setAttribute("aria-busy","true"); button.textContent="Connecting to Google…";
   try { await signInWithPopup(auth, new GoogleAuthProvider()); hideModal("authModal"); toast("Signed in with Google."); }
   catch (error) { $("#authMessage").textContent = friendlyError(error); }
+  finally { button.disabled=false; button.removeAttribute("aria-busy"); button.innerHTML='<span class="google-g">G</span> Continue with Google'; }
 }
 
 async function resetPassword() {
@@ -168,10 +233,10 @@ function openProfileEditor(mandatory = false) {
   $("#profileCollege").value = p.college || ""; $("#profileCollegeShort").value = p.collegeShort || ""; $("#profileCourse").value = p.course || "";
   $("#profileStudyLevel").value = p.studyLevel || ""; $("#profileGradYear").value = p.graduationYear || "";
   $("#profileCity").value = p.city || ""; $("#profileCountry").value = p.country || "";
-  $("#profileBio").value = p.bio || ""; $("#profileSkills").value = (p.skills || []).join(", ");
+  $("#profileBio").value = p.bio || ""; $("#profileStatus").value = p.statusText || ""; $("#profileSkills").value = (p.skills || []).join(", ");
   $("#profileRoles").value = (p.rolesInterested || []).join(", "); $("#profileInterests").value = (p.interests || []).join(", ");
   $("#profileAvailability").value = p.availability || "Open to opportunities"; $("#profileMode").value = p.preferredMode || "Any format";
-  $("#profileAvatar").value = p.avatarUrl || ""; $("#profileGithub").value = p.github || "";
+  $("#profileAvatar").value = p.avatarUrl || ""; $("#profileAvatarFile").value = ""; $("#profileAvatarPreviewWrap").hidden = !p.avatarUrl; if(p.avatarUrl) $("#profileAvatarPreview").src = p.avatarUrl; $("#profileGithub").value = p.github || "";
   $("#profileLinkedin").value = p.linkedin || ""; $("#profilePortfolio").value = p.portfolio || "";
   $("#profilePhone").value = privateProfile?.phone || ""; $("#profilePhoneVisibility").value = privateProfile?.phoneVisibility || "private"; $("#profileEmailVisibility").value = privateProfile?.emailVisibility || "private"; $("#profileVisibility").value = privateProfile?.profileVisibility || p.profileVisibility || "public"; $("#profileLooking").value = String(p.lookingForTeam !== false);
   $("#profilePublicConsent").checked = Boolean(p.profileConsentAt);
@@ -181,6 +246,27 @@ function openProfileEditor(mandatory = false) {
   $("#profileModalClose").hidden = mandatory;
   $("#profileSignOutBtn").hidden = !mandatory;
   showModal("profileModal");
+}
+
+async function uploadProfileAvatar(file) {
+  if(!file || !requireAccount()) return;
+  const allowed = new Set(["image/jpeg","image/png","image/webp"]);
+  if(!allowed.has(file.type)){toast("Choose a JPG, PNG or WebP image.");return;}
+  if(file.size>5*1024*1024){toast("Profile photos must be 5 MB or smaller.");return;}
+  if(!supabaseClient){toast("Profile photo storage is not configured. Check the Supabase public key setup.");return;}
+  const input=$("#profileAvatarFile"); if(input)input.disabled=true;
+  try{
+    const token=await currentUser.getIdToken();
+    const response=await fetch("/api/profile-avatar",{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${token}`},body:JSON.stringify({action:"create-upload",fileName:file.name,contentType:file.type,size:file.size})});
+    const payload=await response.json().catch(()=>({})); if(!response.ok)throw new Error(payload.error||`Upload permission failed (${response.status}).`);
+    const {error}=await supabaseClient.storage.from(payload.bucket).uploadToSignedUrl(payload.path,payload.token,file,{contentType:file.type,upsert:false});
+    if(error)throw error;
+    const publicUrl=supabaseClient.storage.from(payload.bucket).getPublicUrl(payload.path).data.publicUrl;
+    $("#profileAvatar").value=publicUrl;
+    $("#profileAvatarPreview").src=publicUrl; $("#profileAvatarPreviewWrap").hidden=false;
+    toast("Profile photo uploaded. Save your profile to apply it.");
+  }catch(error){console.error("Profile photo upload failed",error);toast(error.message||"Could not upload profile photo.");}
+  finally{if(input)input.disabled=false;}
 }
 
 async function saveProfile(event) {
@@ -203,7 +289,7 @@ async function saveProfile(event) {
     college, collegeLower: college.toLowerCase(), collegeShort: $("#profileCollegeShort").value.trim(), collegeShortLower: $("#profileCollegeShort").value.trim().toLowerCase(), course, studyLevel: $("#profileStudyLevel").value,
     graduationYear: Number($("#profileGradYear").value) || null,
     city: $("#profileCity").value.trim(), country: $("#profileCountry").value.trim(),
-    bio, skills, skillsLower: normalizedList(skills.join(",")),
+    bio, statusText: String($("#profileStatus").value || "").trim().slice(0,100), joinedAt: privateProfile?.createdAt || publicProfile?.joinedAt || Date.now(), skills, skillsLower: normalizedList(skills.join(",")),
     rolesInterested: listFrom($("#profileRoles").value), rolesLower: normalizedList($("#profileRoles").value),
     interests: listFrom($("#profileInterests").value), interestsLower: normalizedList($("#profileInterests").value),
     courseLower: course.toLowerCase(), availability: $("#profileAvailability").value,
@@ -591,7 +677,7 @@ async function viewMember(uid) {
   try {
     const snap = await getDoc(doc(db, "publicProfiles", uid)); if (!snap.exists()) { toast("This profile is no longer available."); return; }
     selectedMember = { uid, ...snap.data() }; const p = selectedMember;
-    $("#memberProfileContent").innerHTML = `<div class="member-profile-head"><div class="avatar avatar-large">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div><div class="eyebrow">HACKVERSE BUILDER</div><h2 id="memberModalTitle">${esc(p.displayName || "Builder")}</h2><p class="member-handle">@${esc(p.username || "member")}</p></div></div><p class="member-bio">${esc(p.bio || "No bio added yet.")}</p><div class="member-facts"><span>${esc([p.course,p.college].filter(Boolean).join(" · ") || "Education not listed")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not listed")}</span><span>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not listed")}</span><span>${esc(p.availability || "Availability not listed")}</span><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span></div><h3>Skills</h3><div class="skill-tags">${(p.skills || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interested roles</h3><div class="skill-tags">${(p.rolesInterested || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interests</h3><div class="skill-tags">${(p.interests || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><div class="member-contact"><h3>Contact details</h3><p>${p.publicEmail ? `Email: <a href="mailto:${esc(p.publicEmail)}">${esc(p.publicEmail)}</a>` : "Email kept private by this member."}</p><p>${p.publicPhone ? `Phone: <a href="tel:${esc(p.publicPhone)}">${esc(p.publicPhone)}</a>` : "Phone kept private by this member."}</p></div><div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>`;
+    $("#memberProfileContent").innerHTML = `<div class="member-profile-head"><div class="avatar avatar-large">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div><div class="eyebrow">HACKVERSE BUILDER</div><h2 id="memberModalTitle">${esc(p.displayName || "Builder")}</h2><p class="member-handle">@${esc(p.username || "member")}</p></div></div><p class="member-bio">${esc(p.statusText || "")}</p><p class="member-bio">${esc(p.bio || "No bio added yet.")}</p><div class="member-facts">${p.joinedAt ? `<span>Joined ${new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"short",year:"numeric"})}</span>` : ""}<span>${esc([p.course,p.college].filter(Boolean).join(" · ") || "Education not listed")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not listed")}</span><span>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not listed")}</span><span>${esc(p.availability || "Availability not listed")}</span><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span></div><h3>Skills</h3><div class="skill-tags">${(p.skills || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interested roles</h3><div class="skill-tags">${(p.rolesInterested || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interests</h3><div class="skill-tags">${(p.interests || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><div class="member-contact"><h3>Contact details</h3><p>${p.publicEmail ? `Email: <a href="mailto:${esc(p.publicEmail)}">${esc(p.publicEmail)}</a>` : "Email kept private by this member."}</p><p>${p.publicPhone ? `Phone: <a href="tel:${esc(p.publicPhone)}">${esc(p.publicPhone)}</a>` : "Phone kept private by this member."}</p></div><div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>`;
     $("#memberMessageBtn").onclick = () => startDirectConversation(selectedMember);
     $("#memberReportBtn").onclick = () => reportMember(selectedMember);
     showModal("memberModal");
@@ -615,7 +701,7 @@ function beginInboxListener() {
     else { currentConversations.forEach(c=>{const stamp=tsMillis(c.lastMessageAt);if(stamp)localStorage.setItem(`hv-notified-${currentUser.uid}-${c.id}`,String(stamp));});localStorage.setItem(notificationBaselineKey,"1"); }
     if (activeConversationId) {
       const latest = currentConversations.find(x => x.id === activeConversationId);
-      if (latest) { activeConversation = latest; renderChatHeading(); }
+      if (latest) { activeConversation = latest; renderChatHeading(); if(currentMessages.length)renderMessages(currentMessages); }
     }
   }, error => { console.error("Inbox listener", error); $("#conversationList").innerHTML = '<div class="empty-note">Could not load conversations. Check Firestore rules.</div>'; });
 }
@@ -640,7 +726,7 @@ function chatIsUnread(c) {
 function renderConversationList(rows) {
   const term = $("#conversationSearch")?.value.trim().toLowerCase() || "";
   const prefs = getChatPreferences(); const archived = new Set(prefs.archived || []); const pinned = new Set(prefs.pinned || []);
-  let visible = rows.filter(c => `${conversationLabel(c)} ${c.lastMessage || ""} ${(c.participantNames ? Object.values(c.participantNames) : []).join(" ")}`.toLowerCase().includes(term));
+  let visible = rows.filter(c => { const hiddenAt=tsMillis(c.hiddenForBy?.[currentUser?.uid]); return !hiddenAt || tsMillis(c.lastMessageAt)>hiddenAt; }).filter(c => `${conversationLabel(c)} ${c.lastMessage || ""} ${(c.participantNames ? Object.values(c.participantNames) : []).join(" ")}`.toLowerCase().includes(term));
   visible = visible.filter(c => {
     if (activeChatFilter === "archived") return archived.has(c.id);
     if (archived.has(c.id)) return false;
@@ -661,9 +747,37 @@ function renderConversationList(rows) {
   }).join("");
   list.querySelectorAll("[data-conversation]").forEach(b => b.onclick = () => selectConversation(visible.find(c => c.id === b.dataset.conversation)));
 }
+async function hideChatForMe() {
+  if(!activeConversationId||!requireAccount())return;
+  try{await updateDoc(doc(db,"conversations",activeConversationId),{[`hiddenForBy.${currentUser.uid}`]:serverTimestamp()});toast("Chat deleted from your chat list. It will reappear if a new message arrives.");activeConversation=null;activeConversationId=null;if(stopMessageListener)stopMessageListener();stopMessageListener=null;$("#chatActive").hidden=true;$("#chatPlaceholder").hidden=false;renderConversationList(currentConversations);}catch(error){toast(friendlyError(error));}
+}
+async function clearChatForMe() {
+  if(!activeConversationId||!requireAccount())return;
+  if(!(await confirmInApp("Clear all messages from your view? Other members will still see their copies.","Clear chat")))return;
+  try{await updateDoc(doc(db,"conversations",activeConversationId),{[`clearAtBy.${currentUser.uid}`]:serverTimestamp()});activeConversation={...activeConversation,clearAtBy:{...(activeConversation.clearAtBy||{}),[currentUser.uid]:Date.now()}};renderMessages(currentMessages);toast("Chat cleared from your view.");}catch(error){toast(friendlyError(error));}
+}
+async function openChatActions(){
+  if(!activeConversation){toast("Choose a chat first.");return;}
+  const prefs=getChatPreferences(),pinned=new Set(prefs.pinned||[]),archived=new Set(prefs.archived||[]);
+  const c=activeConversation;
+  const choice=await chooseInApp("Chat options",`Manage ${conversationLabel(c)}. Deleting a chat only removes it from your own list.`,[
+    {value:"pin",label:pinned.has(c.id)?"Unpin chat":"Pin chat",variant:"outline"},
+    {value:"archive",label:archived.has(c.id)?"Unarchive chat":"Archive chat",variant:"outline"},
+    {value:"clear",label:"Clear chat for me",variant:"outline"},
+    {value:"delete",label:"Delete chat for me",variant:"danger"},
+    {value:"cancel",label:"Close",variant:"outline"}
+  ]);
+  if(!choice||choice==="cancel")return;
+  if(choice==="clear"){await clearChatForMe();return;} if(choice==="delete"){if(await confirmInApp("Remove this conversation from your chat list? The other participants keep their chat and messages.","Delete chat for me"))await hideChatForMe();return;}
+  const list=choice==="pin"?"pinned":"archived";const ids=new Set(prefs[list]||[]);ids.has(c.id)?ids.delete(c.id):ids.add(c.id);prefs[list]=[...ids];localStorage.setItem(`hv-chat-settings-${currentUser?.uid||"guest"}`,JSON.stringify(prefs));renderConversationList(currentConversations);toast(choice==="pin"?"Pin preference updated.":"Archive preference updated.");
+}
+
 function renderChatHeading() {
   if (!activeConversation) return;
   $("#chatTitle").textContent = conversationLabel(activeConversation);
+  const avatarEl=$("#chatContactAvatar");
+  if(avatarEl){const imageUrl=activeConversation.isGroup?validUrl(activeConversation.groupPhotoUrl):"";avatarEl.innerHTML=imageUrl?`<img src="${esc(imageUrl)}" alt="" loading="lazy">`:esc(activeConversation.isGroup?"✦":initials(conversationLabel(activeConversation)));if(!activeConversation.isGroup){const other=(activeConversation.participants||[]).find(uid=>uid!==currentUser?.uid);if(other)getDoc(doc(db,"publicProfiles",other)).then(snap=>{if(activeConversationId===activeConversation.id&&snap.exists()&&snap.data().avatarUrl){avatarEl.innerHTML=`<img src="${esc(validUrl(snap.data().avatarUrl))}" alt="" loading="lazy">`;}}).catch(()=>{});}}
+
   const members = (activeConversation.participants || []).length;
   $("#chatSubtitle").textContent = activeConversation.isGroup ? `${members} members · ${activeConversation.groupName || "Team chat"}` : "Direct conversation · click to view profile";
   const canManage = Boolean(activeConversation.isGroup && (activeConversation.createdBy === currentUser?.uid || (activeConversation.admins || []).includes(currentUser?.uid)));
@@ -678,7 +792,7 @@ function selectConversation(conversation) {
   const messagesQuery = query(collection(db, "conversations", conversation.id, "messages"), orderBy("createdAt", "desc"), limit(300));
   stopMessageListener = onSnapshot(messagesQuery, snapshot => {
     currentMessages = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).reverse();
-    renderMessages(currentMessages); hydrateChatAttachmentUrls(conversation.id, currentMessages).catch(error => console.warn("Chat attachment preview unavailable", error)); markConversationRead(conversation.id).catch(()=>{});
+    renderMessages(currentMessages); hydrateChatAttachmentUrls(conversation.id, currentMessages).catch(error => console.warn("Chat attachment preview unavailable", error)); markConversationDelivered(conversation.id).catch(()=>{}); markConversationRead(conversation.id).catch(()=>{});
   }, error => { console.error("Messages listener", error); $("#messageList").innerHTML = '<div class="empty-note">Could not load messages. Check Firestore rules.</div>'; });
   startTypingListener(conversation.id);
   renderConversationListFromSnapshotSelection();
@@ -692,7 +806,8 @@ function updateReplyPreview() {
 }
 function renderMessages(messages) {
   const term = $("#messageSearch")?.value.trim().toLowerCase() || "";
-  const visible = messages.filter(m => !term || String(m.text || "").toLowerCase().includes(term) || String(m.authorName || "").toLowerCase().includes(term) || String(m.attachment?.name || "").toLowerCase().includes(term));
+  const clearAt=tsMillis(activeConversation?.clearAtBy?.[currentUser?.uid]);
+  const visible = messages.filter(m => !m.hiddenForBy?.[currentUser?.uid] && (!clearAt || tsMillis(m.createdAt)>clearAt)).filter(m => !term || String(m.text || "").toLowerCase().includes(term) || String(m.authorName || "").toLowerCase().includes(term) || String(m.attachment?.name || "").toLowerCase().includes(term));
   const box = $("#messageList"); if (!box) return;
   if ($("#messageSearchCount")) $("#messageSearchCount").textContent = term ? `${visible.length} matches` : `${messages.length} messages`;
   if (!visible.length) { box.innerHTML = `<div class="empty-note message-empty">${term ? "No messages match your search." : "This is the beginning of this chat. Say hello 👋"}</div>`; return; }
@@ -702,7 +817,7 @@ function renderMessages(messages) {
     const canEdit = mine && !m.deleted && created && Date.now() - created <= 15*60*1000;
     const reply = m.replyTo ? `<div class="message-reply-quote"><b>${esc(m.replyTo.authorName || "Reply")}</b><span>${esc(m.replyTo.text || "Original message")}</span></div>` : "";
     let attachment = "";
-    if (m.attachment?.url) {
+    if (m.attachment?.url && !m.deleted) {
       const url = validUrl(m.attachment.url); const type = String(m.attachment.type || "");
       if (type.startsWith("image/")) attachment = `<a class="chat-attachment-image" href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${esc(m.attachment.name || "Shared image")}" loading="lazy"></a>`;
       else if (type.startsWith("audio/")) attachment = `<audio class="chat-audio" controls preload="none" src="${esc(url)}"></audio>`;
@@ -710,12 +825,16 @@ function renderMessages(messages) {
       else attachment = `<a class="chat-file-card" href="${esc(url)}" target="_blank" rel="noopener"><span>↧</span><span><b>${esc(m.attachment.name || "Shared file")}</b><small>${esc(formatFileSize(m.attachment.size || 0))}</small></span></a>`;
     }
     const reactions = Object.entries(m.reactions || {}).reduce((acc,[uid,emoji]) => { if (emoji) acc[emoji]=(acc[emoji]||0)+1; return acc; }, {});
+    const pinnedMessages = new Set(prefs.pinnedMessages || []);
+    const isPinnedHere = pinnedMessages.has(`${activeConversationId}:${m.id}`);
     const reactionHtml = Object.entries(reactions).map(([emoji,count])=>`<button class="reaction-chip ${(m.reactions||{})[currentUser?.uid]===emoji?"mine":""}" type="button" data-react-message="${esc(m.id)}" data-emoji="${esc(emoji)}">${esc(emoji)} <span>${count}</span></button>`).join("");
-    const readAt = activeConversation?.readAtBy || {}; const recipients = (activeConversation?.participants || []).filter(uid=>uid!==currentUser?.uid);
+    const readAt = activeConversation?.readAtBy || {}; const deliveredAt=activeConversation?.deliveredAtBy||{}; const recipients = (activeConversation?.participants || []).filter(uid=>uid!==currentUser?.uid);
     const readByAll = recipients.length && recipients.every(uid=>tsMillis(readAt[uid])>=created && created>0);
-    const status = mine ? `<span class="message-ticks ${readByAll?"read":""}" title="${readByAll?"Read":"Sent"}">${readByAll?"✓✓":"✓"}</span>` : "";
+    const deliveredByAll = recipients.length && recipients.every(uid=>tsMillis(deliveredAt[uid])>=created && created>0);
+    const deliveryLabel=readByAll?"Read":deliveredByAll?"Delivered":"Sent";
+    const status = mine ? `<span class="message-ticks ${readByAll?"read":deliveredByAll?"delivered":""}" title="${deliveryLabel}">${readByAll?"✓✓":deliveredByAll?"✓✓":"✓"}</span>` : "";
     const messageText = m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || "");
-    return `<article class="message-row ${mine ? "mine" : "theirs"}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${reply}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine?`${canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete">⌫</button>`:""}<button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
+    return `<article class="message-row ${mine ? "mine" : "theirs"}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${reply}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}${isPinnedHere?'<small class="message-pinned-label">⌖ Pinned on this device</small>':""}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-pin-message="${esc(m.id)}" title="Pin on this device">${isPinnedHere?"⌖":"♧"}</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine&&canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}${!mine?`<button type="button" data-report-message="${esc(m.id)}" title="Report message">⚑</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete for me or everyone">⌫</button><button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
   }).join("");
   box.querySelectorAll("[data-view-message-author]").forEach(b => b.onclick = () => { if (b.dataset.viewMessageAuthor) viewMember(b.dataset.viewMessageAuthor); });
   box.querySelectorAll("[data-edit-message]").forEach(b => b.onclick = () => editMessage(b.dataset.editMessage));
@@ -724,6 +843,8 @@ function renderMessages(messages) {
   box.querySelectorAll("[data-react-message]").forEach(b => b.onclick = () => toggleMessageReaction(b.dataset.reactMessage,b.dataset.emoji || "👍"));
   box.querySelectorAll("[data-copy-message]").forEach(b => b.onclick = () => copyMessage(b.dataset.copyMessage));
   box.querySelectorAll("[data-star-message]").forEach(b => b.onclick = () => toggleStarMessage(b.dataset.starMessage));
+  box.querySelectorAll("[data-pin-message]").forEach(b => b.onclick = () => togglePinMessage(b.dataset.pinMessage));
+  box.querySelectorAll("[data-report-message]").forEach(b => b.onclick = () => reportMessage(b.dataset.reportMessage));
   box.querySelectorAll("[data-forward-message]").forEach(b => b.onclick = () => forwardMessage(b.dataset.forwardMessage));
   box.scrollTop = box.scrollHeight;
 }
@@ -738,17 +859,32 @@ async function toggleMessageReaction(messageId, emoji) {
 }
 async function copyMessage(messageId) { const m=currentMessages.find(x=>x.id===messageId); if(!m)return; try{await navigator.clipboard.writeText(m.text||m.attachment?.url||"");toast("Message copied.");}catch{toast("Clipboard access was blocked by your browser.");} }
 function toggleStarMessage(messageId) { const prefs=getChatPreferences();const starred=new Set(prefs.starred||[]);const key=`${activeConversationId}:${messageId}`;starred.has(key)?starred.delete(key):starred.add(key);setChatPreference("starred",[...starred]);renderMessages(currentMessages);toast(starred.has(key)?"Message saved to starred items.":"Removed from starred items."); }
+function togglePinMessage(messageId) {
+  const prefs=getChatPreferences();const key=`${activeConversationId}:${messageId}`;const pins=new Set(prefs.pinnedMessages||[]);pins.has(key)?pins.delete(key):pins.add(key);setChatPreference("pinnedMessages",[...pins]);renderMessages(currentMessages);toast(pins.has(key)?"Message pinned on this device.":"Message unpinned on this device.");
+}
+async function reportMessage(messageId) {
+  if(!requireAccount())return;
+  const message=currentMessages.find(item=>item.id===messageId);
+  if(!message||message.authorUid===currentUser.uid)return;
+  const details=await promptInApp("Report this message",`Explain what is wrong with this message from ${message.authorName||"this member"}. Reports are reviewed by authorised moderators.`,"","Report reason");
+  if(details===null||!details.trim())return;
+  try{
+    await addDoc(collection(db,"reports"),{createdBy:currentUser.uid,targetUid:message.authorUid,targetName:message.authorName||"Member",category:"message",details:`Conversation ${activeConversationId}; message ${messageId}. ${details.trim()}`.slice(0,1000),status:"new",createdAt:serverTimestamp()});
+    toast("Message report submitted.");
+  }catch(error){toast(friendlyError(error));}
+}
 async function forwardMessage(messageId) {
   const m=currentMessages.find(x=>x.id===messageId); if(!m)return;
   const choices=currentConversations.filter(c=>c.id!==activeConversationId).slice(0,20);
   if(!choices.length){toast("Open another conversation before forwarding.");return;}
   if(m.attachment){toast("For privacy, download the attachment and upload it again in the destination chat. Only text messages can be forwarded directly.");return;}
   const listing=choices.map((c,i)=>`${i+1}. ${conversationLabel(c)}`).join("\n");
-  const choice=Number(prompt(`Forward to which conversation?\n${listing}\n\nEnter a number:`));
-  const target=choices[choice-1]; if(!target)return;
+  const entered=await promptInApp("Forward message", `Choose the destination number:\n${listing}`, "1", "Destination number");
+  if(entered===null)return;const choice=Number(entered);const target=choices[choice-1]; if(!target){toast("Choose a valid conversation number.");return;}
   try{await addDoc(collection(db,"conversations",target.id,"messages"),{authorUid:currentUser.uid,authorName:publicProfile?.displayName||currentUser.displayName||"Member",text:m.text||"",kind:"text",createdAt:serverTimestamp(),forwarded:true});await updateDoc(doc(db,"conversations",target.id),{lastMessage:(m.text||"").slice(0,180),lastMessageSender:currentUser.uid,lastMessageAt:serverTimestamp(),updatedAt:serverTimestamp()});toast("Message forwarded.");}
   catch(error){toast(friendlyError(error));}
 }
+async function markConversationDelivered(conversationId) {if(!currentUser||!db||!conversationId)return;try{await updateDoc(doc(db,"conversations",conversationId),{[`deliveredAtBy.${currentUser.uid}`]:serverTimestamp()});}catch(error){console.warn("Delivery receipt update was blocked",error);}}
 async function markConversationRead(conversationId) { if(!currentUser||!db||!conversationId)return; try{await updateDoc(doc(db,"conversations",conversationId),{[`readAtBy.${currentUser.uid}`]:serverTimestamp()});}catch(error){console.warn("Read receipt update was blocked",error);} }
 function startTypingListener(conversationId) {
   if(stopTypingListener)stopTypingListener();
@@ -831,18 +967,26 @@ async function toggleVoiceRecording() {
 async function editMessage(messageId) {
   const message = currentMessages.find(m => m.id === messageId); if (!message || message.authorUid !== currentUser?.uid) return;
   const created = tsMillis(message.createdAt); if (!created || Date.now()-created > 15*60*1000) { toast("Messages can only be edited within 15 minutes."); return; }
-  const text = prompt("Edit your message:", message.text || ""); if (text === null) return;
+  const text = await promptInApp("Edit message", "Update your message. You can edit it for 15 minutes after sending.", message.text || "", "Message text"); if (text === null) return;
   const next = text.trim(); if (!next || next.length > 2000) { toast("Message must contain 1–2,000 characters."); return; }
   try { await updateDoc(doc(db,"conversations",activeConversationId,"messages",messageId), { text: next, edited: true, editedAt: serverTimestamp() }); toast("Message updated."); }
   catch (error) { toast(friendlyError(error)); }
 }
 async function deleteMessage(messageId) {
-  const message = currentMessages.find(m => m.id === messageId); if (!message || message.authorUid !== currentUser?.uid) return;
-  const created = tsMillis(message.createdAt); if (!created || Date.now()-created > 15*60*1000) { toast("Messages can only be deleted within 15 minutes."); return; }
-  if (!confirm("Delete this message for everyone in the conversation?")) return;
-  try { await updateDoc(doc(db,"conversations",activeConversationId,"messages",messageId), { text: "This message was deleted.", deleted: true, deletedAt: serverTimestamp() }); toast("Message deleted."); }
-  catch (error) { toast(friendlyError(error)); }
+  const message = currentMessages.find(m => m.id === messageId); if (!message || !currentUser) return;
+  const isGroupAdmin = Boolean(activeConversation?.isGroup && (activeConversation.createdBy === currentUser.uid || (activeConversation.admins || []).includes(currentUser.uid)));
+  const canDeleteForEveryone = (message.authorUid === currentUser.uid || isGroupAdmin) && tsMillis(message.createdAt) && Date.now()-tsMillis(message.createdAt) <= 60*60*1000;
+  const choices=[{value:"cancel",label:"Cancel",variant:"outline"},{value:"me",label:"Delete for me",variant:"outline"}];
+  if(canDeleteForEveryone)choices.push({value:"everyone",label:"Delete for everyone",variant:"danger"});
+  const choice=await chooseInApp("Delete message",canDeleteForEveryone?"Choose whether to remove this message only from your view or for all chat members. Delete for everyone is available for one hour after sending.":"You can remove this message from your view. Only the author or an authorised group admin can delete it for everyone.",choices);
+  if(choice==="cancel"||!choice)return;
+  try {
+    const ref=doc(db,"conversations",activeConversationId,"messages",messageId);
+    if(choice==="me"){await updateDoc(ref,{[`hiddenForBy.${currentUser.uid}`]:true});toast("Message removed from your view.");}
+    else {await updateDoc(ref,{text:"This message was deleted.",deleted:true,deletedAt:serverTimestamp()});toast("Message deleted for everyone.");}
+  } catch (error) { toast(friendlyError(error)); }
 }
+
 async function openChatIdentity() {
   if (!activeConversation) return;
   if (activeConversation.isGroup) { openGroupManager(); return; }
@@ -854,7 +998,9 @@ async function openGroupManager() {
   const canManage = activeConversation.createdBy === currentUser?.uid || (activeConversation.admins || []).includes(currentUser?.uid);
   const participantUids = activeConversation.participants || [];
   $("#manageGroupTitle").textContent = `Group details · ${activeConversation.groupName || "team"}`;
-  $("#groupInfoSummary").innerHTML = `<div class="group-info-stat"><b>${participantUids.length}</b><span>MEMBERS</span></div><div class="group-info-copy"><b>${esc(activeConversation.groupName || "Project group")}</b><small>Created by ${esc(activeConversation.participantNames?.[activeConversation.createdBy] || "Group owner")} · ${canManage ? "You can manage members" : "Member view"}</small></div><span class="group-info-badge">${canManage ? "ADMIN" : "MEMBER"}</span>`;
+  $("#groupInfoSummary").innerHTML = `<div class="group-info-stat"><b>${participantUids.length}</b><span>MEMBERS</span></div><div class="group-info-copy"><b>${esc(activeConversation.groupName || "Project group")}</b><small>${esc(activeConversation.groupDescription || "No group description yet.")} · Created by ${esc(activeConversation.participantNames?.[activeConversation.createdBy] || "Group owner")}</small></div><span class="group-info-badge">${canManage ? "ADMIN" : "MEMBER"}</span>`;
+  $("#groupInfoEditor").hidden=!canManage;
+  $("#editGroupName").value=activeConversation.groupName||""; $("#editGroupDescription").value=activeConversation.groupDescription||""; $("#editGroupPhoto").value=activeConversation.groupPhotoUrl||"";
   const rows = await Promise.all(participantUids.map(async uid => {
     try { const snap = await getDoc(doc(db,"publicProfiles",uid)); return { uid, isPublic: snap.exists(), ...(snap.exists()?snap.data():{}) }; }
     catch { return { uid, isPublic: false, displayName: activeConversation.participantNames?.[uid] || "Member" }; }
@@ -864,9 +1010,10 @@ async function openGroupManager() {
     const isAdmin = isOwner || (activeConversation.admins || []).includes(p.uid);
     const displayName = p.displayName || activeConversation.participantNames?.[p.uid] || "Member";
     const avatar = p.isPublic && p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy">` : esc(initials(displayName));
-    return `<article class="group-member-row"><span class="group-member-avatar">${avatar}</span><div class="group-member-main">${p.isPublic ? `<button type="button" class="group-member-profile-link" data-view-group-member="${esc(p.uid)}">${esc(displayName)} <span>↗</span></button>` : `<b>${esc(displayName)}</b>`}<small>${p.isPublic ? `@${esc(p.username || "member")} · ${esc(p.collegeShort || p.college || "College not listed")}` : "Profile private or unavailable"}</small><span class="group-member-role">${isOwner ? "Group owner" : isAdmin ? "Group admin" : "Member"}</span></div>${canManage && participantUids.length > 2 && !isOwner ? `<button class="text-danger group-remove-btn" data-remove-group-member="${esc(p.uid)}">Remove</button>` : ""}</article>`;
+    return `<article class="group-member-row"><span class="group-member-avatar">${avatar}</span><div class="group-member-main">${p.isPublic ? `<button type="button" class="group-member-profile-link" data-view-group-member="${esc(p.uid)}">${esc(displayName)} <span>↗</span></button>` : `<b>${esc(displayName)}</b>`}<small>${p.isPublic ? `@${esc(p.username || "member")} · ${esc(p.collegeShort || p.college || "College not listed")}` : "Profile private or unavailable"}</small><span class="group-member-role">${isOwner ? "Group owner" : isAdmin ? "Group admin" : "Member"}</span></div>${canManage && participantUids.length > 2 && !isOwner ? `<div class="group-member-actions">${activeConversation.createdBy === currentUser.uid ? `<button class="text-link" data-toggle-group-admin="${esc(p.uid)}">${isAdmin?"Demote":"Promote admin"}</button>` : ""}<button class="text-danger group-remove-btn" data-remove-group-member="${esc(p.uid)}">Remove</button></div>` : ""}</article>`;
   }).join("");
   $("#manageGroupMembers").querySelectorAll("[data-remove-group-member]").forEach(b => b.onclick = () => removeGroupMember(b.dataset.removeGroupMember));
+  $("#manageGroupMembers").querySelectorAll("[data-toggle-group-admin]").forEach(b => b.onclick = () => toggleGroupAdmin(b.dataset.toggleGroupAdmin));
   $("#manageGroupMembers").querySelectorAll("[data-view-group-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewGroupMember));
   $("#manageGroupSearch").disabled = !canManage;
   $("#manageGroupSearchResults").innerHTML = canManage ? '<p class="muted">Search for a builder to add to this group.</p>' : '<p class="muted">Only group admins can add or remove members.</p>';
@@ -874,6 +1021,19 @@ async function openGroupManager() {
   if (deleteWrap) deleteWrap.hidden = activeConversation.createdBy !== currentUser?.uid;
   showModal("manageGroupModal");
 }
+async function saveGroupInfo(){
+  if(!activeConversation?.isGroup||!requireAccount())return;
+  const c=activeConversation;const canManage=c.createdBy===currentUser.uid||(c.admins||[]).includes(currentUser.uid);if(!canManage)return;
+  const groupName=$("#editGroupName").value.trim();const groupDescription=$("#editGroupDescription").value.trim();const groupPhotoUrl=validUrl($("#editGroupPhoto").value.trim());
+  if(!groupName){toast("Group name is required.");return;}
+  try{await updateDoc(doc(db,"conversations",c.id),{groupName:groupName.slice(0,60),groupDescription:groupDescription.slice(0,300),groupPhotoUrl,updatedAt:serverTimestamp()});activeConversation={...c,groupName,groupDescription,groupPhotoUrl};renderChatHeading();await openGroupManager();toast("Group details updated.");}catch(error){toast(friendlyError(error));}
+}
+async function toggleGroupAdmin(uid){
+  const c=activeConversation;if(!c?.isGroup||c.createdBy!==currentUser?.uid||uid===c.createdBy)return;
+  const admins=new Set(c.admins||[c.createdBy]);if(admins.has(uid))admins.delete(uid);else admins.add(uid);admins.add(c.createdBy);
+  try{await updateDoc(doc(db,"conversations",c.id),{admins:[...admins],updatedAt:serverTimestamp()});activeConversation={...c,admins:[...admins]};await openGroupManager();toast(admins.has(uid)?"Group admin promoted.":"Group admin role removed.");}catch(error){toast(friendlyError(error));}
+}
+
 async function searchPublicProfiles(term, max=50) {
   const t = String(term || "").trim().toLowerCase().replace(/^@/, "");
   const base = collection(db, "publicProfiles");
@@ -913,7 +1073,7 @@ async function addGroupMember(uid) {
 async function removeGroupMember(uid) {
   const c = activeConversation; if (!c?.isGroup || uid === c.createdBy) return;
   const canManage = c.createdBy === currentUser?.uid || (c.admins || []).includes(currentUser?.uid);
-  if (!canManage || !confirm("Remove this person from the group? They will lose access to this chat.")) return;
+  if (!canManage || !(await confirmInApp("Remove this person from the group? They will lose access to future messages in this chat.","Remove group member"))) return;
   try {
     const participants = (c.participants||[]).filter(x => x !== uid); const participantNames = { ...(c.participantNames||{}) }; delete participantNames[uid];
     await updateDoc(doc(db,"conversations",c.id),{participants,participantNames,updatedAt:serverTimestamp()});
@@ -923,8 +1083,8 @@ async function removeGroupMember(uid) {
 
 async function reportMember(profile) {
   if (!requireAccount() || !profile?.uid) return;
-  const details = prompt(`Briefly explain why you are reporting @${profile.username || "this member"} (max 1,000 characters):`);
-  if (!details || !details.trim()) return;
+  const details = await promptInApp("Report this profile",`Briefly explain why you are reporting @${profile.username || "this member"}. Keep the report factual (max 1,000 characters).`,"","Report reason");
+  if (details === null || !details.trim()) return;
   try {
     await addDoc(collection(db, "reports"), {
       createdBy: currentUser.uid, targetUid: profile.uid, targetName: profile.displayName || "Member",
@@ -970,31 +1130,33 @@ async function searchGroupPicker() {
     $("#groupMemberResults").querySelectorAll("[data-pick-group-member]").forEach(b => b.onclick = () => { const p=profiles.find(x=>x.uid===b.dataset.pickGroupMember); if(!p)return; if(selectedGroupMembers.has(p.uid))selectedGroupMembers.delete(p.uid); else if(selectedGroupMembers.size<10)selectedGroupMembers.set(p.uid,p); else toast("You can add up to 10 other members."); refreshSelectedGroupMembers(); searchGroupPicker(); });
   } catch (error) { $("#groupMemberResults").textContent = friendlyError(error); }
 }
-async function createGroupWithMembers(groupName, peopleToAdd) {
+async function createGroupWithMembers(groupName, peopleToAdd, groupDescription="", groupPhotoUrl="") {
   if (!requireAccount()) return;
   const members = [{uid:currentUser.uid,...publicProfile}, ...peopleToAdd.filter(p=>p.uid!==currentUser.uid)];
   const unique = [...new Map(members.map(p=>[p.uid,p])).values()];
   if (unique.length < 2) { toast("Choose at least one other builder."); return; }
   if (unique.length > 11) { toast("A group can contain up to 11 members including you."); return; }
-  if (!confirm(`Consent check: have all ${unique.length - 1} selected member${unique.length === 2 ? "" : "s"} agreed to be added to “${groupName}”? Choose OK only after they have agreed.`)) {
+  if (!(await confirmInApp(`Have all ${unique.length - 1} selected member${unique.length === 2 ? "" : "s"} agreed to be added to “${groupName}”? Only continue after they have agreed.`,"Group invitation consent"))) {
     toast("No one was added. Ask members for permission first.");
     return;
   }
   const participants = unique.map(p=>p.uid);
   const participantNames = Object.fromEntries(unique.map(p=>[p.uid,p.displayName||"Member"]));
   const conversationRef = doc(collection(db,"conversations"));
-  await setDoc(conversationRef,{isGroup:true,groupName,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:"Group created",createdAt:serverTimestamp(),updatedAt:serverTimestamp(),lastMessageAt:serverTimestamp()});
-  const conversation = {id:conversationRef.id,isGroup:true,groupName,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:"Group created",updatedAt:Date.now()};
+  const safeDescription=String(groupDescription||"").trim().slice(0,300);const safePhoto=validUrl(groupPhotoUrl||"");
+  await setDoc(conversationRef,{isGroup:true,groupName,groupDescription:safeDescription,groupPhotoUrl:safePhoto,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:"Group created",createdAt:serverTimestamp(),updatedAt:serverTimestamp(),lastMessageAt:serverTimestamp()});
+  const conversation = {id:conversationRef.id,isGroup:true,groupName,groupDescription:safeDescription,groupPhotoUrl:safePhoto,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:"Group created",updatedAt:Date.now()};
   location.hash="#messages"; selectConversation(conversation); toast("Team chat created.");
 }
 async function createGroup(event) {
   event.preventDefault(); if (!requireAccount()) return;
   const groupName = $("#groupName").value.trim(); const msg = $("#groupMessage"); msg.textContent = "Creating your group…";
   const chosen = [...selectedGroupMembers.values()];
+  const groupDescription = $("#groupDescription").value.trim(); const groupPhotoUrl = validUrl($("#groupPhotoUrl").value.trim());
   if (!groupName) { msg.textContent="Enter a group name."; return; }
   if (!chosen.length) { msg.textContent="Search and select at least one member."; return; }
   try {
-    await createGroupWithMembers(groupName,chosen);
+    await createGroupWithMembers(groupName,chosen,groupDescription,groupPhotoUrl);
     hideModal("groupModal"); $("#groupForm").reset(); selectedGroupMembers.clear(); refreshSelectedGroupMembers();
   } catch (error) { console.error(error); msg.textContent = friendlyError(error); }
 }
@@ -1004,7 +1166,7 @@ async function deleteCurrentGroup() {
     toast("Only the group creator can delete this group.");
     return;
   }
-  const note = prompt(`Type a short confirmation note explaining why you are deleting “${c.groupName || "this group"}”. This note is saved with the deletion.`);
+  const note = await promptInApp("Delete this group",`Type a short confirmation note explaining why you are deleting “${c.groupName || "this group"}”. This note is saved with the deletion.`,"","Reason for deletion");
   if (note === null) return;
   const confirmation = note.trim();
   if (confirmation.length < 8) {
@@ -1015,7 +1177,7 @@ async function deleteCurrentGroup() {
     toast("The confirmation note must be 300 characters or fewer.");
     return;
   }
-  if (!confirm(`Delete “${c.groupName || "this group"}” for all members? This action cannot be undone from the website.`)) return;
+  if (!(await confirmInApp(`Delete “${c.groupName || "this group"}” for all members? This cannot be undone.`,"Delete group permanently"))) return;
   try {
     await updateDoc(doc(db, "conversations", c.id), {
       deleted: true,
@@ -1122,7 +1284,7 @@ async function createMatchedTeam() {
     members:[...section.querySelectorAll("[data-team-match]:checked")].map(b=>matchedTeamCandidates.find(p=>p.uid===b.dataset.teamMatch)).filter(Boolean)
   })).filter(team=>team.members.length);
   if(!teams.length){toast("Select at least one builder for a team.");return;}
-  if(!confirm(`Create ${teams.length} separate team chat${teams.length===1?"":"s"}? Selected members will be added immediately. Ask each person for permission before creating a team with them.`))return;
+  if(!(await confirmInApp(`Create ${teams.length} separate team chat${teams.length===1?"":"s"}? Selected members will be added immediately. Confirm that each person has agreed to be added.`,"Create matched teams")))return;
   try{
     for(let i=0;i<teams.length;i++){
       const suffix=teams.length>1?` · Team ${i+1}`:"";
@@ -1150,10 +1312,11 @@ function renderMyProfile() {
     <div class="avatar avatar-profile">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="Profile photo" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div>
     <div class="profile-main">
       <div class="profile-name-line"><div><div class="eyebrow">${p.profileVisibility === "private" ? "YOUR PRIVATE BUILDER PROFILE" : "YOUR PUBLIC BUILDER PROFILE"}</div><h3>${esc(p.displayName)}</h3><span>@${esc(p.username)}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to teammates</span>' : ''}</div>
-      <p>${esc(p.bio || "Add a short introduction to help teammates understand what you build.")}</p>
+      ${p.statusText ? `<p class="profile-status-text">${esc(p.statusText)}</p>` : ""}<p>${esc(p.bio || "Add a short introduction to help teammates understand what you build.")}</p>
       ${p.profileVisibility === "private" ? '<p class="privacy-state-note">Private profile · only you can see these details. This profile is not in the directory or public team matcher.</p>' : ''}
       <div class="profile-completion"><div><b>Profile completeness</b><strong>${completion}%</strong></div><span class="profile-completion-track"><i style="width:${completion}%"></i></span><small>A complete profile helps teammates understand your strengths before they contact you.</small></div>
       <div class="profile-detail-grid">
+        <section class="profile-detail-card"><small>MEMBER SINCE</small><b>${p.joinedAt ? esc(new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"long",year:"numeric"})) : "HackVerse member"}</b><span>@${esc(p.username)}</span></section>
         <section class="profile-detail-card"><small>EDUCATION</small><b>${esc(p.college || "College not added")}</b><span>${esc([p.collegeShort,p.course].filter(Boolean).join(" · ") || "Course not added")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not added")}</span></section>
         <section class="profile-detail-card"><small>COLLABORATION</small><b>${esc(p.availability || "Availability not added")}</b><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span><span>${p.lookingForTeam ? "Open to teammate invitations" : "Not currently looking for a team"}</span></section>
         <section class="profile-detail-card"><small>LOCATION</small><b>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not added")}</b><span>Visible according to your profile privacy settings</span></section>
@@ -1193,7 +1356,7 @@ async function createProject(event) {
   } catch (error) { msg.textContent = friendlyError(error); }
 }
 async function deleteProject(id) {
-  if (!requireAccount() || !confirm("Delete this project from your showcase?")) return;
+  if (!requireAccount() || !(await confirmInApp("Delete this project from your showcase? This action cannot be undone.","Delete project"))) return;
   try { await deleteDoc(doc(db, "projects", id)); loadProjects(); toast("Project deleted."); }
   catch (error) { toast(friendlyError(error)); }
 }
@@ -1204,6 +1367,8 @@ function updateAiAccessUI() {
   const form = $("#aiForm");
   const messages = $("#aiMessages");
   if (gate) gate.hidden = signedIn;
+  const launcher = $("#aiLaunchBtn");
+  if (launcher) launcher.hidden = !signedIn;
   if (form) form.hidden = !signedIn;
   if (messages) messages.hidden = !signedIn;
   $("#aiNewChatBtn").disabled = !signedIn;
@@ -1214,26 +1379,25 @@ function updateAiAccessUI() {
 }
 
 function setAiMode(mode) {
-  aiMode = mode === "wish" ? "wish" : "chat";
-  const chatButton = $("#aiChatModeBtn");
-  const wishButton = $("#aiWishModeBtn");
-  chatButton.classList.toggle("active", aiMode === "chat");
-  wishButton.classList.toggle("active", aiMode === "wish");
-  chatButton.setAttribute("aria-selected", String(aiMode === "chat"));
-  wishButton.setAttribute("aria-selected", String(aiMode === "wish"));
+  const nextMode = mode === "wish" ? "wish" : "chat";
+  if (aiMode !== nextMode && activeAiConversationMode !== nextMode) {
+    // Do not carry a chatbot transcript into AI Wish (or vice versa).
+    activeAiConversationId = null;
+    activeAiConversationMode = nextMode;
+    currentAiMessages = [];
+    pendingAiActions = [];
+  }
+  aiMode = nextMode;
   const aiBrand = document.querySelector(".ai-brand-lockup b");
-  if (aiBrand) aiBrand.textContent = aiMode === "wish" ? "AI Wish Workspace" : "HackVerse AI";
+  if (aiBrand) aiBrand.textContent = aiMode === "wish" ? "AI Wish · Website actions" : "HackVerse AI · Help chatbot";
   $("#aiPanel").setAttribute("aria-label", aiMode === "wish" ? "AI Wish workspace" : "HackVerse AI assistant");
-  $("#aiInput").placeholder = aiMode === "wish"
-    ? "Tell HackVerse what you want done…"
-    : "Ask anything about HackVerse…";
-  $("#aiComposerHint").textContent = aiMode === "wish"
-    ? "Describe a task · review the plan · apply it"
-    : "Enter to send · Shift + Enter for a new line";
+  $("#aiInput").placeholder = aiMode === "wish" ? "Describe the work you want done in HackVerse…" : "Ask a question about HackVerse or anything else…";
+  $("#aiComposerHint").textContent = aiMode === "wish" ? "Describe the task · review the plan · approve changes" : "Ask freely · Enter to send · Shift + Enter for a new line";
   $("#aiModeIntro").innerHTML = aiMode === "wish"
-    ? "<b>What would you like HackVerse to do?</b><span>Describe a goal in plain language. I’ll prepare supported actions for you to review before anything changes.</span>"
-    : "<b>What can I help you with?</b><span>Ask how HackVerse works, find a feature or get help with your account.</span>";
+    ? "<b>What would you like me to change or do?</b><span>Tell me the outcome you want. I’ll ask follow-up questions when needed, prepare a plan, and wait for your approval before changing account data.</span>"
+    : "<b>Ask me anything.</b><span>Get explanations, troubleshooting, coding help and clear guidance about using HackVerse. I do not make account changes in this chat.</span>";
   pendingAiActions = [];
+  renderAiMessages();
   renderAiActionReview();
 }
 
@@ -1262,7 +1426,7 @@ async function loadAiHistory() {
       orderBy("updatedAt", "desc"),
       limit(30)
     ));
-    const rows = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    const rows = snapshot.docs.map(item => ({ id: item.id, ...item.data() })).filter(item => (item.mode === "wish" ? "wish" : "chat") === aiMode);
     if (!rows.length) {
       list.innerHTML = '<p class="ai-history-empty">Your chats will appear here. Start a new conversation whenever you need a fresh task.</p>';
       return;
@@ -1273,7 +1437,7 @@ async function loadAiHistory() {
     console.warn("Ordered AI history query failed; retrying without the composite sort index.", error);
     try {
       const fallback = await getDocs(query(collection(db, "aiConversations"), where("ownerUid", "==", currentUser.uid), limit(30)));
-      const rows = fallback.docs.map(item => ({ id: item.id, ...item.data() })).sort((a,b) => {
+      const rows = fallback.docs.map(item => ({ id: item.id, ...item.data() })).filter(item => (item.mode === "wish" ? "wish" : "chat") === aiMode).sort((a,b) => {
         const stamp = value => value?.toMillis ? value.toMillis() : (value instanceof Date ? value.getTime() : Number(value) || 0);
         return stamp(b.updatedAt) - stamp(a.updatedAt);
       });
@@ -1361,6 +1525,12 @@ function validateAiActions(actions) {
       return { type, eventId: String(action.eventId) };
     if (type === "search_builders" && String(action.query || "").trim())
       return { type, query: String(action.query).trim().slice(0, 100) };
+    if(type === "update_profile"){
+      const next={type};
+      if(typeof action.displayName==="string"&&action.displayName.trim())next.displayName=action.displayName.trim().slice(0,80);
+      if(typeof action.bio==="string")next.bio=action.bio.trim().slice(0,500);
+      if(Object.keys(next).length>1)return next;
+    }
     if (type === "create_project" && String(action.title || "").trim() && String(action.description || "").trim())
       return {
         type,
@@ -1393,6 +1563,7 @@ function aiActionLabel(action) {
   if (action.type === "open_opportunity") return `Open: ${events.find(item => item.id === action.eventId)?.title || "selected opportunity"}`;
   if (action.type === "save_opportunity") return `Save: ${events.find(item => item.id === action.eventId)?.title || "selected opportunity"}`;
   if (action.type === "search_builders") return `Search community for “${action.query}”`;
+  if(action.type === "update_profile")return `Update your profile${action.displayName?` · display name: ${action.displayName}`:""}${action.bio!==undefined?" · bio":""}`;
   if (action.type === "create_project") return `Create ${action.visibility === "public" ? "public" : "private"} project: ${action.title}`;
   if (action.type === "create_group") return `Create group “${action.groupName}” with ${action.memberUids.length} selected builders`;
   if (action.type === "send_message") return `Send a message in ${conversationLabel(currentConversations.find(c=>c.id===action.conversationId)||{})}: “${action.text.slice(0,90)}”`;
@@ -1476,7 +1647,7 @@ async function applyAiActions() {
   if (!requireAccount() || !pendingAiActions.length) return;
   const actions = pendingAiActions.slice();
   const summary = actions.map(aiActionLabel).join("\n• ");
-  if (!confirm(`Apply these ${actions.length} HackVerse action${actions.length === 1 ? "" : "s"}?\n\n• ${summary}\n\nYou can review project visibility before sharing it.`)) return;
+  if (!(await confirmInApp(`Apply these ${actions.length} HackVerse action${actions.length === 1 ? "" : "s"}?\n\n• ${summary}\n\nReview the details before continuing.`,"Review AI Wish actions"))) return;
   const completed = [];
   try {
     for (const action of actions) {
@@ -1512,6 +1683,17 @@ async function applyAiActions() {
         location.hash = "#people";
         searchPeople();
         completed.push("Started a community search");
+      } else if(action.type === "update_profile") {
+        const updates={updatedAt:serverTimestamp()};
+        const publicUpdates={updatedAt:serverTimestamp()};
+        if(action.displayName){updates.displayName=action.displayName;updates["profileData.displayName"]=action.displayName;publicUpdates.displayName=action.displayName;publicUpdates.nameLower=action.displayName.toLowerCase();}
+        if(action.bio!==undefined){updates["profileData.bio"]=action.bio;publicUpdates.bio=action.bio;}
+        await updateDoc(doc(db,"users",currentUser.uid),updates);
+        if(publicProfile?.profileVisibility!=="private")await updateDoc(doc(db,"publicProfiles",currentUser.uid),publicUpdates);
+        if(action.displayName)await updateAuthProfile(currentUser,{displayName:action.displayName}).catch(()=>{});
+        privateProfile={...(privateProfile||{}),...(action.displayName?{displayName:action.displayName}:{}),profileData:{...(privateProfile?.profileData||{}),...(action.displayName?{displayName:action.displayName}:{}),...(action.bio!==undefined?{bio:action.bio}:{})}};
+        if(publicProfile)publicProfile={...publicProfile,...(action.displayName?{displayName:action.displayName,nameLower:action.displayName.toLowerCase()}:{}),...(action.bio!==undefined?{bio:action.bio}:{})};
+        renderMyProfile();loadSettingsUI();completed.push("Updated your profile details");
       } else if (action.type === "create_project") {
         await addDoc(collection(db, "projects"), {
           ownerUid: currentUser.uid,
@@ -1560,9 +1742,9 @@ async function applyAiActions() {
 
 
 function readAppPrefs(){try{return JSON.parse(localStorage.getItem("hackverse-app-preferences")||"{}");}catch{return {};}}
-function applyAppPrefs(){const p=readAppPrefs();document.body.classList.toggle("light",p.theme==="light");document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");}
-function saveAppPrefs(){const p={theme:$("#settingTheme").value,motion:$("#settingMotion").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked};localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));applyAppPrefs();renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
-function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme|| (document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";}
+function applyAppPrefs(){const p=readAppPrefs();document.body.classList.toggle("light",p.theme==="light");document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");document.body.dataset.fontFamily=p.fontFamily||"dm";}
+function saveAppPrefs(){const p={theme:$("#settingTheme").value,motion:$("#settingMotion").value,fontFamily:$("#settingFontFamily").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked};localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));applyAppPrefs();renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
+function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme|| (document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";}
 function upcomingSavedDeadlines(){if(!currentUser||readAppPrefs().opportunity===false)return [];const now=Date.now();return events.filter(e=>savedIds.has(e.id)).map(e=>({...e,deadlineMs:tsMillis(e.registrationDeadline)})).filter(e=>e.deadlineMs>now&&e.deadlineMs<=now+14*86400000).sort((a,b)=>a.deadlineMs-b.deadlineMs);}
 function notifyUpcomingDeadlines(){const prefs=readAppPrefs();if(!currentUser||!prefs.desktop||!("Notification" in window)||Notification.permission!=="granted")return;for(const e of upcomingSavedDeadlines()){const key=`hv-deadline-notified-${currentUser.uid}-${e.id}`;const stamp=String(e.deadlineMs);if(localStorage.getItem(key)===stamp)continue;localStorage.setItem(key,stamp);try{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));const n=new Notification("Saved opportunity deadline",{body:`${e.title||"A saved opportunity"} closes in ${days} day${days===1?"":"s"}.`,tag:`deadline-${e.id}`});n.onclick=()=>{window.focus();location.hash="#opportunities";viewEvent(e.id);};}catch{}}}
 function renderNotificationCenter(){
@@ -1605,13 +1787,13 @@ function initAdvancedUI(){
   $("#notificationSettingsBtn").onclick=()=>{location.hash="#settings";setTimeout(()=>showSettingsTab("notifications"),100);};
   $("#openNotificationPreferences").onclick=$("#notificationSettingsBtn").onclick;
   $("#markAllReadBtn").onclick=async()=>{if(!requireAccount())return;await Promise.all(currentConversations.map(c=>markConversationRead(c.id)));toast("Your conversation activity is marked as read.");};
-  $("#saveSettingsBtn").onclick=saveAppPrefs;["#settingTheme","#settingMotion","#settingTextSize","#prefReduceMotion"].forEach(sel=>$(sel).addEventListener("change",()=>{const p=readAppPrefs();p.theme=$("#settingTheme").value;p.motion=$("#settingMotion").value;p.textSize=$("#settingTextSize").value;p.reduceMotion=$("#prefReduceMotion").checked;localStorage.setItem("hackverse-app-preferences",JSON.stringify({...p}));applyAppPrefs();}));
+  $("#saveSettingsBtn").onclick=saveAppPrefs;["#settingTheme","#settingMotion","#settingFontFamily","#settingTextSize","#prefReduceMotion"].forEach(sel=>$(sel).addEventListener("change",()=>{const p=readAppPrefs();p.theme=$("#settingTheme").value;p.motion=$("#settingMotion").value;p.textSize=$("#settingTextSize").value;p.fontFamily=$("#settingFontFamily").value;p.reduceMotion=$("#prefReduceMotion").checked;localStorage.setItem("hackverse-app-preferences",JSON.stringify({...p}));applyAppPrefs();}));
   $("#privacyEditProfile").onclick=$("#settingsEditProfile").onclick=()=>currentUser?openProfileEditor(false):openAuth();
   $("#settingsSignOut").onclick=()=>currentUser&&signOut(auth).then(()=>toast("Signed out.")).catch(e=>toast(friendlyError(e)));
   $("#settingProfileVisibility").addEventListener("change",async e=>{if(!requireAccount())return;if(!publicProfile){toast("Complete your profile first.");return;}try{await updateDoc(doc(db,"publicProfiles",currentUser.uid),{profileVisibility:e.target.value,updatedAt:serverTimestamp()});publicProfile.profileVisibility=e.target.value;toast("Profile visibility updated.");}catch(error){toast(friendlyError(error));}});
   $$('[data-settings-tab]').forEach(b=>b.onclick=()=>showSettingsTab(b.dataset.settingsTab));
   $("#navTourBtn").onclick=()=>{ $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); startWebsiteTour(); };$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);
-  $("#newDirectChatBtn").onclick=()=>location.hash="#people";$("#chatMenuBtn").onclick=()=>{const c=activeConversation;if(!c){toast("Choose a chat first.");return;}const action=prompt("Chat options: type pin, archive, or unarchive");if(!action)return;const prefs=getChatPreferences();const key=action.trim().toLowerCase();for(const list of ["pinned","archived"]){prefs[list]=prefs[list]||[];}const list=key==="pin"?"pinned":key==="archive"||key==="unarchive"?"archived":null;if(!list){toast("Choose pin, archive or unarchive.");return;}const ids=new Set(prefs[list]);if(key==="unarchive")ids.delete(c.id);else if(ids.has(c.id))ids.delete(c.id);else ids.add(c.id);prefs[list]=[...ids];localStorage.setItem(`hv-chat-settings-${currentUser?.uid||"guest"}`,JSON.stringify(prefs));renderConversationList(currentConversations);toast(key==="pin"?"Chat pin updated.":"Chat archive updated.");};
+  $("#newDirectChatBtn").onclick=()=>location.hash="#people";$("#chatMenuBtn").onclick=openChatActions;
   $$('[data-chat-filter]').forEach(b=>b.onclick=()=>{activeChatFilter=b.dataset.chatFilter;$$('[data-chat-filter]').forEach(x=>x.classList.toggle("active",x===b));renderConversationList(currentConversations);});
   $("#chatSearchToggle").onclick=()=>{$("#messageSearchWrap").hidden=!$("#messageSearchWrap").hidden;if(!$("#messageSearchWrap").hidden)$("#messageSearch").focus();};$("#chatDetailsBtn").onclick=openChatIdentity;
   $("#cancelReply").onclick=()=>{replyingToMessageId=null;updateReplyPreview();};
@@ -1636,13 +1818,18 @@ function handleRoute() {
     aiPanel.classList.remove("ai-panel-page"); aiPanel.hidden=true; aiAssistant.classList.remove("ai-on-wish-page");
     setAiMode("chat");
   }
+  const requiresMember = view !== "home";
+  const blocked = requiresMember && !currentUser;
+  $("#routeAccessGate").hidden=!blocked;
   $$('[data-view]').forEach(el=>{
-    if(el.id==="discoveryAdminPanel"){el.hidden=!(view==="home"&&isAdminUser);return;}
-    el.hidden=el.dataset.view!==view;
+    if(el.id==="discoveryAdminPanel"){el.hidden=blocked||!(view==="home"&&isAdminUser);return;}
+    el.hidden=blocked || el.dataset.view!==view;
   });
+  if(blocked){aiPanel.hidden=true;aiAssistant.classList.remove("ai-on-wish-page");}
   $$("[data-route]").forEach(a=>a.classList.toggle("active",a.dataset.route===view));
   document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
   window.scrollTo({top:0,behavior:"auto"});
+  if(blocked)return;
   if(view==="opportunities"){ updateEventAccessUI(); if(currentUser)renderEvents(); }
   if(view==="saved")renderSaved();
   if(view==="people"&&currentUser)searchPeople();
@@ -1655,6 +1842,9 @@ function bindUI() {
   window.setInterval(()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);},10*60*1000);
   $("#year").textContent = new Date().getFullYear();
   initAdvancedUI();
+  $("#appDialogClose").onclick=closeInAppDialog;
+  $("#appDialog").addEventListener("click",event=>{if(event.target.id==="appDialog")closeInAppDialog();});
+  document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!$("#appDialog").hidden)closeInAppDialog();});
   $("#authButton").onclick = () => currentUser ? signOut(auth).then(() => toast("Signed out.")) : openAuth();
   $$('[data-open-auth]').forEach(button => button.addEventListener("click", () => openAuth()));
   $("#accountButton").onclick = () => currentUser ? location.hash = "#profile" : openAuth("signup");
@@ -1666,6 +1856,8 @@ function bindUI() {
   $("#authModeToggle").onclick = () => setAuthMode(authMode === "signin" ? "signup" : "signin");
   $("#googleSignIn").onclick = googleSignIn; $("#resetPassword").onclick = resetPassword;
   $("#profileForm").addEventListener("submit", saveProfile);
+  $("#profileAvatarFile").addEventListener("change",e=>uploadProfileAvatar(e.target.files?.[0]));
+  $("#removeProfileAvatarBtn").onclick=()=>{$("#profileAvatar").value="";$("#profileAvatarFile").value="";$("#profileAvatarPreviewWrap").hidden=true;toast("Profile photo removed from the draft. Save your profile to apply.");};
   $("#profileSignOutBtn").onclick = () => signOut(auth).then(() => { hideModal("profileModal"); profileIsMandatory = false; toast("Signed out."); }).catch(error => toast(friendlyError(error)));
   $("#newGroupBtn").onclick = () => { if(requireAccount()){ selectedGroupMembers.clear(); refreshSelectedGroupMembers(); $("#groupForm").reset(); $("#groupMemberResults").innerHTML="<p class=muted>Search public builder profiles to add teammates.</p>"; showModal("groupModal"); } };
   $("#groupMemberSearch").addEventListener("input", searchGroupPicker);
@@ -1675,6 +1867,7 @@ function bindUI() {
   $("#manageGroupSearch").addEventListener("input",searchManageGroupMembers);
   $("#groupManageBtn").onclick=openGroupManager;
   $("#deleteGroupBtn").onclick=deleteCurrentGroup;
+  $("#saveGroupInfoBtn").onclick=saveGroupInfo;
   $("#viewMembersBtn").onclick=()=>{const grid=$("#peopleGrid");const open=grid.hidden;grid.hidden=!open;$("#viewMembersBtn").textContent=open?"Hide members":"View members";$("#viewMembersBtn").setAttribute("aria-expanded",String(open));if(open&&currentUser)searchPeople();};
   $("#chatTitle").onclick=openChatIdentity;
   $("#conversationSearch").addEventListener("input",()=>renderConversationList(currentConversations));
@@ -1695,8 +1888,6 @@ function bindUI() {
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
   $("#aiLaunchBtn").onclick = () => { if(location.hash==="#aiwish") location.hash="#home"; const panel=$("#aiPanel"),assistant=$("#aiAssistant"); if(panel.parentElement!==assistant) assistant.append(panel); panel.classList.remove("ai-panel-page"); setAiMode("chat"); panel.hidden=!panel.hidden; $("#aiLaunchBtn").setAttribute("aria-expanded",String(!panel.hidden)); if(!panel.hidden&&currentUser)loadAiHistory(); };
   $("#aiCloseBtn").onclick = () => { if(location.hash==="#aiwish"){location.hash="#home";return;} $("#aiPanel").hidden=true; $("#aiLaunchBtn").setAttribute("aria-expanded","false"); };
-  $("#aiChatModeBtn").onclick = () => setAiMode("chat");
-  $("#aiWishModeBtn").onclick = () => { location.hash="#aiwish"; };
   $("#aiNewChatBtn").onclick = () => currentUser ? startAiConversation(aiMode) : (openAuth(), toast("Sign in to keep a private AI history."));
   $("#aiForm").addEventListener("submit", sendAiMessage);
   $("#aiInput").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#aiForm").requestSubmit(); } });
