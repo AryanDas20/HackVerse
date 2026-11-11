@@ -483,11 +483,18 @@ function filteredEvents() {
   return list;
 }
 function dateLabel(value) {
-  const ms = tsMillis(value); return ms ? new Date(ms).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"}) : "Not provided";
+  const ms = tsMillis(value);
+  if (!ms) return "Not provided";
+  const date = new Date(ms);
+  const options = {day:"numeric",month:"short",year:"numeric"};
+  if (date.getUTCHours() || date.getUTCMinutes() || date.getUTCSeconds()) {
+    options.hour = "numeric"; options.minute = "2-digit";
+  }
+  return date.toLocaleString(undefined, options);
 }
 function opportunityCard(event, index) {
   const deadlineMs = tsMillis(event.registrationDeadline);
-  const deadlineText = deadlineMs ? (deadlineMs < Date.now() ? "Deadline passed" : `Closes ${new Date(deadlineMs).toLocaleDateString()}`) : "Deadline not listed";
+  const deadlineText = deadlineMs ? (deadlineMs < Date.now() ? "Deadline passed" : `Closes ${dateLabel(event.registrationDeadline)}`) : "Deadline not listed";
   const categoryValue = eventCategoryValue(event);
   const prize = ["course", "bootcamp", "certification"].includes(categoryValue)
     ? (event.isFree === true ? "Free learning" : (event.price || "Check provider details"))

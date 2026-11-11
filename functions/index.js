@@ -11,6 +11,8 @@ const crypto = require("node:crypto");
 const { resolveEventId } = require("./lib/event-id");
 const { cleanText } = require("./lib/clean-text");
 const { findListingArray } = require("./lib/listing-array");
+const { isSafeTitleDuplicate } = require("./lib/duplicate-match");
+const { extractDeadline } = require("./lib/deadline");
 
 if (!getApps().length) initializeApp();
 const db = getFirestore();
@@ -54,21 +56,6 @@ function canonicalUrl(value) {
   for (const key of [...u.searchParams.keys()]) if (/^(utm_|fbclid|gclid|ref$|source$)/i.test(key)) u.searchParams.delete(key);
   u.searchParams.sort();
   return u.toString().replace(/\/$/, "");
-}
-function extractDeadline(text) {
-  const source = String(text || "");
-  const patterns = [
-    /(?:registration|application|submission)?\s*deadline\s*[:\-–]?\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2})/i,
-    /(?:registration|application|submission)?\s*deadline\s*[:\-–]?\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+20\d{2})/i,
-    /(?:register|apply|submit)\s+(?:by|before)\s+([A-Za-z]{3,9}\s+\d{1,2},?\s+20\d{2})/i,
-    /(?:registration|application|submission)?\s*deadline\s*[:\-–]?\s*(20\d{2}-\d{2}-\d{2})/i,
-    /registration\s+closes?\s+([A-Za-z]{3},?\s+\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?\s+GMT)?)/i
-  ];
-  for (const re of patterns) {
-    const match = source.match(re);
-    if (match) { const date = new Date(match[1]); if (!Number.isNaN(date.getTime())) return date; }
-  }
-  return null;
 }
 const OPPORTUNITY_CATEGORIES = new Set([
   "hackathon", "coding-event", "case-competition", "bootcamp", "course", "certification"
@@ -224,57 +211,70 @@ async function storeCandidate(candidate) {
     ]);
 
     const urlEventId = urlSnap.exists ? urlSnap.data().eventId : null;
-    const titleEventId = titleSnap.exists ? titleSnap.data().eventId : null;
+    const titleData = titleSnap.exists ? titleSnap.data() : {};
+    const titleEventIds = [...new Set([
+      ...(Array.isArray(titleData.eventIds) ? titleData.eventIds : []),
+      titleData.eventId
+    ].filter(Boolean))].slice(0, 25);
     const categoryEventId = sha(`${candidate.category}:${candidate.sourceUrl}`).slice(0, 40);
     const possibleIds = [...new Set([
-      urlEventId, titleEventId, candidate.id, categoryEventId
+      urlEventId, ...titleEventIds, candidate.id, categoryEventId
     ].filter(Boolean))];
 
     const possibleRefs = possibleIds.map(id => events.doc(id));
     const possibleSnaps = await Promise.all(possibleRefs.map(ref => tx.get(ref)));
+    const snapshotsById = new Map(possibleIds.map((id, i) => [id, possibleSnaps[i]]));
+    const categoriesById = Object.fromEntries(possibleIds.flatMap((id, i) =>
+      possibleSnaps[i].exists ? [[id, possibleSnaps[i].data().category]] : []
+    ));
 
-    const compatible = new Map();
-    for (let i = 0; i < possibleIds.length; i++) {
-      const snap = possibleSnaps[i];
-      if (snap.exists && snap.data().category === candidate.category) {
-        compatible.set(possibleIds[i], snap);
-      }
-    }
-
-    // Resolve IDs using the locally tested category-isolation helper.
-    const categoriesById = Object.fromEntries(
-      possibleIds.flatMap((id, i) =>
-        possibleSnaps[i].exists
-          ? [[id, possibleSnaps[i].data().category]]
-          : []
-      )
-    );
+    // URL fingerprints are exact identity. A title fingerprint is only a candidate:
+    // confirm a second independent signal before merging records with different URLs.
+    const safeTitleId = titleEventIds.find(id => {
+      const snap = snapshotsById.get(id);
+      return snap?.exists && isSafeTitleDuplicate(candidate, snap.data());
+    }) || null;
 
     eventId = resolveEventId({
       candidateCategory: candidate.category,
       candidateId: candidate.id,
       categoryEventId,
       urlEventId,
-      titleEventId,
+      titleEventId: safeTitleId,
       categoriesById
     });
 
     const eventRef = events.doc(eventId);
-    const existing = compatible.get(eventId);
-
-    if (existing && existing.data().category !== candidate.category) {
+    const existing = snapshotsById.get(eventId);
+    const previous = existing?.exists ? existing.data() : {};
+    if (previous.category && previous.category !== candidate.category) {
       throw new Error("Refusing to merge an event from a different category.");
     }
-
-    const previous = existing ? existing.data() : {};
 
     const sources = [...new Set([
       ...(previous.sourceIds || []),
       ...(candidate.sourceIds || [])
     ])].slice(0, 20);
+    const sourceRecord = {
+      sourceId: (candidate.sourceIds || [])[0] || "unknown",
+      sourceName: candidate.sourceName || candidate.sourcePlatform || "Unknown source",
+      sourcePlatform: candidate.sourcePlatform || "",
+      sourceUrl: candidate.sourceUrl,
+      firstSeenAt: Timestamp.now()
+    };
+    const oldRecords = Array.isArray(previous.sourceRecords) ? previous.sourceRecords : [];
+    const priorSourceRecord = oldRecords.find(item =>
+      item.sourceId === sourceRecord.sourceId && item.sourceUrl === sourceRecord.sourceUrl
+    );
+    const sourceRecords = [...oldRecords.filter(item =>
+      !(item.sourceId === sourceRecord.sourceId && item.sourceUrl === sourceRecord.sourceUrl)
+    ), priorSourceRecord || sourceRecord].slice(-25);
 
     const merged = {
       ...candidate,
+      ...(previous.sourceUrl && !/brabble|aggregat/i.test(`${previous.sourceName || ""} ${previous.sourcePlatform || ""}`)
+        ? { sourceUrl: previous.sourceUrl, sourceName: previous.sourceName, sourcePlatform: previous.sourcePlatform }
+        : {}),
       ...(!candidate.registrationDeadline && previous.registrationDeadline
         ? { registrationDeadline: previous.registrationDeadline } : {}),
       ...(previous.officialRegistrationUrl
@@ -283,6 +283,7 @@ async function storeCandidate(candidate) {
       ...(previous.endAt ? { endAt: previous.endAt } : {}),
       ...(previous.mode ? { mode: previous.mode } : {}),
       sourceIds: sources,
+      sourceRecords,
       firstSeenAt: previous.firstSeenAt || SERVER_TIME(),
       updatedAt: SERVER_TIME(),
       lastSeenAt: SERVER_TIME()
@@ -297,11 +298,16 @@ async function storeCandidate(candidate) {
 
     tx.set(eventRef, merged, { merge: true });
     tx.set(urlFingerprint, { eventId, updatedAt: SERVER_TIME() }, { merge: true });
-    tx.set(titleFingerprint, { eventId, updatedAt: SERVER_TIME() }, { merge: true });
+    tx.set(titleFingerprint, {
+      eventId,
+      eventIds: [...new Set([...titleEventIds, eventId])].slice(-25),
+      updatedAt: SERVER_TIME()
+    }, { merge: true });
   });
 
   return eventId;
 }
+
 async function readEnabledSources() {
   const snap = await db.collection("discoverySources").where("enabled", "==", true).limit(50).get();
   const sources = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(s => s.type === "rss" && safeHttps(s.feedUrl));
@@ -335,7 +341,7 @@ function directListingCandidate(platform, item) {
 
   const req = item.regnRequirements || item.registration || item.registration_details || {};
   const deadlineRaw = firstValue(req.end_regn_dt, req.deadline, item.registration_deadline, item.deadline,
-    item.submission_period_dates?.end, item.hackathon_setting?.reg_ends_at, item.ends_at, item.end_utc_tz, item.end_date);
+    item.submission_period_dates?.end, item.hackathon_setting?.reg_ends_at);
   const startRaw = firstValue(item.start_tz, item.start_timestamp, item.start_date, item.startDate, item.starts_at, item.start_at,
     item.submission_period_dates?.start, item.festival?.start_date);
   const endRaw = firstValue(item.end_tz, item.end_timestamp, item.end_date, item.endDate, item.ends_at, item.end_at,
