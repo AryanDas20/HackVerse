@@ -31,6 +31,9 @@ const YOUTUBE_QUERIES = process.env.HACKVERSE_STANDALONE === "1"
 const OPENHPI_COURSE_FEED = process.env.HACKVERSE_STANDALONE === "1"
   ? { value: () => process.env.HACKVERSE_OPENHPI_COURSE_FEED || "https://open.hpi.de/feeds/courses" }
   : defineString("HACKVERSE_OPENHPI_COURSE_FEED", { default: "https://open.hpi.de/feeds/courses" });
+const BRABBLE_API_KEY = process.env.HACKVERSE_STANDALONE === "1"
+  ? { value: () => process.env.HACKVERSE_BRABBLE_API_KEY || "" }
+  : defineString("HACKVERSE_BRABBLE_API_KEY", { default: "" });
 const SERVER_TIME = FieldValue.serverTimestamp;
 
 function sha(value) { return crypto.createHash("sha256").update(String(value)).digest("hex"); }
@@ -443,6 +446,175 @@ async function ingestDirectPlatforms(summary) {
   }
 }
 
+
+
+// Optional Brabble aggregator API. The API key is read only in the discovery runner,
+// never exposed to the browser. Pages are cached in Firestore and source attribution
+// is retained on each listing; registrations still point to the organiser's URL.
+async function ingestBrabbleListings(summary) {
+  const apiKey = BRABBLE_API_KEY.value().trim();
+  if (!apiKey) return;
+  summary.sourceCount += 1;
+  const sourceId = "brabble-aggregator-api";
+  let offset = 0;
+  let total = Number.POSITIVE_INFINITY;
+  let fetchedCount = 0;
+  let published = 0;
+  try {
+    while (offset < total && offset < 1200) {
+      const endpoint = new URL("https://brabble.ai/api/listings");
+      endpoint.search = new URLSearchParams({ limit: "200", offset: String(offset) }).toString();
+      const response = await fetch(endpoint, {
+        headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(20000)
+      });
+      if (!response.ok) {
+        let detail = "";
+        try { detail = (await response.json()).error || ""; } catch {}
+        throw new Error(`Brabble API returned HTTP ${response.status}${detail ? `: ${cleanText(detail, 140)}` : ""}`);
+      }
+      const payload = await response.json();
+      if (!Array.isArray(payload.listings)) throw new Error("Brabble API response did not contain a listings array.");
+      total = Number(payload.total || 0);
+      const rows = payload.listings;
+      summary.fetched += rows.length;
+      fetchedCount += rows.length;
+      for (const row of rows) {
+        const title = cleanText(row.title, 180);
+        const sourceUrl = canonicalUrl(row.url || "");
+        const deadlineDate = row.deadline ? new Date(row.deadline) : null;
+        if (!title || !sourceUrl || !deadlineDate || Number.isNaN(deadlineDate.getTime()) || deadlineDate.getTime() < Date.now()) continue;
+        const rawType = String(row.type || "").trim().toUpperCase();
+        const category = rawType === "HACKATHON" ? "hackathon"
+          : rawType === "CASE STUDY" ? "case-competition"
+          : ["CONTEST", "CODING"].includes(rawType) ? "coding-event"
+          : "case-competition";
+        const kind = String(row.kind || "competition").toLowerCase();
+        const deadlineIsStart = kind === "contest";
+        const organizer = cleanText(row.organiser || row.organizer || row.platform || "Organiser not listed", 120);
+        const platform = cleanText(row.platform || "Brabble source", 80);
+        const city = cleanText(row.city || "", 100);
+        const modeRaw = String(row.mode || "").toUpperCase();
+        const mode = modeRaw === "ONLINE" ? "Online" : modeRaw === "OFFLINE" ? "In-person" : modeRaw === "HYBRID" ? "Hybrid" : null;
+        const fee = cleanText(row.fee || "", 80);
+        const prizeLabel = cleanText(row.prize?.label || "", 120);
+        const prizePool = Number.isFinite(Number(row.prize?.inr)) ? Number(row.prize.inr) : null;
+        const eligibilityRows = Array.isArray(row.eligibility) ? row.eligibility.map(x => cleanText(x, 180)).filter(Boolean).slice(0, 12) : [];
+        const eligibility = eligibilityRows.join("; ") || "Check the organiser's eligibility rules.";
+        const tags = [platform, rawType, "Student opportunity"].filter(Boolean);
+        const titleKey = sha(`${category}:${title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`).slice(0, 40);
+        const shareUrl = canonicalUrl(row.shareUrl || "");
+        const candidate = {
+          id: sha(sourceUrl).slice(0, 40), titleKey, title, category, opportunityType: category,
+          organizer, summary: `${rawType.replace(/_/g, " ") || "Opportunity"} listed on ${platform}. ${mode || "Format not specified"}${city && city !== "See listing" ? ` · ${city}` : ""}. Open the organiser page to confirm application details.`,
+          description: `Discovered through Brabble.ai's aggregated opportunity index. Original organiser: ${organizer}. Platform: ${platform}. ${eligibility}`,
+          sourceUrl, officialEventUrl: sourceUrl, officialRegistrationUrl: sourceUrl, brabbleShareUrl: shareUrl,
+          registrationDeadline: deadlineIsStart ? null : Timestamp.fromDate(deadlineDate),
+          startAt: deadlineIsStart ? Timestamp.fromDate(deadlineDate) : null, endAt: null, timezone: null,
+          mode, location: city && city !== "See listing" ? city : (mode === "Online" ? "Online" : "Location not listed"),
+          city: city === "See listing" ? "" : city, region: "", country: "",
+          tracks: tags, technologies: [], tags, skills: [], level: "Check organiser requirements",
+          teamSize: cleanText(row.team || "", 40), prize: prizeLabel === "See listing" ? "" : prizeLabel,
+          prizePool, currency: prizePool !== null ? "INR" : null,
+          isFree: /^free$/i.test(fee) ? true : (fee ? false : null), price: fee || "Check organiser details",
+          eligibility, eligibleCountries: [], isWorldwide: eligibilityRows.some(x => /worldwide|open to all|global/i.test(x)),
+          sourcePlatform: platform, sourceType: category, sourceName: "Brabble.ai",
+          attributionText: `Aggregated by Brabble.ai. ${payload.attribution || "See Brabble.ai and follow the original organiser link for details."}`,
+          verificationStatus: "source-attributed", status: deadlineIsStart ? "upcoming" : "upcoming",
+          visibility: "public", autoPublished: true, discoveryScore: 94,
+          sourcePublishedAt: null, ingestedAt: SERVER_TIME(), updatedAt: SERVER_TIME(), lastSeenAt: SERVER_TIME(), sourceIds: [sourceId]
+        };
+        if (!isDuplicateCandidate(candidate)) continue;
+        await storeCandidate(candidate);
+        summary.relevant++;
+        summary.published++;
+        published++;
+      }
+      offset += rows.length;
+      if (!rows.length || offset >= total) break;
+    }
+    await db.collection("discoverySources").doc(sourceId).set({
+      name: "Brabble.ai Aggregator", platform: "Brabble.ai", type: "api", enabled: true,
+      sourceUrl: "https://brabble.ai/developers", lastRunAt: SERVER_TIME(), lastError: null,
+      lastItemCount: fetchedCount, lastPublishedCount: published, updatedAt: SERVER_TIME()
+    }, { merge: true });
+  } catch (error) {
+    const message = String(error.message || error).slice(0, 220);
+    summary.errors.push({ source: "Brabble.ai API", message });
+    await db.collection("discoverySources").doc(sourceId).set({
+      name: "Brabble.ai Aggregator", platform: "Brabble.ai", type: "api", enabled: true,
+      sourceUrl: "https://brabble.ai/developers", lastRunAt: SERVER_TIME(), lastError: message, updatedAt: SERVER_TIME()
+    }, { merge: true }).catch(() => {});
+    logger.warn("Brabble aggregator ingestion failed", { error: message });
+  }
+}
+
+// Official public Codeforces contest API. It is read anonymously and queried only once
+// per scheduled discovery run, respecting the provider's documented request rate.
+async function ingestCodeforcesContests(summary) {
+  summary.sourceCount += 1;
+  const sourceId = "direct-codeforces-contests";
+  try {
+    const response = await fetch("https://codeforces.com/api/contest.list?gym=false", {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!response.ok) throw new Error(`Codeforces API returned HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload.status !== "OK" || !Array.isArray(payload.result)) {
+      throw new Error(cleanText(payload.comment || "Unexpected Codeforces API response", 180));
+    }
+    const contests = payload.result;
+    summary.fetched += contests.length;
+    let published = 0;
+    for (const contest of contests) {
+      const phase = String(contest.phase || "").toUpperCase();
+      if (!["BEFORE", "CODING"].includes(phase)) continue;
+      const startMs = Number(contest.startTimeSeconds || 0) * 1000;
+      const durationSeconds = Number(contest.durationSeconds || 0);
+      if (!startMs || !durationSeconds) continue;
+      const endMs = startMs + durationSeconds * 1000;
+      if (endMs < Date.now()) continue;
+      const title = cleanText(contest.name || `Codeforces contest ${contest.id}`, 180);
+      const sourceUrl = canonicalUrl(`https://codeforces.com/contest/${encodeURIComponent(contest.id)}`);
+      const category = "coding-event";
+      const titleKey = sha(`${category}:${title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`).slice(0, 40);
+      const candidate = {
+        id: sha(sourceUrl).slice(0, 40), titleKey, title, category, opportunityType: category,
+        organizer: "Codeforces", summary: "Public competitive-programming contest. Open the official contest page to confirm start time, participation rules and registration details.",
+        description: cleanText(contest.description || "Competitive programming round hosted on Codeforces. Participation requirements and contest rules are published by the organiser.", 1800),
+        sourceUrl, officialEventUrl: sourceUrl, officialRegistrationUrl: sourceUrl,
+        registrationDeadline: null, startAt: Timestamp.fromDate(new Date(startMs)), endAt: Timestamp.fromDate(new Date(endMs)),
+        timezone: "UTC", mode: "Online", location: "Online", city: "", region: "", country: "Global",
+        tracks: ["Algorithms", "Competitive programming"], technologies: ["C++", "Python", "Java"], tags: ["Algorithms", "Competitive programming"], skills: ["Problem solving"],
+        level: "Open to all", teamSize: "Individual", prize: "See official contest page", prizePool: null, currency: null,
+        isFree: true, price: "Free", eligibility: "Check the official contest rules.", eligibleCountries: [], isWorldwide: true,
+        sourcePlatform: "Codeforces", sourceType: category, sourceName: "Codeforces", attributionText: "Contest metadata imported from the official public Codeforces API; confirm details on Codeforces.",
+        verificationStatus: "source-attributed", status: startMs > Date.now() ? "upcoming" : "ongoing", visibility: "public", autoPublished: true,
+        discoveryScore: 90, sourcePublishedAt: null, ingestedAt: SERVER_TIME(), updatedAt: SERVER_TIME(), lastSeenAt: SERVER_TIME(), sourceIds: [sourceId]
+      };
+      if (!isDuplicateCandidate(candidate)) continue;
+      await storeCandidate(candidate);
+      summary.relevant++;
+      summary.published++;
+      published++;
+    }
+    await db.collection("discoverySources").doc(sourceId).set({
+      name: "Codeforces", platform: "Codeforces", type: "direct-api", enabled: true,
+      sourceUrl: "https://codeforces.com/api/contest.list?gym=false", lastRunAt: SERVER_TIME(),
+      lastError: null, lastItemCount: contests.length, lastPublishedCount: published, updatedAt: SERVER_TIME()
+    }, { merge: true });
+  } catch (error) {
+    const message = String(error.message || error).slice(0, 220);
+    summary.errors.push({ source: "Codeforces", message });
+    await db.collection("discoverySources").doc(sourceId).set({
+      name: "Codeforces", platform: "Codeforces", type: "direct-api", enabled: true,
+      sourceUrl: "https://codeforces.com/api/contest.list?gym=false", lastRunAt: SERVER_TIME(), lastError: message, updatedAt: SERVER_TIME()
+    }, { merge: true }).catch(() => {});
+    logger.warn("Codeforces discovery failed", { error: message });
+  }
+}
+
 async function ingestOpenHpiCourses(summary) {
   const feedUrl = safeHttps(OPENHPI_COURSE_FEED.value().trim());
   if (!feedUrl) return;
@@ -584,6 +756,8 @@ async function runDiscovery() {
       }
     }
     await ingestDirectPlatforms(summary);
+    await ingestBrabbleListings(summary);
+    await ingestCodeforcesContests(summary);
     await ingestOpenHpiCourses(summary);
     await ingestYouTube(summary);
   } catch (error) {

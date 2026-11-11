@@ -6,8 +6,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, query, where, orderBy,
-  startAt, endAt, limit, serverTimestamp, addDoc, setDoc, deleteDoc,
-  onSnapshot, updateDoc, runTransaction
+  startAt, endAt, startAfter, limit, serverTimestamp, addDoc, setDoc, deleteDoc,
+  onSnapshot, updateDoc, runTransaction, writeBatch
 } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { supabaseConfig } from "./supabase-config.js";
@@ -349,9 +349,10 @@ async function addDiscoverySource(event) {
   event.preventDefault();
   if (!isAdminUser || !functions) return;
   const name = $("#discoverySourceName").value.trim(); const feedUrl = $("#discoveryFeedUrl").value.trim();
+  const category = $("#discoverySourceCategory")?.value || "";
   const button = $("#addDiscoverySourceBtn"); button.disabled = true;
   try {
-    await httpsCallable(functions, "addDiscoverySource")({ name, feedUrl, autoPublish: true });
+    await httpsCallable(functions, "addDiscoverySource")({ name, feedUrl, category, autoPublish: true });
     $("#discoverySourceForm").reset(); toast("RSS source connected. It will be checked on the next run."); await loadDiscoverySources();
   } catch (error) { toast(friendlyError(error)); }
   finally { button.disabled = false; }
@@ -496,49 +497,123 @@ function opportunityCard(event, index) {
   const mode = eventModeValue(event);
   const place = event.location || [event.city,event.region,event.country].filter(Boolean).join(", ") || (mode === "Online" ? "Online / remote" : "Location not listed");
   const track = (event.tracks || event.tags || []).slice(0,2).join(" · ");
-  return `<article class="event-card opportunity-card"><div class="event-banner b${(index%3)+1}"><span class="tag">${esc(cat)}</span><span class="tag">${esc(mode)}</span></div><div class="event-body"><div class="event-source">${esc(organizer)}${event.sourceName && event.organizer ? ` · via ${esc(event.sourceName)}` : ""}</div><h3>${esc(event.title || "Untitled opportunity")}</h3><p class="event-desc">${esc(event.summary || "Open the original organiser listing for its full details.")}</p><div class="event-facts"><span>◎ ${esc(place)}</span>${track ? `<span>✦ ${esc(track)}</span>` : ""}<span>◷ ${esc(deadlineText)}</span></div><div class="event-bottom"><span class="event-prize">${esc(prize)}</span><div class="event-actions"><button class="save-btn" data-save="${esc(event.id)}">${savedIds.has(event.id)?"♥ Saved":"♡ Save"}</button><button class="register-btn" data-view-event="${esc(event.id)}">Read details ↗</button></div></div></div></article>`;
+  const sourceCredit = event.sourceName === "Brabble.ai" ? ' · via <a href="https://brabble.ai/" target="_blank" rel="noopener noreferrer">Brabble.ai</a>' : (event.sourceName && event.organizer ? ` · via ${esc(event.sourceName)}` : "");
+  return `<article class="event-card opportunity-card"><div class="event-banner b${(index%3)+1}"><span class="tag">${esc(cat)}</span><span class="tag">${esc(mode)}</span></div><div class="event-body"><div class="event-source">${esc(organizer)}${sourceCredit}</div><h3>${esc(event.title || "Untitled opportunity")}</h3><p class="event-desc">${esc(event.summary || "Open the original organiser listing for its full details.")}</p><div class="event-facts"><span>◎ ${esc(place)}</span>${track ? `<span>✦ ${esc(track)}</span>` : ""}<span>◷ ${esc(deadlineText)}</span></div><div class="event-bottom"><span class="event-prize">${esc(prize)}</span><div class="event-actions"><button class="save-btn" data-save="${esc(event.id)}">${savedIds.has(event.id)?"♥ Saved":"♡ Save"}</button><button class="register-btn" data-view-event="${esc(event.id)}">Read details ↗</button></div></div></div></article>`;
 }
 function renderLearningCatalog() {
   const panel = $("#learningCatalog");
   if (!panel) return;
   const category = $("#eventCategory")?.value || "all";
   const configs = {
-    course: {
-      title: "Explore online courses.",
-      intro: "Browse live provider catalogues. Availability, enrolment dates, price and course status are confirmed by each provider.",
+    hackathon: {
+      eyebrow: "HACKATHON SOURCES", tag: "OFFICIAL DIRECTORIES", title: "Discover hackathons across more platforms.",
+      intro: "Browse organiser platforms around the world. HackVerse imports available public feeds; other directories open directly so you can check current registration and eligibility.",
       providers: [
-        ["openHPI", "Online ICT and computer science courses from the Hasso Plattner Institute.", "https://open.hpi.de/courses", "Public dated course feed connected to HackVerse"],
-        ["Coursera", "Courses and guided learning from universities and industry partners.", "https://www.coursera.org/browse", "Provider catalogue"],
-        ["edX", "University and professional online courses, with availability and level filters.", "https://www.edx.org/courses", "Provider catalogue"],
-        ["SWAYAM", "India's national online learning platform with courses from Indian institutions.", "https://swayam.gov.in/", "India · Provider catalogue"],
-        ["Codecademy", "Interactive programming and technology courses, skill paths and career paths.", "https://www.codecademy.com/catalog", "Coding-focused catalogue"]
+        ["Unstop", "India-focused hackathons, competitions, quizzes, hiring challenges and campus events.", "https://unstop.com/hackathons", "Public listing connector · India"],
+        ["Devfolio", "Student and community hackathons, especially across India and Web3 communities.", "https://devfolio.co/hackathons", "Public listing connector"],
+        ["Devpost", "Global online and in-person hackathons from companies, universities and communities.", "https://devpost.com/hackathons", "Public listing connector"],
+        ["Major League Hacking", "University hackathons and student builder programmes.", "https://mlh.io/seasons/2026/events", "Official season directory"],
+        ["HackerEarth", "Company, developer and recruiting hackathons.", "https://www.hackerearth.com/challenges/", "Public listing connector"],
+        ["DoraHacks", "Global innovation, Web3, AI and open-source hackathons.", "https://dorahacks.io/hackathon", "Browse organiser listings"],
+        ["ETHGlobal", "Ethereum ecosystem hackathons, build weeks and developer events.", "https://ethglobal.com/events", "Browse organiser listings"],
+        ["Hack Club", "Student-led hackathons, coding events and maker programmes.", "https://hackathons.hackclub.com/", "Student community directory"],
+        ["Lablab.ai", "AI-focused hackathons, challenges and collaborative build events.", "https://lablab.ai/event", "Browse organiser listings"],
+        ["Hack2skill", "Technology innovation challenges, hackathons and student programmes.", "https://hack2skill.com/", "Browse organiser listings"],
+        ["AngelHack", "Global developer hackathons and innovation programmes.", "https://angelhack.com/", "Browse organiser listings"],
+        ["Brabble.ai", "Aggregated hackathon listings from multiple public competition platforms.", "https://brabble.ai/", "Attributed RSS source connected to HackVerse"]
+      ]
+    },
+    "case-competition": {
+      eyebrow: "CASE COMPETITION SOURCES", tag: "CHALLENGE DIRECTORIES", title: "Find business and innovation challenges.",
+      intro: "Case competitions can have team, university, region and degree restrictions. Always confirm the official rules before applying.",
+      providers: [
+        ["Unstop", "Business case studies, strategy competitions, quizzes and innovation challenges.", "https://unstop.com/competitions", "Public platform"],
+        ["Brabble.ai", "Aggregated student case competitions and open challenges.", "https://brabble.ai/", "Attributed public RSS feed connected"],
+        ["Kaggle Competitions", "Data science, machine learning and business problem competitions.", "https://www.kaggle.com/competitions", "Official competition directory"],
+        ["HackerEarth", "Company-sponsored problem-solving and technical challenges.", "https://www.hackerearth.com/challenges/", "Official challenge directory"],
+        ["Devpost", "Innovation challenges and sponsored build competitions.", "https://devpost.com/hackathons", "Official hackathon directory"]
+      ]
+    },
+    "coding-event": {
+      eyebrow: "CODING CONTEST SOURCES", tag: "LIVE COMPETITION DIRECTORIES", title: "Find your next coding challenge.",
+      intro: "Browse programming contests, algorithm rounds, CTFs and data competitions. The Codeforces public contest API is also imported into HackVerse.",
+      providers: [
+        ["Codeforces", "Competitive programming rounds and algorithm contests.", "https://codeforces.com/contests", "Public API connector"],
+        ["CodeChef", "Rated contests, Starters and practice competitions.", "https://www.codechef.com/contests", "Official contest directory"],
+        ["LeetCode", "Weekly and biweekly programming contests.", "https://leetcode.com/contest/", "Official contest directory"],
+        ["AtCoder", "Beginner, regular and grand programming contests.", "https://atcoder.jp/contests/", "Official contest directory"],
+        ["HackerRank", "Skills-based programming contests and challenges.", "https://www.hackerrank.com/contests", "Official contest directory"],
+        ["Kaggle", "Machine learning, analytics and data-science competitions.", "https://www.kaggle.com/competitions", "Official competition directory"],
+        ["CTFtime", "Capture-the-flag cybersecurity competitions worldwide.", "https://ctftime.org/event/list/", "Community event directory"],
+        ["Codingame", "Programming competitions, bot challenges and developer games.", "https://www.codingame.com/contests", "Official contest directory"],
+        ["Brabble.ai", "Aggregated coding contests from multiple platforms.", "https://brabble.ai/", "Attributed public RSS source connected"]
+      ]
+    },
+    course: {
+      eyebrow: "COURSE CATALOGUES", tag: "OFFICIAL PROVIDERS", title: "Explore coding and technology courses.",
+      intro: "Browse a wider set of course libraries. Some courses are free to audit while certificates, graded work or guided programmes may cost extra; confirm details with the provider.",
+      providers: [
+        ["openHPI", "Computer science, data, AI and digital technology courses from HPI.", "https://open.hpi.de/courses", "Public dated course feed connected to HackVerse"],
+        ["Coursera", "University and industry courses, guided projects and professional certificates.", "https://www.coursera.org/browse", "Official course catalogue"],
+        ["edX", "University-level computer science, engineering and professional courses.", "https://www.edx.org/search", "Official course catalogue"],
+        ["SWAYAM", "India's national online course platform from universities and institutions.", "https://swayam.gov.in/explorer", "India · Official catalogue"],
+        ["NPTEL", "Engineering, science, management and technology courses from IITs and IISc.", "https://nptel.ac.in/", "India · Official catalogue"],
+        ["freeCodeCamp", "Free web development, Python, data and computer science curriculum.", "https://www.freecodecamp.org/learn/", "Free learning platform"],
+        ["MIT OpenCourseWare", "Free course materials from MIT subjects and departments.", "https://ocw.mit.edu/", "Open educational resources"],
+        ["Harvard CS50", "Computer science and programming courses from Harvard.", "https://cs50.harvard.edu/", "Official course collection"],
+        ["Microsoft Learn", "Role-based learning paths for cloud, AI, developer and data skills.", "https://learn.microsoft.com/training/", "Official learning paths"],
+        ["Google Skills", "Hands-on labs and learning paths for cloud, AI and Google technologies.", "https://www.skills.google/", "Official learning catalogue"],
+        ["AWS Skill Builder", "Cloud, AI, architecture and developer learning resources.", "https://skillbuilder.aws/", "Official learning catalogue"],
+        ["IBM SkillsBuild", "Digital, AI, cybersecurity and professional skills learning.", "https://skillsbuild.org/", "Free learning resources available"],
+        ["Cisco Networking Academy", "Networking, cybersecurity, programming and IT learning.", "https://www.netacad.com/", "Official learning platform"],
+        ["Kaggle Learn", "Short practical courses in Python, ML, SQL and data science.", "https://www.kaggle.com/learn", "Free micro-courses"],
+        ["FutureLearn", "Online courses and microcredentials from universities and organisations.", "https://www.futurelearn.com/", "Official course catalogue"],
+        ["Class Central", "Search engine and directory for online courses from many providers.", "https://www.classcentral.com/", "Course discovery directory"],
+        ["Udacity", "Technology courses and career-focused nanodegree programmes.", "https://www.udacity.com/courses/all", "Official course catalogue"],
+        ["Codecademy", "Interactive programming courses, skill paths and career paths.", "https://www.codecademy.com/catalog", "Coding-focused catalogue"]
       ]
     },
     bootcamp: {
-      title: "Find an online bootcamp.",
-      intro: "Bootcamp cohorts, start dates and fees can change. Open the provider catalogue to confirm the next intake before enrolling.",
+      eyebrow: "BOOTCAMP & FELLOWSHIP SOURCES", tag: "PROGRAMME DIRECTORIES", title: "Explore coding bootcamps and builder programmes.",
+      intro: "Compare eligibility, cohort dates, outcomes, refund policies and fees carefully. Provider catalogues may include paid programmes and region-specific availability.",
       providers: [
-        ["edX Boot Camps", "Explore boot camp programmes through edX's learning-type catalogue filters.", "https://www.edx.org/courses", "Use Learning Type → Boot Camps"],
-        ["Codecademy", "Explore structured career paths and intensive technical learning paths.", "https://www.codecademy.com/catalog", "Coding-focused catalogue"],
-        ["Coursera", "Explore guided programmes and professional certificates for career development.", "https://www.coursera.org/browse", "Professional learning catalogue"]
+        ["CodePath", "College-focused technical courses and career preparation programmes.", "https://www.codepath.org/courses", "Student programmes"],
+        ["MLH Fellowship", "Remote collaborative software engineering fellowship programmes.", "https://fellowship.mlh.io/", "Fellowship · application windows vary"],
+        ["Masai School", "India-based technology and career programmes.", "https://www.masaischool.com/", "India · Provider catalogue"],
+        ["Scaler", "Software engineering, data science and technology learning programmes.", "https://www.scaler.com/", "India · Provider catalogue"],
+        ["Coding Ninjas", "Programming, data science and software development courses.", "https://www.codingninjas.com/", "India · Provider catalogue"],
+        ["GeeksforGeeks", "Structured coding, DSA, interview preparation and development courses.", "https://www.geeksforgeeks.org/courses/", "India · Course catalogue"],
+        ["Le Wagon", "Full-stack web development and data bootcamps.", "https://www.lewagon.com/", "Global · Cohort availability varies"],
+        ["Ironhack", "Web development, UX/UI and data bootcamps.", "https://www.ironhack.com/", "Global · Provider catalogue"],
+        ["General Assembly", "Software engineering, data and product career programmes.", "https://generalassemb.ly/education", "Global · Provider catalogue"],
+        ["Springboard", "Mentor-supported software, data and cybersecurity programmes.", "https://www.springboard.com/", "Online · Provider catalogue"],
+        ["CareerFoundry", "Online technology and UX career-change programmes.", "https://careerfoundry.com/", "Online · Provider catalogue"],
+        ["App Academy", "Software engineering bootcamp and coding curriculum.", "https://www.appacademy.io/", "Online · Provider catalogue"],
+        ["Recurse Center", "Self-directed programming retreat and developer community.", "https://www.recurse.com/", "Fellowship-style programme"]
       ]
     },
     certification: {
-      title: "Explore certificates and certifications.",
-      intro: "Check whether a programme awards a course-completion certificate, a professional certificate or an exam-based industry certification.",
+      eyebrow: "CERTIFICATION CATALOGUES", tag: "OFFICIAL CREDENTIALS", title: "Find recognised technology credentials.",
+      intro: "Distinguish a course-completion certificate from an exam-based professional certification. Check exam fees, renewal rules and prerequisites on the issuer's website.",
       providers: [
-        ["Coursera Professional Certificates", "Career-focused professional certificate programmes from industry partners.", "https://www.coursera.org/professional-certificates", "Professional certificates"],
-        ["edX Certificates", "Courses and programmes with verified certificate options from partner institutions.", "https://www.edx.org/courses", "Course certificate options vary"],
-        ["Codecademy Certification Paths", "Structured paths for preparing for technology and professional certifications.", "https://www.codecademy.com/catalog", "Certification paths"],
-        ["SWAYAM", "Explore courses and certificates from India's national online learning platform.", "https://swayam.gov.in/", "India · Provider catalogue"]
+        ["Microsoft Credentials", "Azure, security, data, AI and Microsoft role-based credentials.", "https://learn.microsoft.com/credentials/", "Official issuer"],
+        ["AWS Certification", "Cloud practitioner, architect, developer, operations and specialty exams.", "https://aws.amazon.com/certification/", "Official issuer"],
+        ["Google Cloud Credentials", "Cloud, data, machine learning and infrastructure credentials.", "https://cloud.google.com/learn/certification", "Official issuer"],
+        ["Cisco Certifications", "Networking, cybersecurity, automation and enterprise credentials.", "https://www.cisco.com/site/us/en/learn/training-certifications/certifications/index.html", "Official issuer"],
+        ["IBM Training", "AI, data, cloud and enterprise technology learning and credentials.", "https://www.ibm.com/training/", "Official issuer"],
+        ["CompTIA", "Vendor-neutral IT, cybersecurity, networking and infrastructure certifications.", "https://www.comptia.org/certifications", "Official issuer"],
+        ["Coursera Certificates", "Professional certificate programmes from universities and companies.", "https://www.coursera.org/professional-certificates", "Provider catalogue"],
+        ["edX Certificates", "Verified course certificates and professional programmes.", "https://www.edx.org/certificates", "Provider catalogue"]
       ]
     }
   };
   const config = configs[category];
   panel.hidden = !config;
   if (!config) return;
+  $("#learningCatalogEyebrow").textContent = config.eyebrow;
   $("#learningCatalogTitle").textContent = config.title;
   $("#learningCatalogIntro").textContent = config.intro;
+  $("#learningCatalogTag").textContent = config.tag;
   $("#learningProviderGrid").innerHTML = config.providers.map(([name, description, url, note]) =>
     `<article class="learning-provider-card"><div class="learning-provider-mark">${esc(name.slice(0,1))}</div><div class="learning-provider-copy"><h3>${esc(name)}</h3><p>${esc(description)}</p><small>${esc(note)}</small><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Browse provider ↗</a></div></article>`
   ).join("");
@@ -790,9 +865,15 @@ function selectConversation(conversation) {
   $("#chatPlaceholder").hidden = true; $("#chatActive").hidden = false; renderChatHeading(); updateReplyPreview();
   if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
   const messagesQuery = query(collection(db, "conversations", conversation.id, "messages"), orderBy("createdAt", "desc"), limit(300));
+  let firstMessagesSnapshot = true;
   stopMessageListener = onSnapshot(messagesQuery, snapshot => {
-    currentMessages = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).reverse();
-    renderMessages(currentMessages); hydrateChatAttachmentUrls(conversation.id, currentMessages).catch(error => console.warn("Chat attachment preview unavailable", error)); markConversationDelivered(conversation.id).catch(()=>{}); markConversationRead(conversation.id).catch(()=>{});
+    const nextMessages = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).reverse();
+    const oldIds = new Set(currentMessages.map(message => message.id));
+    const arrivingIds = new Set(firstMessagesSnapshot ? [] : nextMessages.filter(message => !oldIds.has(message.id)).map(message => message.id));
+    currentMessages = nextMessages;
+    renderMessages(currentMessages, { animateIds: arrivingIds });
+    firstMessagesSnapshot = false;
+    hydrateChatAttachmentUrls(conversation.id, currentMessages).catch(error => console.warn("Chat attachment preview unavailable", error)); markConversationDelivered(conversation.id).catch(()=>{}); markConversationRead(conversation.id).catch(()=>{});
   }, error => { console.error("Messages listener", error); $("#messageList").innerHTML = '<div class="empty-note">Could not load messages. Check Firestore rules.</div>'; });
   startTypingListener(conversation.id);
   renderConversationListFromSnapshotSelection();
@@ -804,7 +885,8 @@ function updateReplyPreview() {
   preview.hidden = !message;
   if (message) { $("#replyAuthor").textContent = message.authorUid === currentUser?.uid ? "yourself" : (message.authorName || "member"); $("#replyText").textContent = message.deleted ? "Deleted message" : (message.text || message.attachment?.name || "Attachment"); }
 }
-function renderMessages(messages) {
+function renderMessages(messages, options = {}) {
+  const animateIds = options.animateIds instanceof Set ? options.animateIds : new Set();
   const term = $("#messageSearch")?.value.trim().toLowerCase() || "";
   const clearAt=tsMillis(activeConversation?.clearAtBy?.[currentUser?.uid]);
   const visible = messages.filter(m => !m.hiddenForBy?.[currentUser?.uid] && (!clearAt || tsMillis(m.createdAt)>clearAt)).filter(m => !term || String(m.text || "").toLowerCase().includes(term) || String(m.authorName || "").toLowerCase().includes(term) || String(m.attachment?.name || "").toLowerCase().includes(term));
@@ -834,7 +916,7 @@ function renderMessages(messages) {
     const deliveryLabel=readByAll?"Read":deliveredByAll?"Delivered":"Sent";
     const status = mine ? `<span class="message-ticks ${readByAll?"read":deliveredByAll?"delivered":""}" title="${deliveryLabel}">${readByAll?"✓✓":deliveredByAll?"✓✓":"✓"}</span>` : "";
     const messageText = m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || "");
-    return `<article class="message-row ${mine ? "mine" : "theirs"}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${reply}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}${isPinnedHere?'<small class="message-pinned-label">⌖ Pinned on this device</small>':""}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-pin-message="${esc(m.id)}" title="Pin on this device">${isPinnedHere?"⌖":"♧"}</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine&&canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}${!mine?`<button type="button" data-report-message="${esc(m.id)}" title="Report message">⚑</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete for me or everyone">⌫</button><button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
+    return `<article class="message-row ${mine ? "mine" : "theirs"} ${animateIds.has(m.id) ? "is-new" : ""}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${reply}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}${isPinnedHere?'<small class="message-pinned-label">⌖ Pinned on this device</small>':""}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-pin-message="${esc(m.id)}" title="Pin on this device">${isPinnedHere?"⌖":"♧"}</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine&&canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}${!mine?`<button type="button" data-report-message="${esc(m.id)}" title="Report message">⚑</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete for me or everyone">⌫</button><button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
   }).join("");
   box.querySelectorAll("[data-view-message-author]").forEach(b => b.onclick = () => { if (b.dataset.viewMessageAuthor) viewMember(b.dataset.viewMessageAuthor); });
   box.querySelectorAll("[data-edit-message]").forEach(b => b.onclick = () => editMessage(b.dataset.editMessage));
@@ -1367,6 +1449,8 @@ function updateAiAccessUI() {
   const form = $("#aiForm");
   const messages = $("#aiMessages");
   if (gate) gate.hidden = signedIn;
+  const clearHistoryButton = $("#aiClearHistoryBtn");
+  if (clearHistoryButton) clearHistoryButton.hidden = !signedIn;
   const launcher = $("#aiLaunchBtn");
   if (launcher) launcher.hidden = !signedIn;
   if (form) form.hidden = !signedIn;
@@ -1414,6 +1498,22 @@ function renderAiMessages() {
   box.scrollTop = box.scrollHeight;
 }
 
+function renderAiHistoryRows(rows) {
+  const list = $("#aiHistoryList");
+  if (!rows.length) {
+    list.innerHTML = '<p class="ai-history-empty">Your conversations will appear here. Start a new chat whenever you need one.</p>';
+    return;
+  }
+  list.innerHTML = rows.map(item => `<div class="ai-history-entry ${item.id === activeAiConversationId ? "active" : ""}">
+    <button type="button" class="ai-history-item ${item.id === activeAiConversationId ? "active" : ""}" data-ai-conversation="${esc(item.id)}">
+      <b>${esc(item.title || "New conversation")}</b><small>${item.mode === "wish" ? "AI Wish" : "Website help"} · ${esc(item.preview || "Open conversation")}</small>
+    </button>
+    <button type="button" class="ai-history-delete" data-delete-ai-conversation="${esc(item.id)}" aria-label="Delete ${esc(item.title || "conversation")}" title="Delete conversation">×</button>
+  </div>`).join("");
+  list.querySelectorAll("[data-ai-conversation]").forEach(button => button.addEventListener("click", () => openAiConversation(button.dataset.aiConversation)));
+  list.querySelectorAll("[data-delete-ai-conversation]").forEach(button => button.addEventListener("click", () => deleteAiConversation(button.dataset.deleteAiConversation)));
+}
+
 async function loadAiHistory() {
   updateAiAccessUI();
   const list = $("#aiHistoryList");
@@ -1427,12 +1527,7 @@ async function loadAiHistory() {
       limit(30)
     ));
     const rows = snapshot.docs.map(item => ({ id: item.id, ...item.data() })).filter(item => (item.mode === "wish" ? "wish" : "chat") === aiMode);
-    if (!rows.length) {
-      list.innerHTML = '<p class="ai-history-empty">Your chats will appear here. Start a new conversation whenever you need a fresh task.</p>';
-      return;
-    }
-    list.innerHTML = rows.map(item => `<button type="button" class="ai-history-item ${item.id === activeAiConversationId ? "active" : ""}" data-ai-conversation="${esc(item.id)}"><b>${esc(item.title || "New conversation")}</b><small>${item.mode === "wish" ? "AI Wish" : "Website help"} · ${esc(item.preview || "Open conversation")}</small></button>`).join("");
-    list.querySelectorAll("[data-ai-conversation]").forEach(button => button.addEventListener("click", () => openAiConversation(button.dataset.aiConversation)));
+    renderAiHistoryRows(rows);
   } catch (error) {
     console.warn("Ordered AI history query failed; retrying without the composite sort index.", error);
     try {
@@ -1441,12 +1536,95 @@ async function loadAiHistory() {
         const stamp = value => value?.toMillis ? value.toMillis() : (value instanceof Date ? value.getTime() : Number(value) || 0);
         return stamp(b.updatedAt) - stamp(a.updatedAt);
       });
-      list.innerHTML = rows.length ? rows.map(item => `<button type="button" class="ai-history-item ${item.id === activeAiConversationId ? "active" : ""}" data-ai-conversation="${esc(item.id)}"><b>${esc(item.title || "New conversation")}</b><small>${item.mode === "wish" ? "AI Wish" : "Website help"} · ${esc(item.preview || "Open conversation")}</small></button>`).join("") : '<p class="ai-history-empty">Your chats will appear here. Start a new conversation whenever you need a fresh task.</p>';
-      list.querySelectorAll("[data-ai-conversation]").forEach(button => button.addEventListener("click", () => openAiConversation(button.dataset.aiConversation)));
+      renderAiHistoryRows(rows);
     } catch (fallbackError) {
       console.warn("AI history fallback failed", fallbackError);
       list.innerHTML = `<p class="ai-history-empty">History is unavailable right now. ${esc(friendlyError(fallbackError))}</p>`;
     }
+  }
+}
+
+async function deleteAiConversationData(conversationId) {
+  const conversationRef = doc(db, "aiConversations", conversationId);
+  const parent = await getDoc(conversationRef);
+  if (!parent.exists() || parent.data().ownerUid !== currentUser?.uid) throw new Error("This conversation is not owned by your account.");
+  const messagesRef = collection(db, "aiConversations", conversationId, "messages");
+  let cursor = null;
+  while (true) {
+    const pageQuery = cursor
+      ? query(messagesRef, orderBy("createdAt", "asc"), startAfter(cursor), limit(400))
+      : query(messagesRef, orderBy("createdAt", "asc"), limit(400));
+    const page = await getDocs(pageQuery);
+    if (page.empty) break;
+    const batch = writeBatch(db);
+    page.docs.forEach(message => batch.delete(message.ref));
+    await batch.commit();
+    cursor = page.docs[page.docs.length - 1];
+    if (page.size < 400) break;
+  }
+  await deleteDoc(conversationRef);
+}
+
+async function deleteAiConversation(conversationId) {
+  if (!requireAccount()) return;
+  const approved = await confirmInApp("Delete this AI conversation and all its messages? This cannot be undone.", "Delete AI history");
+  if (!approved) return;
+  try {
+    await deleteAiConversationData(conversationId);
+    if (activeAiConversationId === conversationId) {
+      activeAiConversationId = null;
+      activeAiConversationMode = aiMode;
+      currentAiMessages = [];
+      pendingAiActions = [];
+      renderAiMessages();
+      renderAiActionReview();
+    }
+    await loadAiHistory();
+    toast("AI conversation deleted.");
+  } catch (error) {
+    console.error("AI conversation deletion failed", error);
+    toast(`Could not delete AI history: ${friendlyError(error)}`);
+  }
+}
+
+async function clearAiHistoryForMode() {
+  if (!requireAccount()) return;
+  const label = aiMode === "wish" ? "AI Wish" : "AI Chatbot";
+  const approved = await confirmInApp(`Permanently delete all ${label} conversations and their messages from your account? This does not delete your normal website messages.`, `Clear ${label} history`);
+  if (!approved) return;
+  const button = $("#aiClearHistoryBtn");
+  if (button) { button.disabled = true; button.textContent = "Deleting…"; }
+  let cursor = null;
+  let deleted = 0;
+  try {
+    while (true) {
+      const pageQuery = cursor
+        ? query(collection(db, "aiConversations"), where("ownerUid", "==", currentUser.uid), startAfter(cursor), limit(350))
+        : query(collection(db, "aiConversations"), where("ownerUid", "==", currentUser.uid), limit(350));
+      const page = await getDocs(pageQuery);
+      if (page.empty) break;
+      const selected = page.docs.filter(item => (item.data().mode === "wish" ? "wish" : "chat") === aiMode);
+      for (const item of selected) {
+        await deleteAiConversationData(item.id);
+        deleted++;
+      }
+      cursor = page.docs[page.docs.length - 1];
+      if (page.size < 350) break;
+    }
+    activeAiConversationId = null;
+    activeAiConversationMode = aiMode;
+    currentAiMessages = [];
+    pendingAiActions = [];
+    renderAiMessages();
+    renderAiActionReview();
+    await loadAiHistory();
+    toast(`${deleted} ${label} conversation${deleted === 1 ? "" : "s"} deleted.`);
+  } catch (error) {
+    console.error("AI history clear failed", error);
+    toast(`Could not clear history: ${friendlyError(error)}`);
+    await loadAiHistory();
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "Clear history"; }
   }
 }
 
@@ -1889,6 +2067,7 @@ function bindUI() {
   $("#aiLaunchBtn").onclick = () => { if(location.hash==="#aiwish") location.hash="#home"; const panel=$("#aiPanel"),assistant=$("#aiAssistant"); if(panel.parentElement!==assistant) assistant.append(panel); panel.classList.remove("ai-panel-page"); setAiMode("chat"); panel.hidden=!panel.hidden; $("#aiLaunchBtn").setAttribute("aria-expanded",String(!panel.hidden)); if(!panel.hidden&&currentUser)loadAiHistory(); };
   $("#aiCloseBtn").onclick = () => { if(location.hash==="#aiwish"){location.hash="#home";return;} $("#aiPanel").hidden=true; $("#aiLaunchBtn").setAttribute("aria-expanded","false"); };
   $("#aiNewChatBtn").onclick = () => currentUser ? startAiConversation(aiMode) : (openAuth(), toast("Sign in to keep a private AI history."));
+  $("#aiClearHistoryBtn").onclick = clearAiHistoryForMode;
   $("#aiForm").addEventListener("submit", sendAiMessage);
   $("#aiInput").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#aiForm").requestSubmit(); } });
   $("#peopleSearch").addEventListener("input", searchPeople); $("#peopleRole").onchange = searchPeople; $("#lookingForTeamOnly").onchange = searchPeople;

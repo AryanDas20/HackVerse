@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="workspace.css">
   <link rel="stylesheet" href="redesign.css">
   <link rel="stylesheet" href="polish-v5.7.css">
+  <link rel="stylesheet" href="opportunity-chat-v5.8.css">
 </head>
 <body>
   <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
@@ -102,7 +103,7 @@
           <label>Sort by<select id="eventSort"><option value="deadline">Nearest deadline</option><option value="newest">Recently added</option><option value="prize">Highest prize</option><option value="title">Title A–Z</option></select></label>
         </div>
         <section class="learning-catalog" id="learningCatalog" hidden aria-live="polite">
-          <div class="learning-catalog-head"><div><div class="eyebrow">LEARNING CATALOGUES</div><h2 id="learningCatalogTitle">Explore learning programmes.</h2><p id="learningCatalogIntro">Browse official course and programme catalogues. Provider availability, fees and certificates are confirmed on each provider's site.</p></div><span class="catalog-live-tag">OFFICIAL PROVIDERS</span></div>
+          <div class="learning-catalog-head"><div><div class="eyebrow" id="learningCatalogEyebrow">OPPORTUNITY SOURCES</div><h2 id="learningCatalogTitle">Explore learning programmes.</h2><p id="learningCatalogIntro">Browse official course and programme catalogues. Provider availability, fees and certificates are confirmed on each provider's site.</p></div><span class="catalog-live-tag" id="learningCatalogTag">OFFICIAL PROVIDERS</span></div>
           <div class="learning-provider-grid" id="learningProviderGrid"></div>
         </section>
         <div class="feed-note"><span class="note-icon">ⓘ</span><span>Event cards show information supplied by their source. Missing details are labelled clearly; always confirm eligibility, dates and prizes on the organiser's page.</span></div>
@@ -116,7 +117,7 @@
 
     <section class="section wrap discovery-admin" id="discoveryAdminPanel" data-view="home" hidden>
       <div class="section-heading"><div><div class="eyebrow">ADMIN CONTROL CENTER</div><h2>Automatic discovery <span class="gradient-text">sources.</span></h2><p class="muted">Add approved RSS feeds. Qualifying hackathon announcements publish automatically; source links remain visible.</p></div><button class="btn btn-primary" id="runDiscoveryBtn" type="button">Run discovery now ↻</button></div>
-      <form id="discoverySourceForm" class="discovery-source-form"><label>Source name<input id="discoverySourceName" required maxlength="100" placeholder="e.g. University innovation news"></label><label>Public RSS feed URL<input id="discoveryFeedUrl" required type="url" placeholder="https://example.org/feed.xml"></label><button class="btn btn-primary" id="addDiscoverySourceBtn" type="submit">＋ Add source</button></form>
+      <form id="discoverySourceForm" class="discovery-source-form"><label>Source name<input id="discoverySourceName" required maxlength="100" placeholder="e.g. University innovation news"></label><label>Public RSS feed URL<input id="discoveryFeedUrl" required type="url" placeholder="https://example.org/feed.xml"></label><label>Opportunity category<select id="discoverySourceCategory"><option value="">Auto-detect from each listing</option><option value="hackathon">Hackathons</option><option value="case-competition">Case competitions</option><option value="coding-event">Coding events</option><option value="bootcamp">Bootcamps</option><option value="course">Online courses</option><option value="certification">Certifications</option></select></label><button class="btn btn-primary" id="addDiscoverySourceBtn" type="submit">＋ Add source</button></form>
       <p class="muted" id="discoveryStatus" role="status">Automatic discovery runs every six hours after Functions are deployed.</p>
       <div id="discoverySourcesList" class="discovery-sources-list"><p class="muted">Admin source settings load after sign-in with an admin account.</p></div>
       <p class="discovery-caution">RSS sources only. Social network discovery needs each platform's official API access, credentials and permitted scopes; it is not enabled by scraping public profile pages.</p>
@@ -200,7 +201,7 @@
     <section class="ai-panel" id="aiPanel" aria-label="HackVerse AI assistant" hidden>
       <header class="ai-panel-header"><div class="ai-brand-lockup"><span class="ai-brand-icon">✦</span><div><b>HackVerse AI</b><small><span class="ai-status-dot"></span> Powered by Agent37</small></div></div><div class="ai-header-actions"><button type="button" class="ai-icon-button" id="aiNewChatBtn" title="Start a new chat" aria-label="Start a new chat">＋</button><button type="button" class="ai-icon-button" id="aiCloseBtn" title="Close assistant" aria-label="Close assistant">×</button></div></header>
 <div class="ai-workspace">
-        <aside class="ai-history"><div class="ai-history-head"><span>YOUR HISTORY</span><span class="ai-history-lock">PRIVATE</span></div><div id="aiHistoryList" class="ai-history-list"><p class="ai-history-empty">Sign in to keep your conversations.</p></div></aside>
+        <aside class="ai-history"><div class="ai-history-head"><span>YOUR HISTORY</span><button type="button" id="aiClearHistoryBtn" class="ai-history-clear" title="Delete all history for this AI">Clear history</button></div><div id="aiHistoryList" class="ai-history-list"><p class="ai-history-empty">Sign in to keep your conversations.</p></div></aside>
         <div class="ai-chat-area">
           <div class="ai-mode-intro" id="aiModeIntro"><b>What can I help you with?</b><span>Ask how HackVerse works, find a feature or get help with your account.</span></div>
           <div class="ai-login-gate" id="aiLoginGate"><div class="gate-icon">✦</div><b>Sign in to use your AI workspace.</b><p>Your chats and AI history are saved privately to your account.</p><button class="btn btn-primary" type="button" data-open-auth>Sign in to continue →</button></div>

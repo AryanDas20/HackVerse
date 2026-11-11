@@ -165,3 +165,8 @@ AI Wish currently supports reviewed/approved navigation, opportunity search/open
 Opportunity cards and details are now hidden from signed-out visitors, and `firestore.rules` requires authentication for the `hackathons` collection. The `/api/agent37/chat` Vercel Function is required; a Firebase Hosting static deployment alone does not provide that endpoint.
 
 **Setup:** follow [`docs/AGENT37_AI_SETUP.md`](docs/AGENT37_AI_SETUP.md) for the personal Agent37 instance, server-only Vercel environment variables, Firebase service account, rules deployment and test checklist. An instance ID alone is not API authentication; confirm that your Agent37 personal plan exposes a server-to-server key before deploying. No card details or secrets belong in this ZIP. Automated checks and live-service test limitations are recorded in [`docs/RELEASE_TEST_REPORT_v5.4.0.md`](docs/RELEASE_TEST_REPORT_v5.4.0.md).
+
+
+## v5.8.0 update
+
+See `docs/RELEASE_NOTES_v5.8.0.md` for AI history deletion, chat motion, expanded opportunity directories and additional discovery feeds.

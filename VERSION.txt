@@ -1,1 +1,1 @@
-HackVerse v5.7.1 — Advanced messaging and responsive hardening
+5.8.0
