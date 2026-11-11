@@ -1,3 +1,3 @@
-HackVerse v5.5.0 — Agent37, advanced messaging and guided workspace
-Base: uploaded HackVerse Agent37 v5.4.0 archive
-Changes: WhatsApp-inspired realtime chat, private Supabase media, activity/deadline notifications, profile/settings views, navigable website tour, illustrated guide, richer deterministic team matching, and expanded AI Wish actions.
+HackVerse v5.6.0 — Red studio redesign, AI Wish workspace and upgraded community messaging
+Base: uploaded HackVerse Agent37 v5.5.0 archive
+Changes: unified red/pink/green design system, responsive desktop/mobile layouts, improved light-mode contrast, simplified navigation with a More menu, dedicated AI Wish page and main-page entry points, chatbot-only floating launcher, improved profile details and member-profile access from direct/group messages, expanded group information, AI history query fallback, and animated AI team matching.

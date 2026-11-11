@@ -591,7 +591,7 @@ async function viewMember(uid) {
   try {
     const snap = await getDoc(doc(db, "publicProfiles", uid)); if (!snap.exists()) { toast("This profile is no longer available."); return; }
     selectedMember = { uid, ...snap.data() }; const p = selectedMember;
-    $("#memberProfileContent").innerHTML = `<div class="member-profile-head"><div class="avatar avatar-large">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div><div class="eyebrow">HACKVERSE BUILDER</div><h2 id="memberModalTitle">${esc(p.displayName || "Builder")}</h2><p class="member-handle">@${esc(p.username || "member")}</p></div></div><p class="member-bio">${esc(p.bio || "No bio added yet.")}</p><div class="member-facts"><span>${esc([p.course,p.college].filter(Boolean).join(" · ") || "Education not listed")}</span><span>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not listed")}</span><span>${esc(p.availability || "Availability not listed")}</span></div><h3>Skills</h3><div class="skill-tags">${(p.skills || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interested roles</h3><div class="skill-tags">${(p.rolesInterested || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interests</h3><div class="skill-tags">${(p.interests || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><div class="member-contact"><h3>Contact details</h3><p>${p.publicEmail ? `Email: <a href="mailto:${esc(p.publicEmail)}">${esc(p.publicEmail)}</a>` : "Email kept private by this member."}</p><p>${p.publicPhone ? `Phone: <a href="tel:${esc(p.publicPhone)}">${esc(p.publicPhone)}</a>` : "Phone kept private by this member."}</p></div><div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>`;
+    $("#memberProfileContent").innerHTML = `<div class="member-profile-head"><div class="avatar avatar-large">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div><div class="eyebrow">HACKVERSE BUILDER</div><h2 id="memberModalTitle">${esc(p.displayName || "Builder")}</h2><p class="member-handle">@${esc(p.username || "member")}</p></div></div><p class="member-bio">${esc(p.bio || "No bio added yet.")}</p><div class="member-facts"><span>${esc([p.course,p.college].filter(Boolean).join(" · ") || "Education not listed")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not listed")}</span><span>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not listed")}</span><span>${esc(p.availability || "Availability not listed")}</span><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span></div><h3>Skills</h3><div class="skill-tags">${(p.skills || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interested roles</h3><div class="skill-tags">${(p.rolesInterested || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interests</h3><div class="skill-tags">${(p.interests || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><div class="member-contact"><h3>Contact details</h3><p>${p.publicEmail ? `Email: <a href="mailto:${esc(p.publicEmail)}">${esc(p.publicEmail)}</a>` : "Email kept private by this member."}</p><p>${p.publicPhone ? `Phone: <a href="tel:${esc(p.publicPhone)}">${esc(p.publicPhone)}</a>` : "Phone kept private by this member."}</p></div><div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>`;
     $("#memberMessageBtn").onclick = () => startDirectConversation(selectedMember);
     $("#memberReportBtn").onclick = () => reportMember(selectedMember);
     showModal("memberModal");
@@ -667,7 +667,8 @@ function renderChatHeading() {
   const members = (activeConversation.participants || []).length;
   $("#chatSubtitle").textContent = activeConversation.isGroup ? `${members} members · ${activeConversation.groupName || "Team chat"}` : "Direct conversation · click to view profile";
   const canManage = Boolean(activeConversation.isGroup && (activeConversation.createdBy === currentUser?.uid || (activeConversation.admins || []).includes(currentUser?.uid)));
-  $("#groupManageBtn").hidden = !canManage;
+  // Every group participant can open the roster and member profiles; management controls remain role-gated inside the dialog.
+  $("#groupManageBtn").hidden = !activeConversation.isGroup;
 }
 function selectConversation(conversation) {
   if (!conversation || !currentUser) return;
@@ -714,8 +715,9 @@ function renderMessages(messages) {
     const readByAll = recipients.length && recipients.every(uid=>tsMillis(readAt[uid])>=created && created>0);
     const status = mine ? `<span class="message-ticks ${readByAll?"read":""}" title="${readByAll?"Read":"Sent"}">${readByAll?"✓✓":"✓"}</span>` : "";
     const messageText = m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || "");
-    return `<article class="message-row ${mine ? "mine" : "theirs"}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<small class="message-author">${esc(m.authorName || "Teammate")}</small>`:""}${reply}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine?`${canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete">⌫</button>`:""}<button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
+    return `<article class="message-row ${mine ? "mine" : "theirs"}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${reply}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine?`${canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete">⌫</button>`:""}<button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
   }).join("");
+  box.querySelectorAll("[data-view-message-author]").forEach(b => b.onclick = () => { if (b.dataset.viewMessageAuthor) viewMember(b.dataset.viewMessageAuthor); });
   box.querySelectorAll("[data-edit-message]").forEach(b => b.onclick = () => editMessage(b.dataset.editMessage));
   box.querySelectorAll("[data-delete-message]").forEach(b => b.onclick = () => deleteMessage(b.dataset.deleteMessage));
   box.querySelectorAll("[data-reply-message]").forEach(b => b.onclick = () => setReply(b.dataset.replyMessage));
@@ -850,12 +852,20 @@ async function openChatIdentity() {
 async function openGroupManager() {
   if (!activeConversation?.isGroup) return;
   const canManage = activeConversation.createdBy === currentUser?.uid || (activeConversation.admins || []).includes(currentUser?.uid);
-  $("#manageGroupTitle").textContent = `Manage ${activeConversation.groupName || "team"}`;
-  const rows = await Promise.all((activeConversation.participants || []).map(async uid => {
+  const participantUids = activeConversation.participants || [];
+  $("#manageGroupTitle").textContent = `Group details · ${activeConversation.groupName || "team"}`;
+  $("#groupInfoSummary").innerHTML = `<div class="group-info-stat"><b>${participantUids.length}</b><span>MEMBERS</span></div><div class="group-info-copy"><b>${esc(activeConversation.groupName || "Project group")}</b><small>Created by ${esc(activeConversation.participantNames?.[activeConversation.createdBy] || "Group owner")} · ${canManage ? "You can manage members" : "Member view"}</small></div><span class="group-info-badge">${canManage ? "ADMIN" : "MEMBER"}</span>`;
+  const rows = await Promise.all(participantUids.map(async uid => {
     try { const snap = await getDoc(doc(db,"publicProfiles",uid)); return { uid, isPublic: snap.exists(), ...(snap.exists()?snap.data():{}) }; }
     catch { return { uid, isPublic: false, displayName: activeConversation.participantNames?.[uid] || "Member" }; }
   }));
-  $("#manageGroupMembers").innerHTML = rows.map(p => `<div class="group-member-row"><div>${p.isPublic ? `<button type="button" class="group-member-profile-link" data-view-group-member="${esc(p.uid)}">${esc(p.displayName || "Member")}</button>` : `<b>${esc(p.displayName || "Private member")}</b>`}<small>@${esc(p.username || "member")} ${p.uid === activeConversation.createdBy ? "· Group owner" : ""}</small></div>${canManage && (activeConversation.participants || []).length > 2 && p.uid !== activeConversation.createdBy ? `<button class="text-danger" data-remove-group-member="${esc(p.uid)}">Remove</button>` : ""}</div>`).join("");
+  $("#manageGroupMembers").innerHTML = rows.map(p => {
+    const isOwner = p.uid === activeConversation.createdBy;
+    const isAdmin = isOwner || (activeConversation.admins || []).includes(p.uid);
+    const displayName = p.displayName || activeConversation.participantNames?.[p.uid] || "Member";
+    const avatar = p.isPublic && p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy">` : esc(initials(displayName));
+    return `<article class="group-member-row"><span class="group-member-avatar">${avatar}</span><div class="group-member-main">${p.isPublic ? `<button type="button" class="group-member-profile-link" data-view-group-member="${esc(p.uid)}">${esc(displayName)} <span>↗</span></button>` : `<b>${esc(displayName)}</b>`}<small>${p.isPublic ? `@${esc(p.username || "member")} · ${esc(p.collegeShort || p.college || "College not listed")}` : "Profile private or unavailable"}</small><span class="group-member-role">${isOwner ? "Group owner" : isAdmin ? "Group admin" : "Member"}</span></div>${canManage && participantUids.length > 2 && !isOwner ? `<button class="text-danger group-remove-btn" data-remove-group-member="${esc(p.uid)}">Remove</button>` : ""}</article>`;
+  }).join("");
   $("#manageGroupMembers").querySelectorAll("[data-remove-group-member]").forEach(b => b.onclick = () => removeGroupMember(b.dataset.removeGroupMember));
   $("#manageGroupMembers").querySelectorAll("[data-view-group-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewGroupMember));
   $("#manageGroupSearch").disabled = !canManage;
@@ -1050,10 +1060,12 @@ async function runSmartTeamMatch(event) {
   const preferredCollege=String($("#teamCollege")?.value||"").trim().toLowerCase();
   const preferredYear=String($("#teamCollegeYear")?.value||"").trim().toLowerCase();
   if(!needed.length){toast("Add the skills or roles you need.");return;}
-  $("#teamMatchResults").innerHTML='<p class="muted">Finding complementary builders…</p>';
+  $("#teamMatchResults").innerHTML='<div class="team-match-loading"><span class="team-match-orbit"><i></i><b></b><em></em></span><strong>Finding your people</strong><small>Comparing skills, roles, interests and availability…</small><div class="team-match-loading-bar"><span></span></div></div>';
+  $("#teamMatchResults").classList.add("is-matching");
   $("#createMatchedTeamBtn").hidden=true; matchedTeamCandidates=[];
   try{
     const profiles=await searchPublicProfiles("",250);
+    await new Promise(resolve=>setTimeout(resolve,420));
     const synonyms={
       "react":["reactjs","frontend","javascript"],"reactjs":["react","frontend","javascript"],
       "javascript":["js","frontend","react"],"typescript":["javascript","frontend"],
@@ -1096,11 +1108,12 @@ async function runSmartTeamMatch(event) {
     }
     const actual=groups.length;
     $("#teamMatchResults").innerHTML=groups.length?`<div class="team-match-summary"><b>${strategy==="balanced"?"Balanced team allocation complete":"Best-fit candidates ranked"}</b><span>${groups.length} team suggestion(s) · ${groups.reduce((n,g)=>n+g.length,0)} builder matches</span><small>Scores are profile-based estimates, not guarantees. Review availability and ask people before adding them to a chat.</small></div>`+groups.map((group,i)=>{const covered=[...new Set(group.flatMap(p=>p.matchedSkills))];const missing=needed.filter(x=>!covered.includes(x));return `<section class="generated-team"><div class="generated-team-head"><div><h3>Suggested team ${i+1}</h3><p class="muted">${group.length+1} members including you · ${Math.round(group.reduce((n,p)=>n+p.matchScore,0)/Math.max(1,group.length)*100)}% average fit</p></div><span class="team-balance-score">${covered.length}/${needed.length} roles covered</span></div><div class="team-coverage"><div class="team-coverage-bar"><span style="width:${Math.round(covered.length/needed.length*100)}%"></span></div><small>${covered.map(esc).join(" · ")}${missing.length?` <em>Missing: ${missing.map(esc).join(", ")}</em>`:""}</small></div>${group.map(p=>`<label class="team-match-option"><input type="checkbox" data-team-match="${esc(p.uid)}" data-team-index="${i}" checked><span><b>${esc(p.displayName||"Builder")}</b><small>@${esc(p.username||"member")} · ${esc(p.collegeShort||p.college||"College not listed")}${p.collegeYear||p.studyYear ? ` · Year ${esc(p.collegeYear||p.studyYear)}` : ""}</small><span class="skill-tags">${(p.skills||[]).slice(0,6).map(x=>`<i>${esc(x)}</i>`).join("")}</span><small>Matched: ${esc(p.matchedSkills.join(", ")||"Related skills")} · ${Math.round(p.matchScore*100)}% fit${p.relatedSkills?.length ? ` · Related: ${esc(p.relatedSkills.join(", "))}` : ""}</small></span></label>`).join("")}</section>`;}).join(""):'<p class="muted">No matching builders are available yet. Try broader roles or invite more people to complete their skills profiles.</p>';
+    $("#teamMatchResults").classList.remove("is-matching");
     $("#teamMatchResults").dataset.teamName=name;
     $("#teamMatchResults").dataset.teamCount=String(actual);
     $("#createMatchedTeamBtn").hidden=!groups.length;
     $("#createMatchedTeamBtn").textContent=actual>1?`Create ${actual} suggested team chats →`:"Create team chat →";
-  }catch(error){$("#teamMatchResults").textContent=friendlyError(error);}
+  }catch(error){$("#teamMatchResults").classList.remove("is-matching");$("#teamMatchResults").textContent=friendlyError(error);}
 }
 async function createMatchedTeam() {
   const sections=[...$("#teamMatchResults").querySelectorAll(".generated-team")];
@@ -1128,7 +1141,30 @@ function renderMyProfile() {
     return;
   }
   const p = publicProfile;
-  panel.innerHTML = `<div class="profile-overview"><div class="avatar avatar-profile">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="profile-main"><div class="profile-name-line"><div><div class="eyebrow">${p.profileVisibility === "private" ? "YOUR PRIVATE BUILDER PROFILE" : "YOUR PUBLIC BUILDER PROFILE"}</div><h3>${esc(p.displayName)}</h3><span>@${esc(p.username)}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to teammates</span>' : ''}</div><p>${esc(p.bio || "")}</p>${p.profileVisibility === "private" ? '<p class="privacy-state-note">Private profile · only you can see these details. This profile is not in the public directory or public team matcher.</p>' : ''}<div class="profile-facts"><span>${esc(p.college)}${p.collegeShort ? ` (${esc(p.collegeShort)})` : ""}</span><span>${esc(p.course)}</span><span>${esc(p.studyLevel)}${p.graduationYear ? ` · Class of ${esc(p.graduationYear)}` : ""}</span><span>${esc([p.city,p.country].filter(Boolean).join(", "))}</span></div><h4>Skills</h4><div class="skill-tags">${(p.skills || []).map(s => `<span>${esc(s)}</span>`).join("")}</div><h4>Interested roles</h4><div class="skill-tags">${(p.rolesInterested || []).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div><div class="member-contact">${p.profileVisibility === "private" ? "Your contact details are not displayed while your profile is private." : `${p.publicEmail ? `Public email: <a href="mailto:${esc(p.publicEmail)}">${esc(p.publicEmail)}</a>` : "Email is private."} · ${p.publicPhone ? `Public phone: <a href="tel:${esc(p.publicPhone)}">${esc(p.publicPhone)}</a>` : "Phone is private."}`}</div></div></div>`;
+  const skills = p.skills || [];
+  const roles = p.rolesInterested || [];
+  const interests = p.interests || [];
+  const completedFields = [p.displayName,p.username,p.college,p.course,p.studyLevel,p.bio,skills.length,roles.length,interests.length,p.graduationYear,p.github||p.linkedin||p.portfolio].filter(Boolean).length;
+  const completion = Math.round(completedFields / 11 * 100);
+  panel.innerHTML = `<div class="profile-overview">
+    <div class="avatar avatar-profile">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="Profile photo" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div>
+    <div class="profile-main">
+      <div class="profile-name-line"><div><div class="eyebrow">${p.profileVisibility === "private" ? "YOUR PRIVATE BUILDER PROFILE" : "YOUR PUBLIC BUILDER PROFILE"}</div><h3>${esc(p.displayName)}</h3><span>@${esc(p.username)}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to teammates</span>' : ''}</div>
+      <p>${esc(p.bio || "Add a short introduction to help teammates understand what you build.")}</p>
+      ${p.profileVisibility === "private" ? '<p class="privacy-state-note">Private profile · only you can see these details. This profile is not in the directory or public team matcher.</p>' : ''}
+      <div class="profile-completion"><div><b>Profile completeness</b><strong>${completion}%</strong></div><span class="profile-completion-track"><i style="width:${completion}%"></i></span><small>A complete profile helps teammates understand your strengths before they contact you.</small></div>
+      <div class="profile-detail-grid">
+        <section class="profile-detail-card"><small>EDUCATION</small><b>${esc(p.college || "College not added")}</b><span>${esc([p.collegeShort,p.course].filter(Boolean).join(" · ") || "Course not added")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not added")}</span></section>
+        <section class="profile-detail-card"><small>COLLABORATION</small><b>${esc(p.availability || "Availability not added")}</b><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span><span>${p.lookingForTeam ? "Open to teammate invitations" : "Not currently looking for a team"}</span></section>
+        <section class="profile-detail-card"><small>LOCATION</small><b>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not added")}</b><span>Visible according to your profile privacy settings</span></section>
+        <section class="profile-detail-card"><small>CONTACT VISIBILITY</small><b>${p.profileVisibility === "private" ? "Private profile" : "Community profile"}</b><span>Email: ${p.publicEmail ? "Shared publicly" : "Private"}</span><span>Phone: ${p.publicPhone ? "Shared publicly" : "Private"}</span></section>
+      </div>
+      <h4>Skills</h4><div class="skill-tags">${skills.map(s => `<span>${esc(s)}</span>`).join("") || '<span>Add the skills you use</span>'}</div>
+      <h4>Interested roles</h4><div class="skill-tags">${roles.map(s => `<span>${esc(s)}</span>`).join("") || '<span>Add roles you want to explore</span>'}</div>
+      <h4>Interests & domains</h4><div class="skill-tags">${interests.map(s => `<span>${esc(s)}</span>`).join("") || '<span>Add domains that motivate you</span>'}</div>
+      <div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>
+    </div>
+  </div>`;
 }
 
 async function loadProjects() {
@@ -1185,6 +1221,9 @@ function setAiMode(mode) {
   wishButton.classList.toggle("active", aiMode === "wish");
   chatButton.setAttribute("aria-selected", String(aiMode === "chat"));
   wishButton.setAttribute("aria-selected", String(aiMode === "wish"));
+  const aiBrand = document.querySelector(".ai-brand-lockup b");
+  if (aiBrand) aiBrand.textContent = aiMode === "wish" ? "AI Wish Workspace" : "HackVerse AI";
+  $("#aiPanel").setAttribute("aria-label", aiMode === "wish" ? "AI Wish workspace" : "HackVerse AI assistant");
   $("#aiInput").placeholder = aiMode === "wish"
     ? "Tell HackVerse what you want done…"
     : "Ask anything about HackVerse…";
@@ -1231,8 +1270,19 @@ async function loadAiHistory() {
     list.innerHTML = rows.map(item => `<button type="button" class="ai-history-item ${item.id === activeAiConversationId ? "active" : ""}" data-ai-conversation="${esc(item.id)}"><b>${esc(item.title || "New conversation")}</b><small>${item.mode === "wish" ? "AI Wish" : "Website help"} · ${esc(item.preview || "Open conversation")}</small></button>`).join("");
     list.querySelectorAll("[data-ai-conversation]").forEach(button => button.addEventListener("click", () => openAiConversation(button.dataset.aiConversation)));
   } catch (error) {
-    console.warn("AI history could not load", error);
-    list.innerHTML = '<p class="ai-history-empty">Could not load history. Check your Firestore rules.</p>';
+    console.warn("Ordered AI history query failed; retrying without the composite sort index.", error);
+    try {
+      const fallback = await getDocs(query(collection(db, "aiConversations"), where("ownerUid", "==", currentUser.uid), limit(30)));
+      const rows = fallback.docs.map(item => ({ id: item.id, ...item.data() })).sort((a,b) => {
+        const stamp = value => value?.toMillis ? value.toMillis() : (value instanceof Date ? value.getTime() : Number(value) || 0);
+        return stamp(b.updatedAt) - stamp(a.updatedAt);
+      });
+      list.innerHTML = rows.length ? rows.map(item => `<button type="button" class="ai-history-item ${item.id === activeAiConversationId ? "active" : ""}" data-ai-conversation="${esc(item.id)}"><b>${esc(item.title || "New conversation")}</b><small>${item.mode === "wish" ? "AI Wish" : "Website help"} · ${esc(item.preview || "Open conversation")}</small></button>`).join("") : '<p class="ai-history-empty">Your chats will appear here. Start a new conversation whenever you need a fresh task.</p>';
+      list.querySelectorAll("[data-ai-conversation]").forEach(button => button.addEventListener("click", () => openAiConversation(button.dataset.aiConversation)));
+    } catch (fallbackError) {
+      console.warn("AI history fallback failed", fallbackError);
+      list.innerHTML = `<p class="ai-history-empty">History is unavailable right now. ${esc(friendlyError(fallbackError))}</p>`;
+    }
   }
 }
 
@@ -1293,7 +1343,7 @@ async function persistAiMessage(role, content) {
 
 function validateAiActions(actions) {
   if (!Array.isArray(actions)) return [];
-  const pages = new Set(["home", "opportunities", "saved", "people", "messages", "profile", "notifications", "settings"]);
+  const pages = new Set(["home", "opportunities", "saved", "people", "messages", "aiwish", "profile", "notifications", "settings"]);
   const categories = new Set(["hackathon", "case-competition", "coding-event", "bootcamp", "course", "certification", "other"]);
   const eventIds = new Set(events.map(event => event.id));
   return actions.slice(0, 8).map(action => {
@@ -1537,11 +1587,12 @@ const tourSteps=[
  {route:"opportunities",selector:"#opportunitiesContent, #opportunitiesSignInGate",title:"Opportunity radar",text:"Explore hackathons, case competitions, coding events, bootcamps and courses. Filter by skill, country, format, eligibility, cost and deadline. Event listings and details require a signed-in member account."},
  {route:"people",selector:"#people .section-heading",title:"Community directory",text:"Search discoverable builders by their public profile, interests and skills. Open a profile to understand a builder's background, then start a direct conversation or invite them to a project group."},
  {route:"people",selector:"#smartTeamBtn",title:"Automatic team builder",text:"Describe your project, choose team size and roles, and run the matching engine. Balanced mode spreads complementary skills across teams; you can review and select people before creating chats."},
- {route:"messages",selector:".chat-workspace",title:"Messaging workspace",text:"Your chat area supports direct and group conversations, live message updates, replies, reactions, edit/delete, files, voice notes, read receipts and typing indicators. Open Group info to manage participants."},
+ {route:"messages",selector:".chat-workspace",title:"Messaging workspace",text:"Your chat area supports direct and group conversations, live message updates, replies, reactions, edit/delete, files, voice notes, read receipts and typing indicators. Open a name or group details to view member profiles."},
+ {route:"aiwish",selector:"#aiWishPage",title:"AI Wish workspace",text:"Describe a website task in plain language. AI Wish prepares supported changes and waits for your approval before applying them."},
  {route:"profile",selector:"#myProfilePanel",title:"Your builder profile",text:"Your profile is your professional identity on HackVerse. Add skills, education, interests, links and availability, then showcase the projects you build. Your public visibility is controlled in Settings."},
  {route:"notifications",selector:"#activitySummary",title:"Notification centre",text:"Track unread chats and saved opportunity deadlines here. Desktop alerts work while HackVerse is open and your browser has granted notification permission."},
  {route:"settings",selector:".settings-grid",title:"Settings and personalisation",text:"Choose the theme, motion level, text size, notification preferences and profile visibility. Changes are stored in this browser, while your profile visibility is stored with your Firebase profile."},
- {route:"home",selector:"#aiLaunchBtn",title:"Meet HackVerse AI",text:"Open the Agent37 assistant for website help or AI Wish. Ask questions about HackVerse, plan tasks and review supported website actions before applying them. AI access depends on the server credentials being configured."}
+ {route:"home",selector:"#aiLaunchBtn",title:"Meet HackVerse AI",text:"Open the floating Agent37 chatbot for website help. Use the dedicated AI Wish page to describe tasks and review supported website actions before applying them. AI access depends on the server credentials being configured."}
 ];
 let activeTourIndex=-1;
 function removeTourHighlight(){document.querySelectorAll(".tour-highlight").forEach(el=>el.classList.remove("tour-highlight"));}
@@ -1559,7 +1610,7 @@ function initAdvancedUI(){
   $("#settingsSignOut").onclick=()=>currentUser&&signOut(auth).then(()=>toast("Signed out.")).catch(e=>toast(friendlyError(e)));
   $("#settingProfileVisibility").addEventListener("change",async e=>{if(!requireAccount())return;if(!publicProfile){toast("Complete your profile first.");return;}try{await updateDoc(doc(db,"publicProfiles",currentUser.uid),{profileVisibility:e.target.value,updatedAt:serverTimestamp()});publicProfile.profileVisibility=e.target.value;toast("Profile visibility updated.");}catch(error){toast(friendlyError(error));}});
   $$('[data-settings-tab]').forEach(b=>b.onclick=()=>showSettingsTab(b.dataset.settingsTab));
-  $("#tourLaunchBtn").onclick=startWebsiteTour;$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);
+  $("#navTourBtn").onclick=()=>{ $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); startWebsiteTour(); };$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);
   $("#newDirectChatBtn").onclick=()=>location.hash="#people";$("#chatMenuBtn").onclick=()=>{const c=activeConversation;if(!c){toast("Choose a chat first.");return;}const action=prompt("Chat options: type pin, archive, or unarchive");if(!action)return;const prefs=getChatPreferences();const key=action.trim().toLowerCase();for(const list of ["pinned","archived"]){prefs[list]=prefs[list]||[];}const list=key==="pin"?"pinned":key==="archive"||key==="unarchive"?"archived":null;if(!list){toast("Choose pin, archive or unarchive.");return;}const ids=new Set(prefs[list]);if(key==="unarchive")ids.delete(c.id);else if(ids.has(c.id))ids.delete(c.id);else ids.add(c.id);prefs[list]=[...ids];localStorage.setItem(`hv-chat-settings-${currentUser?.uid||"guest"}`,JSON.stringify(prefs));renderConversationList(currentConversations);toast(key==="pin"?"Chat pin updated.":"Chat archive updated.");};
   $$('[data-chat-filter]').forEach(b=>b.onclick=()=>{activeChatFilter=b.dataset.chatFilter;$$('[data-chat-filter]').forEach(x=>x.classList.toggle("active",x===b));renderConversationList(currentConversations);});
   $("#chatSearchToggle").onclick=()=>{$("#messageSearchWrap").hidden=!$("#messageSearchWrap").hidden;if(!$("#messageSearchWrap").hidden)$("#messageSearch").focus();};$("#chatDetailsBtn").onclick=openChatIdentity;
@@ -1573,8 +1624,18 @@ function initAdvancedUI(){
 
 function handleRoute() {
   const raw=(location.hash||"#home").slice(1);
-  const aliases={top:"home",discover:"home",opportunities:"opportunities",saved:"saved",people:"people",messages:"messages",profile:"profile",notifications:"notifications",settings:"settings"};
+  const aliases={top:"home",discover:"home",opportunities:"opportunities",saved:"saved",people:"people",messages:"messages",aiwish:"aiwish",profile:"profile",notifications:"notifications",settings:"settings"};
   const view=aliases[raw]||"home";
+  const aiPanel=$("#aiPanel"), wishMount=$("#aiWishMount"), aiAssistant=$("#aiAssistant");
+  if(view==="aiwish"){
+    if(aiPanel.parentElement!==wishMount) wishMount.append(aiPanel);
+    aiPanel.classList.add("ai-panel-page"); aiPanel.hidden=false; aiAssistant.classList.add("ai-on-wish-page");
+    setAiMode("wish"); updateAiAccessUI(); if(currentUser) loadAiHistory();
+  }else{
+    if(aiPanel.parentElement!==aiAssistant) aiAssistant.append(aiPanel);
+    aiPanel.classList.remove("ai-panel-page"); aiPanel.hidden=true; aiAssistant.classList.remove("ai-on-wish-page");
+    setAiMode("chat");
+  }
   $$('[data-view]').forEach(el=>{
     if(el.id==="discoveryAdminPanel"){el.hidden=!(view==="home"&&isAdminUser);return;}
     el.hidden=el.dataset.view!==view;
@@ -1624,7 +1685,7 @@ function bindUI() {
   $("#projectForm").addEventListener("submit", createProject);
   $$("[data-close]").forEach(button => button.addEventListener("click", () => { const id = button.dataset.close; if (id === "profileModal") closeProfileModal(); else hideModal(id); }));
   $$(".modal-backdrop").forEach(modal => modal.addEventListener("click", e => { if (e.target === modal) { if (modal.id === "profileModal") closeProfileModal(); else hideModal(modal.id); } }));
-  document.addEventListener("keydown", e => { if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); $("#aiPanel").hidden = true; $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(location.hash==="#aiwish") location.hash="#home"; else { $("#aiPanel").hidden = true; $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
@@ -1632,10 +1693,10 @@ function bindUI() {
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
-  $("#aiLaunchBtn").onclick = () => { const panel = $("#aiPanel"); panel.hidden = !panel.hidden; $("#aiLaunchBtn").setAttribute("aria-expanded", String(!panel.hidden)); if (!panel.hidden && currentUser) loadAiHistory(); };
-  $("#aiCloseBtn").onclick = () => { $("#aiPanel").hidden = true; $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); };
+  $("#aiLaunchBtn").onclick = () => { if(location.hash==="#aiwish") location.hash="#home"; const panel=$("#aiPanel"),assistant=$("#aiAssistant"); if(panel.parentElement!==assistant) assistant.append(panel); panel.classList.remove("ai-panel-page"); setAiMode("chat"); panel.hidden=!panel.hidden; $("#aiLaunchBtn").setAttribute("aria-expanded",String(!panel.hidden)); if(!panel.hidden&&currentUser)loadAiHistory(); };
+  $("#aiCloseBtn").onclick = () => { if(location.hash==="#aiwish"){location.hash="#home";return;} $("#aiPanel").hidden=true; $("#aiLaunchBtn").setAttribute("aria-expanded","false"); };
   $("#aiChatModeBtn").onclick = () => setAiMode("chat");
-  $("#aiWishModeBtn").onclick = () => setAiMode("wish");
+  $("#aiWishModeBtn").onclick = () => { location.hash="#aiwish"; };
   $("#aiNewChatBtn").onclick = () => currentUser ? startAiConversation(aiMode) : (openAuth(), toast("Sign in to keep a private AI history."));
   $("#aiForm").addEventListener("submit", sendAiMessage);
   $("#aiInput").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#aiForm").requestSubmit(); } });
@@ -1643,8 +1704,9 @@ function bindUI() {
   $("#backToExploreBtn").onclick = () => { location.hash = "#opportunities"; };
   $("#themeToggle").onclick = () => { document.body.classList.toggle("light"); const prefs=readAppPrefs();prefs.theme=document.body.classList.contains("light")?"light":"dark";localStorage.setItem("hackverse-app-preferences",JSON.stringify(prefs));localStorage.setItem("hackverse-theme",prefs.theme); };
   if (localStorage.getItem("hackverse-theme") === "light") document.body.classList.add("light");
-  $("#menuToggle").onclick = () => { document.querySelector(".desktop-nav").classList.toggle("mobile-open"); };
-  $$(".desktop-nav a").forEach(a => a.addEventListener("click", () => document.querySelector(".desktop-nav").classList.remove("mobile-open")));
+  $("#menuToggle").onclick = () => { const nav=document.querySelector(".desktop-nav"); const open=nav.classList.toggle("mobile-open"); $("#menuToggle").setAttribute("aria-expanded",String(open)); };
+  $("#navMoreBtn").onclick = () => { const menu=$("#navMoreMenu"); menu.hidden=!menu.hidden; $("#navMoreBtn").setAttribute("aria-expanded",String(!menu.hidden)); };
+  $$(".desktop-nav a").forEach(a => a.addEventListener("click", () => { document.querySelector(".desktop-nav").classList.remove("mobile-open"); $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); $("#menuToggle").setAttribute("aria-expanded","false"); }));
   window.addEventListener("hashchange",handleRoute); handleRoute();
 }
 function runHeroSearch() { if (!requireAccount()) return; $("#eventSearch").value = $("#heroSearch").value; renderEvents(); location.hash = "#opportunities"; }

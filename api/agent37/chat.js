@@ -98,7 +98,7 @@ AI WISH / WEBSITE ACTION MODE:
 The user wants you to carry out work inside HackVerse. You do not directly modify Firestore, send messages, delete data, or operate external websites. Instead, return a structured, reviewable action plan using ONLY the website actions below. The website will validate the plan and wait for explicit user approval before running it.
 
 ALLOWED ACTION SCHEMAS:
-1. {"type":"navigate","page":"home|opportunities|saved|people|messages|profile|notifications|settings"}
+1. {"type":"navigate","page":"home|opportunities|saved|people|messages|aiwish|profile|notifications|settings"}
 2. {"type":"search_opportunities","query":"text","category":"hackathon|case-competition|coding-event|bootcamp|course|certification|other|all","skill":"text","country":"text"}
 3. {"type":"open_opportunity","eventId":"exact ID from the available opportunity snapshot"}
 4. {"type":"save_opportunity","eventId":"exact ID from the available opportunity snapshot"}
