@@ -379,6 +379,59 @@ function updateEventAccessUI() {
   if (directoryGate) directoryGate.hidden = signedIn;
 }
 
+function canonicalOpportunityUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:") return "";
+    url.hash = "";
+    [...url.searchParams.keys()].forEach(key => { if (/^(utm_|fbclid|gclid|ref$|source$)/i.test(key)) url.searchParams.delete(key); });
+    url.searchParams.sort();
+    return url.toString().replace(/\/$/, "").toLowerCase();
+  } catch { return ""; }
+}
+function normalizeOpportunityText(value) {
+  return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+function reliableOpportunityOrganizer(event) {
+  const organizer = normalizeOpportunityText(event.organizer);
+  const source = normalizeOpportunityText(event.sourceName || event.sourcePlatform);
+  return organizer && !["source publisher", "organiser not listed", "organizer not listed", "unknown", source].includes(organizer) ? organizer : "";
+}
+function sameOpportunityIdentity(a, b) {
+  if (!a || !b || eventCategoryValue(a) !== eventCategoryValue(b)) return false;
+  const urlsA = [a.sourceUrl, a.officialEventUrl, a.officialRegistrationUrl].map(canonicalOpportunityUrl).filter(Boolean);
+  const urlsB = new Set([b.sourceUrl, b.officialEventUrl, b.officialRegistrationUrl].map(canonicalOpportunityUrl).filter(Boolean));
+  if (urlsA.some(url => urlsB.has(url))) return true;
+  const aTitle = normalizeOpportunityText(a.title), bTitle = normalizeOpportunityText(b.title);
+  if (!aTitle || aTitle !== bTitle) return false;
+  const orgA = reliableOpportunityOrganizer(a), orgB = reliableOpportunityOrganizer(b);
+  if (orgA && orgB && orgA === orgB) return true;
+  const dateKeys = ["registrationDeadline", "startAt", "endAt"];
+  const closeDate = dateKeys.some(key => {
+    const left = tsMillis(a[key]), right = tsMillis(b[key]);
+    return left > 0 && right > 0 && Math.abs(left - right) <= 72 * 60 * 60 * 1000;
+  });
+  const locA = normalizeOpportunityText(a.location || a.city), locB = normalizeOpportunityText(b.location || b.city);
+  const sameLocation = Boolean(locA && locB && locA !== "online" && locB !== "online" && (locA === locB || locA.includes(locB) || locB.includes(locA)));
+  return closeDate && sameLocation;
+}
+function opportunityQualityScore(event) {
+  return (event.verificationStatus === "verified" ? 100 : 0)
+    + (event.officialRegistrationUrl ? 20 : 0) + (event.officialEventUrl ? 10 : 0)
+    + (event.registrationDeadline ? 8 : 0) + (event.organizer ? 5 : 0)
+    + (event.eligibility ? 4 : 0) + (event.prize || event.prizePool ? 3 : 0)
+    + Math.min(10, Array.isArray(event.sourceRecords) ? event.sourceRecords.length : 0)
+    + Math.min(5, Math.floor(tsMillis(event.updatedAt || event.ingestedAt) / 86400000 / 30));
+}
+function deduplicateVisibleOpportunities(records) {
+  const sorted = [...records].sort((a,b) => opportunityQualityScore(b) - opportunityQualityScore(a));
+  const unique = [];
+  for (const record of sorted) {
+    if (!unique.some(existing => sameOpportunityIdentity(record, existing))) unique.push(record);
+  }
+  return unique;
+}
+
 async function loadEvents() {
   const grid = $("#eventGrid");
   if (!currentUser) { events = []; updateEventAccessUI(); renderEvents(); renderSaved(); return; }
@@ -391,7 +444,16 @@ async function loadEvents() {
   grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
     const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(500)));
-    events = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => e.status !== "expired");
+    const now = Date.now();
+    const loaded = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => {
+      if (e.status === "expired") return false;
+      const deadline = tsMillis(e.registrationDeadline);
+      const courseEnd = tsMillis(e.endAt);
+      if (deadline && deadline < now) return false;
+      if (["course", "bootcamp", "certification"].includes(eventCategoryValue(e)) && courseEnd && courseEnd < now) return false;
+      return true;
+    });
+    events = deduplicateVisibleOpportunities(loaded);
     events.sort((a,b) => tsMillis(b.updatedAt || b.ingestedAt || b.createdAt) - tsMillis(a.updatedAt || a.ingestedAt || a.createdAt));
     allEventsVisible = 24; populateEventFilterOptions(); renderEvents(); renderSaved();
   } catch (error) {
@@ -631,7 +693,7 @@ function renderEvents() {
   renderLearningCatalog();
   const preview = $("#eventGrid"); const full = $("#eventGridAll");
   if (preview) {
-    $("#homeOpportunityCount").textContent = `${events.length} live opportunities · ${list.length} match current filters`;
+    $("#homeOpportunityCount").textContent = `${events.length} unique active opportunities · ${list.length} match current filters`;
     const top = list.slice(0,6);
     preview.innerHTML = top.length ? top.map(opportunityCard).join("") : `<div class="loading-card">${db ? (events.length ? "No opportunities match this selection. Explore all opportunities and adjust filters." : "No opportunities have been published yet. New discoveries will appear here automatically.") : "Connect Firebase to load the live opportunity feed."}</div>`;
   }
@@ -2068,6 +2130,16 @@ function bindUI() {
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
   $("#refreshEventsBtn").onclick = () => requireAccount() && loadEvents();
+  // Refresh the public opportunity feed periodically and whenever a user returns to the tab.
+  // The discovery workflow itself runs every six hours; this keeps the UI in sync without a manual reload.
+  let eventRefreshInProgress = false;
+  const refreshOpportunityFeed = async () => {
+    if (!currentUser || !db || document.hidden || eventRefreshInProgress) return;
+    eventRefreshInProgress = true;
+    try { await loadEvents(); } finally { eventRefreshInProgress = false; }
+  };
+  window.setInterval(refreshOpportunityFeed, 15 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshOpportunityFeed(); });
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
