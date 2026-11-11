@@ -321,10 +321,11 @@ async function readEnabledSources() {
 // Direct public listing connectors. These are independent of Brabble: each platform
 // is fetched separately, so a failure at one provider does not stop the others.
 const DIRECT_PLATFORM_SOURCES = [
-  { id: "direct-unstop", name: "Unstop", platform: "Unstop", url: "https://unstop.com/api/public/opportunity/search-result?opportunity=hackathons&per_page=100&oppstatus=open", parser: "unstop" },
-  { id: "direct-devpost", name: "Devpost", platform: "Devpost", url: "https://devpost.com/api/hackathons", parser: "devpost" },
-  { id: "direct-devfolio", name: "Devfolio", platform: "Devfolio", url: "https://api.devfolio.co/api/hackathons?page=1", parser: "generic" },
-  { id: "direct-hackerearth", name: "HackerEarth", platform: "HackerEarth", url: "https://www.hackerearth.com/chrome-extension/events/", parser: "generic" }
+  // Bounded pagination with repeat-page protection; providers that ignore page= stop safely.
+  { id: "direct-unstop", name: "Unstop", platform: "Unstop", url: "https://unstop.com/api/public/opportunity/search-result?opportunity=hackathons&per_page=100&oppstatus=open", parser: "unstop", maxPages: 8 },
+  { id: "direct-devpost", name: "Devpost", platform: "Devpost", url: "https://devpost.com/api/hackathons", parser: "devpost", maxPages: 5 },
+  { id: "direct-devfolio", name: "Devfolio", platform: "Devfolio", url: "https://api.devfolio.co/api/hackathons?page=1", parser: "generic", maxPages: 5 },
+  { id: "direct-hackerearth", name: "HackerEarth", platform: "HackerEarth", url: "https://www.hackerearth.com/chrome-extension/events/", parser: "generic", maxPages: 1 }
 ];
 function firstValue(...values) { return values.find(v => v !== undefined && v !== null && v !== ""); }
 function directListingCandidate(platform, item) {
@@ -403,21 +404,48 @@ function directListingCandidate(platform, item) {
     ingestedAt: SERVER_TIME(), updatedAt: SERVER_TIME(), lastSeenAt: SERVER_TIME(), sourceIds: [platform.id]
   };
 }
+function directPageIdentity(row) {
+  return String(firstValue(row.id, row.uuid, row.slug, row.url, row.link, row.public_url,
+    `${row.title || row.name || row.hackathon_name || ""}:${row.organizer?.name || row.organizer || row.organisation?.name || ""}:${row.start_date || row.start_at || row.starts_at || row.deadline || ""}`) || "");
+}
 async function fetchDirectPlatform(platform) {
-  const response = await fetch(platform.url, {
-    headers: { "Accept": "application/json, text/plain, */*", "User-Agent": "Mozilla/5.0 (compatible; HackStopOpportunityDiscovery/1.0)" },
-    signal: AbortSignal.timeout(20000)
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const body = await response.json();
-  if (platform.parser === "unstop") {
-    const rows = body?.data?.data;
-    if (!Array.isArray(rows)) throw new Error("Unstop response format changed; expected data.data array");
-    return rows;
+  const collected = [], seenRows = new Set(), seenPages = new Set();
+  const pageCount = Math.max(1, Math.min(Number(platform.maxPages) || 1, 10));
+  for (let page = 1; page <= pageCount; page++) {
+    const endpoint = new URL(platform.url);
+    if (platform.maxPages > 1) endpoint.searchParams.set("page", String(page));
+    const response = await fetch(endpoint, {
+      headers: { "Accept": "application/json, text/plain, */*", "User-Agent": "Mozilla/5.0 (compatible; HackVerseDiscovery/1.0)" },
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!response.ok) {
+      if (page === 1) throw new Error(`HTTP ${response.status} on page ${page}`);
+      break;
+    }
+    const body = await response.json();
+    let rows;
+    if (platform.parser === "unstop") {
+      rows = body?.data?.data;
+      if (!Array.isArray(rows)) throw new Error("Unstop response format changed; expected data.data array");
+    } else {
+      rows = findListingArray(body);
+      if (!rows.length && page === 1) throw new Error("No listing array found in provider response");
+    }
+    if (!rows.length) break;
+    const fingerprint = sha(rows.map(directPageIdentity).join("|"));
+    if (seenPages.has(fingerprint)) break;
+    seenPages.add(fingerprint);
+    let added = 0;
+    for (const row of rows) {
+      const identity = directPageIdentity(row);
+      if (identity && seenRows.has(identity)) continue;
+      if (identity) seenRows.add(identity);
+      collected.push(row); added++;
+    }
+    if (added === 0) break;
+    if (platform.parser === "unstop" && rows.length < 100) break;
   }
-  const rows = findListingArray(body);
-  if (!rows.length) throw new Error("No listing array found in provider response");
-  return rows;
+  return collected;
 }
 async function ingestDirectPlatforms(summary) {
   for (const platform of DIRECT_PLATFORM_SOURCES) {
@@ -426,18 +454,17 @@ async function ingestDirectPlatforms(summary) {
       const rows = await fetchDirectPlatform(platform);
       summary.fetched += rows.length;
       let published = 0;
-      for (const row of rows.slice(0, 150)) {
+      for (const row of rows) {
         const candidate = directListingCandidate(platform, row);
         if (!candidate || !isDuplicateCandidate(candidate)) continue;
         summary.relevant++;
         await storeCandidate(candidate);
-        summary.published++;
-        published++;
+        summary.published++; published++;
       }
       await db.collection("discoverySources").doc(platform.id).set({
         name: platform.name, platform: platform.platform, type: "direct-api", enabled: true,
         lastRunAt: SERVER_TIME(), lastError: null, lastItemCount: rows.length, lastPublishedCount: published,
-        sourceUrl: platform.url, updatedAt: SERVER_TIME()
+        sourceUrl: platform.url, maxPages: platform.maxPages || 1, updatedAt: SERVER_TIME()
       }, { merge: true });
       console.log(`[direct:${platform.name}] fetched=${rows.length} published=${published}`);
     } catch (error) {
@@ -453,23 +480,30 @@ async function ingestDirectPlatforms(summary) {
 }
 
 
-
 // Optional Brabble aggregator API. The API key is read only in the discovery runner,
 // never exposed to the browser. Pages are cached in Firestore and source attribution
 // is retained on each listing; registrations still point to the organiser's URL.
 async function ingestBrabbleListings(summary) {
   const apiKey = BRABBLE_API_KEY.value().trim();
-  if (!apiKey) return;
-  summary.sourceCount += 1;
   const sourceId = "brabble-aggregator-api";
+  summary.sourceCount += 1;
+  if (!apiKey) {
+    await db.collection("discoverySources").doc(sourceId).set({
+      name: "Brabble.ai Aggregator (hackathons hub)", platform: "Brabble.ai", type: "api", enabled: true,
+      sourceUrl: "https://brabble.ai/api/listings?hub=hackathons", lastRunAt: SERVER_TIME(),
+      lastError: "Missing HACKVERSE_BRABBLE_API_KEY GitHub Actions secret", updatedAt: SERVER_TIME()
+    }, { merge: true }).catch(() => {});
+    return;
+  }
   let offset = 0;
   let total = Number.POSITIVE_INFINITY;
   let fetchedCount = 0;
   let published = 0;
   try {
-    while (offset < total && offset < 1200) {
+    const maxRowsPerRun = 1000; // five 200-row pages; below the provider's 1,000-request/day free quota.
+    while (offset < total && offset < maxRowsPerRun) {
       const endpoint = new URL("https://brabble.ai/api/listings");
-      endpoint.search = new URLSearchParams({ limit: "200", offset: String(offset) }).toString();
+      endpoint.search = new URLSearchParams({ hub: "hackathons", limit: "200", offset: String(offset) }).toString();
       const response = await fetch(endpoint, {
         headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(20000)
@@ -489,7 +523,10 @@ async function ingestBrabbleListings(summary) {
         const title = cleanText(row.title, 180);
         const sourceUrl = canonicalUrl(row.url || "");
         const deadlineDate = row.deadline ? new Date(row.deadline) : null;
-        if (!title || !sourceUrl || !deadlineDate || Number.isNaN(deadlineDate.getTime()) || deadlineDate.getTime() < Date.now()) continue;
+        const validDeadline = deadlineDate && !Number.isNaN(deadlineDate.getTime()) ? deadlineDate : null;
+        // Some valid listings do not publish a deadline. Keep them visible as
+        // deadline-unspecified rather than silently discarding them.
+        if (!title || !sourceUrl || (validDeadline && validDeadline.getTime() < Date.now())) continue;
         const rawType = String(row.type || "").trim().toUpperCase();
         const category = rawType === "HACKATHON" ? "hackathon"
           : rawType === "CASE STUDY" ? "case-competition"
@@ -515,8 +552,8 @@ async function ingestBrabbleListings(summary) {
           organizer, summary: `${rawType.replace(/_/g, " ") || "Opportunity"} listed on ${platform}. ${mode || "Format not specified"}${city && city !== "See listing" ? ` · ${city}` : ""}. Open the organiser page to confirm application details.`,
           description: `Discovered through Brabble.ai's aggregated opportunity index. Original organiser: ${organizer}. Platform: ${platform}. ${eligibility}`,
           sourceUrl, officialEventUrl: sourceUrl, officialRegistrationUrl: sourceUrl, brabbleShareUrl: shareUrl,
-          registrationDeadline: deadlineIsStart ? null : Timestamp.fromDate(deadlineDate),
-          startAt: deadlineIsStart ? Timestamp.fromDate(deadlineDate) : null, endAt: null, timezone: null,
+          registrationDeadline: deadlineIsStart || !validDeadline ? null : Timestamp.fromDate(validDeadline),
+          startAt: deadlineIsStart && validDeadline ? Timestamp.fromDate(validDeadline) : null, endAt: null, timezone: null,
           mode, location: city && city !== "See listing" ? city : (mode === "Online" ? "Online" : "Location not listed"),
           city: city === "See listing" ? "" : city, region: "", country: "",
           tracks: tags, technologies: [], tags, skills: [], level: "Check organiser requirements",
@@ -537,19 +574,20 @@ async function ingestBrabbleListings(summary) {
         published++;
       }
       offset += rows.length;
-      if (!rows.length || offset >= total) break;
+      if (!rows.length || rows.length < 200 || offset >= total) break;
     }
     await db.collection("discoverySources").doc(sourceId).set({
-      name: "Brabble.ai Aggregator", platform: "Brabble.ai", type: "api", enabled: true,
-      sourceUrl: "https://brabble.ai/developers", lastRunAt: SERVER_TIME(), lastError: null,
-      lastItemCount: fetchedCount, lastPublishedCount: published, updatedAt: SERVER_TIME()
+      name: "Brabble.ai Aggregator (hackathons hub)", platform: "Brabble.ai", type: "api", enabled: true,
+      sourceUrl: "https://brabble.ai/api/listings?hub=hackathons", lastRunAt: SERVER_TIME(), lastError: null,
+      lastItemCount: fetchedCount, lastPublishedCount: published, totalAvailable: total,
+      maxRowsPerRun, updatedAt: SERVER_TIME()
     }, { merge: true });
   } catch (error) {
     const message = String(error.message || error).slice(0, 220);
     summary.errors.push({ source: "Brabble.ai API", message });
     await db.collection("discoverySources").doc(sourceId).set({
-      name: "Brabble.ai Aggregator", platform: "Brabble.ai", type: "api", enabled: true,
-      sourceUrl: "https://brabble.ai/developers", lastRunAt: SERVER_TIME(), lastError: message, updatedAt: SERVER_TIME()
+      name: "Brabble.ai Aggregator (hackathons hub)", platform: "Brabble.ai", type: "api", enabled: true,
+      sourceUrl: "https://brabble.ai/api/listings?hub=hackathons", lastRunAt: SERVER_TIME(), lastError: message, updatedAt: SERVER_TIME()
     }, { merge: true }).catch(() => {});
     logger.warn("Brabble aggregator ingestion failed", { error: message });
   }

@@ -4,7 +4,7 @@
 
 - Expanded public RSS coverage: Hackalendar; Brabble hackathons, case-competition and coding-contest feeds; and Brabble city feeds for Delhi-NCR, Kolkata, Pune, Bengaluru, Hyderabad, Mumbai and Chennai.
 - Direct public contest adapter for Codeforces (`contest.list?gym=false`), queried once per scheduled run and limited to not-yet-finished contests.
-- Optional Brabble JSON aggregator API connector. It pages in 200-item batches, preserves Brabble attribution and links to each original organiser, and imports up to 1,200 rows per run. The API key is kept in a GitHub Actions secret and never exposed to users.
+- Brabble JSON aggregator API connector. It requests the `hackathons` hub, pages in 200-item batches, preserves Brabble attribution and links to each original organiser, and imports up to 1,000 rows per run. The API key is kept in a GitHub Actions secret and never exposed to users.
 - Broader official browse directories in the Explore UI for global hackathons, case competitions, coding contests, bootcamps, courses and certifications. These catalogues link users to providers when a public ingestion feed is not available; they do not pretend to have imported every provider's listings.
 
 - Public RSS/Atom feed ingestion with HTTPS URL validation.
@@ -23,7 +23,7 @@ The scheduled runner does not use Firebase Cloud Scheduler or scheduled Cloud Fu
 
 ## Current source coverage
 
-The discovery runner now combines the existing Unstop, Devpost, Devfolio and HackerEarth adapters with the optional Brabble aggregate API (22 upstream platforms reported by its documentation), expanded Brabble RSS facets, Codeforces public contest API and openHPI dated course feed. The Explore UI also links to official provider catalogues including MLH, DoraHacks, ETHGlobal, Hack Club, Lablab.ai, Hack2skill, CodeChef, LeetCode, AtCoder, HackerRank, Kaggle, CTFtime, SWAYAM, NPTEL, freeCodeCamp, MIT OpenCourseWare, CS50, Microsoft Learn, Google Skills, AWS Skill Builder, IBM SkillsBuild, Cisco Networking Academy and established bootcamp providers.
+The discovery runner combines Unstop, Devpost, Devfolio and HackerEarth adapters with the Brabble aggregate API (22 upstream platforms reported by its documentation), expanded Brabble RSS facets, Codeforces public contest API and openHPI dated course feed. The Explore UI also links to official provider catalogues including MLH, DoraHacks, ETHGlobal, Hack Club, Lablab.ai, Hack2skill, CodeChef, LeetCode, AtCoder, HackerRank, Kaggle, CTFtime, SWAYAM, NPTEL, freeCodeCamp, MIT OpenCourseWare, CS50, Microsoft Learn, Google Skills, AWS Skill Builder, IBM SkillsBuild, Cisco Networking Academy and established bootcamp providers.
 
 **Coverage limitation:** there is no universal, unrestricted internet-wide opportunities API. Some sites require API keys, prohibit automated collection, restrict commercial reuse, or do not publish feeds. The directory therefore aggregates accessible, terms-compatible sources and links to additional official directories. New sources can be added by an admin through approved public RSS/Atom feed URLs or by adding a reviewed official API adapter. Do not scrape login-only/private pages or claim completeness.
 

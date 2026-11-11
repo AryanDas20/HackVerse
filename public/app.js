@@ -338,7 +338,12 @@ async function loadDiscoverySources() {
     const snap = await getDocs(query(collection(db, "discoverySources"), limit(50)));
     const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     const host = $("#discoverySourcesList");
-    host.innerHTML = rows.length ? rows.map(source => `<div class="discovery-source-row"><div><b>${esc(source.name || "RSS source")}</b><small>${esc(source.feedUrl || "")}</small></div><label class="source-toggle"><input type="checkbox" data-source-toggle="${esc(source.id)}" ${source.enabled ? "checked" : ""}> Enabled</label></div>`).join("") : '<p class="muted">No sources connected yet. Add an approved public RSS feed below.</p>';
+    host.innerHTML = rows.length ? rows.map(source => {
+      const lastRun = tsMillis(source.lastRunAt);
+      const health = source.lastError ? `Error: ${source.lastError}` : lastRun ? `Last checked ${new Date(lastRun).toLocaleString()} · ${Number(source.lastItemCount || 0)} fetched · ${Number(source.lastPublishedCount || 0)} published` : "Waiting for first discovery run";
+      const address = source.feedUrl || source.sourceUrl || "Managed connector";
+      return `<div class="discovery-source-row"><div><b>${esc(source.name || "Opportunity source")}</b><small>${esc(source.platform || source.type || "RSS")} · ${esc(address)}</small><small class="source-health ${source.lastError ? "has-error" : ""}">${esc(health)}</small></div>${source.type === "rss" ? `<label class="source-toggle"><input type="checkbox" data-source-toggle="${esc(source.id)}" ${source.enabled ? "checked" : ""}> Enabled</label>` : `<span class="source-managed-label">Managed</span>`}</div>`;
+    }).join("") : '<p class="muted">No sources connected yet. Add an approved public RSS feed below.</p>';
     host.querySelectorAll("[data-source-toggle]").forEach(input => input.addEventListener("change", async () => {
       try { await httpsCallable(functions, "setDiscoverySourceEnabled")({ id: input.dataset.sourceToggle, enabled: input.checked }); toast("Source setting updated."); }
       catch (error) { input.checked = !input.checked; toast(friendlyError(error)); }
@@ -443,9 +448,19 @@ async function loadEvents() {
   updateEventAccessUI();
   grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
-    const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(500)));
+    // Read public listings in bounded pages rather than silently stopping at 500.
+    const loadedDocs = [];
+    let cursor = null;
+    for (let page = 0; page < 10; page++) {
+      const constraints = [where("visibility", "==", "public"), limit(500)];
+      if (cursor) constraints.push(startAfter(cursor));
+      const snapshot = await getDocs(query(collection(db, "hackathons"), ...constraints));
+      loadedDocs.push(...snapshot.docs);
+      if (snapshot.docs.length < 500) break;
+      cursor = snapshot.docs[snapshot.docs.length - 1];
+    }
     const now = Date.now();
-    const loaded = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => {
+    const loaded = loadedDocs.map(d => ({ id: d.id, ...d.data() })).filter(e => {
       if (e.status === "expired") return false;
       const deadline = tsMillis(e.registrationDeadline);
       const courseEnd = tsMillis(e.endAt);

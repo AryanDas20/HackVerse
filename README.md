@@ -1,8 +1,8 @@
-# HackVerse v5.5 — Agent37, messaging and builder community
+# HackVerse v6.0 — Global opportunity discovery, Agent37 and builder community
 
 HackVerse is a mobile-first web app built with HTML, CSS, JavaScript modules, Firebase Authentication and Cloud Firestore. Chat attachments are stored in a private Supabase Storage bucket; the Firebase project does not need Firebase Storage.
 
-## Current v5.5 release additions
+## Core product features
 - Agent37 Website Help chatbot and AI Wish action planner, with per-user conversation history. AI Wish requires review and explicit approval before supported website actions are applied.
 - WhatsApp-inspired realtime messaging: direct/group chats, replies, emoji reactions, edit/soft-delete, text forwarding, starred items, typing and read indicators, files/media and voice notes. Media uses Firebase-ID-token-verified Vercel endpoints and short-lived Supabase signed URLs.
 - Separate hash-routed areas for Explore, Saved, Community, Messages, Profile, Activity and Settings.
@@ -21,7 +21,7 @@ See `docs/AGENT37_AI_SETUP.md`, `docs/WHATSAPP_INSPIRED_MESSAGING.md`, and `docs
 - Opportunity cards are compact. **Read details** opens a modal with the available description, organiser, country/region/city, format, track, skills, level, team size, prize, dates, eligibility, source attribution and original source/registration link.
 - Filters include opportunity type, country, region/state, format (online/in-person/hybrid), track, skill/technology, level, free/paid (only when explicitly stated), deadline and source platform. Country, region, track and source choices are derived from the event data available in Firestore.
 - Supported categories include hackathons, case competitions, coding events, bootcamps, online courses and certifications. The workflow now imports dated, current/upcoming courses from the public openHPI JSON course feed and ignores historical courses whose end date has passed. Bootcamp and certification filters are supported; official provider catalogues are shown for those categories because a reliable public bootcamp feed is not currently connected.
-- The feed reads up to 500 public records. Search, filters and sort run in the browser. This is suitable for a starter catalogue; add server-side pagination and a search service before scaling much further.
+- The directory reads up to 5,000 public records in bounded Firestore pages. Search, filters, deduplication and sorting run in the browser; larger catalogues should move to server-side search and cursor-based UI pagination.
 
 ### Community profiles and privacy
 - Search public profiles by name, username, full college name, college short name, course, skills and interests. Search for phone/email works only when the member explicitly publishes that field.
@@ -44,13 +44,7 @@ The current messaging implementation includes replies, reactions, edit/soft-dele
 
 The GitHub Actions workflow is retained in `.github/workflows/hackathon-discovery.yml`. It runs every six hours and can also be started manually from GitHub Actions. It authenticates to Google Cloud using the repository's existing Workload Identity Federation configuration; no service-account JSON key is stored in GitHub or this ZIP.
 
-The three feeds already tested from the current project are configured:
-
-1. `https://hackalendar.com/feed.xml`
-2. `https://brabble.ai/rss/hackathons.xml`
-3. `https://brabble.ai/rss/in/delhi-ncr.xml`
-
-The discovery engine includes independent direct public-listing connectors for Unstop, Devpost, Devfolio and HackerEarth, plus the existing Hackalendar/Brabble RSS feeds and the openHPI dated course feed. It normalizes listings, writes to Firestore, deduplicates URL/title fingerprints and expires passed registration deadlines. Brabble is an optional additional aggregator source, not the only source. See `docs/PLATFORM_CONNECTORS.md` for exact coverage and limitations. Source-attributed listings are not independently fact-checked. Always confirm details at the linked organiser/source page. Coverage is broad but cannot guarantee every hackathon or opportunity on the internet.
+The discovery engine includes independent direct public-listing connectors for Unstop, Devpost, Devfolio and HackerEarth; the Brabble hackathons hub API, which aggregates multiple upstream platforms; configured Hackalendar/Brabble RSS feeds; Codeforces public contests; and the openHPI dated course feed. The Brabble API is paginated in batches of 200, bounded to 1,000 rows per run, and retains source attribution and the original organiser URL. Unstop, Devpost and Devfolio attempt bounded pagination with repeat-page protection. The admin source panel reports last run, fetched/published counts and connector errors. See `docs/PLATFORM_CONNECTORS.md` and `docs/RELEASE_NOTES_v6.0.0.md` for exact coverage and limitations. Source-attributed listings are not independently fact-checked. Always confirm details at the linked organiser page. No service can guarantee every hackathon published anywhere online.
 
 **Spark plan note:** GitHub Actions is the six-hour scheduler. Do not deploy `scheduledRssIngestion` as a Firebase scheduled Cloud Function while staying on Spark. The Cloud Functions callable admin/source-management panel is an optional path and is not required for the GitHub Actions pipeline.
 
@@ -70,7 +64,7 @@ The code and Firestore schema are updated, but no cloud database or Supabase pro
 
 ### 1. Replace the local source safely
 
-Extract this ZIP into a new folder first. Restore `public/firebase-config.js` and `.firebaserc` from your backup as described above. Then replace the old source files with the v5 files. Do not delete your backup until the website is confirmed working.
+Extract this ZIP into a new folder first. Restore `public/firebase-config.js` and `.firebaserc` from your backup as described above. Then replace the old source files with the v6.0 files. Do not delete your backup until the website is confirmed working.
 
 ### 2. Update Firestore security rules
 
@@ -85,7 +79,7 @@ The rules update adds public/private profile handling, group membership administ
 
 ### 3. Push to your existing GitHub repository
 
-The project is connected to `https://github.com/AryanDas20/VerseNeo.git`. Review changes before committing. Then:
+The project repository is `https://github.com/AryanDas20/HackVerse.git`. Review changes before committing. Then:
 
 ```bash
 git add README.md VERSION.txt .env.example docs firestore.rules firestore.indexes.json functions public api package.json vercel.json .gitignore .github/workflows/hackathon-discovery.yml
@@ -97,9 +91,9 @@ If the new folder is not already a Git clone, do not run these commands blindly;
 
 ### 4. Verify automatic discovery
 
-Open <https://github.com/AryanDas20/VerseNeo/actions>, select **HackVerse Automatic Hackathon Discovery**, then choose **Run workflow**. Confirm the job ends with a green check. Scheduled runs are at 00:00, 06:00, 12:00 and 18:00 UTC (approximately 05:30, 11:30, 17:30 and 23:30 India time).
+Open <https://github.com/AryanDas20/HackVerse/actions>, select **HackVerse Automatic Hackathon Discovery**, then choose **Run workflow**. Confirm the job ends with a green check. Scheduled runs are at 00:00, 06:00, 12:00 and 18:00 UTC (approximately 05:30, 11:30, 17:30 and 23:30 India time).
 
-The workflow uses `npm install --prefix functions` so a locally retained `functions/package-lock.json` is not required for this ZIP to run. On your Mac, install dependencies once before running the standalone script:
+The GitHub Actions workflow uses `npm ci --prefix functions` with the committed lockfile. On your Mac, install dependencies once before running the standalone script:
 
 ```bash
 npm install --prefix functions
