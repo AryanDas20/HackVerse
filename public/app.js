@@ -369,7 +369,7 @@ async function runDiscoveryManually() {
     const result = await httpsCallable(functions, "runDiscoveryNow")({});
     const data = result.data || {};
     $("#discoveryStatus").textContent = `Checked ${data.sourceCount || 0} sources · fetched ${data.fetched || 0} items · published/updated ${data.published || 0} listings · ${data.errors?.length || 0} source errors.`;
-    await loadEvents(); await loadDiscoverySources();
+    await loadEvents(true); await loadDiscoverySources();
   } catch (error) { $("#discoveryStatus").textContent = friendlyError(error); }
   finally { button.disabled = false; button.textContent = "Run discovery now ↻"; }
 }
@@ -437,7 +437,44 @@ function deduplicateVisibleOpportunities(records) {
   return unique;
 }
 
-async function loadEvents() {
+// Public opportunity data changes on the six-hour discovery schedule, not every few minutes.
+// A short local cache prevents repeat full-directory reads on reloads and tab switches.
+const OPPORTUNITY_CACHE_KEY = `hackverse:opportunities:${firebaseConfig.projectId || "default"}:v1`;
+const OPPORTUNITY_CACHE_TTL_MS = 30 * 60 * 1000;
+function readOpportunityCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(OPPORTUNITY_CACHE_KEY) || "null");
+    if (!cached || !Array.isArray(cached.records) || !Number.isFinite(cached.savedAt)) return null;
+    if (Date.now() - cached.savedAt > OPPORTUNITY_CACHE_TTL_MS) return null;
+    return cached.records;
+  } catch { return null; }
+}
+function writeOpportunityCache(records) {
+  try {
+    localStorage.setItem(OPPORTUNITY_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), records }));
+  } catch (error) {
+    // Storage can be disabled or full; the live Firestore feed remains fully functional.
+    console.warn("Could not cache the public opportunity directory", error);
+  }
+}
+function activeOpportunityRecords(records) {
+  const now = Date.now();
+  return records.filter(event => {
+    if (event.status === "expired") return false;
+    const deadline = tsMillis(event.registrationDeadline);
+    const courseEnd = tsMillis(event.endAt);
+    if (deadline && deadline < now) return false;
+    if (["course", "bootcamp", "certification"].includes(eventCategoryValue(event)) && courseEnd && courseEnd < now) return false;
+    return true;
+  });
+}
+function renderLoadedOpportunities(records) {
+  events = deduplicateVisibleOpportunities(activeOpportunityRecords(records));
+  events.sort((a,b) => tsMillis(b.updatedAt || b.ingestedAt || b.createdAt) - tsMillis(a.updatedAt || a.ingestedAt || a.createdAt));
+  allEventsVisible = 24; populateEventFilterOptions(); renderEvents(); renderSaved();
+}
+
+async function loadEvents(forceRefresh = false) {
   const grid = $("#eventGrid");
   if (!currentUser) { events = []; updateEventAccessUI(); renderEvents(); renderSaved(); return; }
   if (!db) {
@@ -446,6 +483,13 @@ async function loadEvents() {
     return;
   }
   updateEventAccessUI();
+  if (!forceRefresh) {
+    const cachedRecords = readOpportunityCache();
+    if (cachedRecords) {
+      renderLoadedOpportunities(cachedRecords);
+      return;
+    }
+  }
   grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
     // Read public listings in bounded pages rather than silently stopping at 500.
@@ -459,18 +503,11 @@ async function loadEvents() {
       if (snapshot.docs.length < 500) break;
       cursor = snapshot.docs[snapshot.docs.length - 1];
     }
-    const now = Date.now();
-    const loaded = loadedDocs.map(d => ({ id: d.id, ...d.data() })).filter(e => {
-      if (e.status === "expired") return false;
-      const deadline = tsMillis(e.registrationDeadline);
-      const courseEnd = tsMillis(e.endAt);
-      if (deadline && deadline < now) return false;
-      if (["course", "bootcamp", "certification"].includes(eventCategoryValue(e)) && courseEnd && courseEnd < now) return false;
-      return true;
-    });
-    events = deduplicateVisibleOpportunities(loaded);
-    events.sort((a,b) => tsMillis(b.updatedAt || b.ingestedAt || b.createdAt) - tsMillis(a.updatedAt || a.ingestedAt || a.createdAt));
-    allEventsVisible = 24; populateEventFilterOptions(); renderEvents(); renderSaved();
+    const loaded = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
+    const active = activeOpportunityRecords(loaded);
+    const unique = deduplicateVisibleOpportunities(active);
+    writeOpportunityCache(unique);
+    renderLoadedOpportunities(unique);
   } catch (error) {
     console.error("Opportunity feed read failed", error);
     grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Firestore rules and connection.</div>';
@@ -2144,16 +2181,15 @@ function bindUI() {
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
-  $("#refreshEventsBtn").onclick = () => requireAccount() && loadEvents();
-  // Refresh the public opportunity feed periodically and whenever a user returns to the tab.
-  // The discovery workflow itself runs every six hours; this keeps the UI in sync without a manual reload.
+  $("#refreshEventsBtn").onclick = () => requireAccount() && loadEvents(true);
+  // The public feed is cached for 30 minutes; manual refresh always bypasses the cache.
   let eventRefreshInProgress = false;
   const refreshOpportunityFeed = async () => {
     if (!currentUser || !db || document.hidden || eventRefreshInProgress) return;
     eventRefreshInProgress = true;
     try { await loadEvents(); } finally { eventRefreshInProgress = false; }
   };
-  window.setInterval(refreshOpportunityFeed, 15 * 60 * 1000);
+  window.setInterval(refreshOpportunityFeed, 30 * 60 * 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshOpportunityFeed(); });
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;

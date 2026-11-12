@@ -47,3 +47,21 @@
 - Verify old openHPI courses are skipped and course `endAt` values are expired by the discovery expiry pass.
 - Select Courses, Bootcamps and Certifications in Explore and confirm the matching official provider catalogue cards appear.
 - Confirm provider links open in a new tab and event details preserve the original course URL.
+
+
+## v6.1 directory cache checks
+- Sign in and open the opportunity directory; confirm the directory loads and the unique active count is correct.
+- Reload within 30 minutes; confirm cached opportunities render without a new full-directory fetch.
+- Use the manual Refresh control; confirm it bypasses the browser cache and reloads Firestore data.
+- Wait beyond the cache lifetime or clear the site cache; confirm a fresh Firestore load occurs.
+- Test a cached event whose registration deadline has passed; it must be filtered from the active directory even before the cache expires.
+- Disable browser storage or simulate a storage quota error; confirm the live directory still loads.
+
+
+## v6.1 directory cache checks
+- Sign in and open the opportunity directory; confirm the directory loads and the unique active count is correct.
+- Reload within 30 minutes; confirm cached opportunities render without a new full-directory fetch.
+- Use the manual Refresh control; confirm it bypasses the browser cache and reloads Firestore data.
+- Wait beyond the cache lifetime or clear the site cache; confirm a fresh Firestore load occurs.
+- Test a cached event whose registration deadline has passed; it must be filtered from the active directory even before the cache expires.
+- Disable browser storage or simulate a storage quota error; confirm the live directory still loads.
