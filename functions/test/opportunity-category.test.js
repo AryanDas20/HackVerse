@@ -39,3 +39,15 @@ test("category allow-list includes all categories", () => {
     assert.equal(OPPORTUNITY_CATEGORIES.has(category), true);
   }
 });
+
+
+test("recognises broader legitimate opportunity wording", () => {
+  assert.equal(classifyOpportunity("Open programming competition for university students").category, "competition");
+  assert.equal(classifyOpportunity("Volunteer recruitment for a developer community").category, "volunteering");
+  assert.equal(classifyOpportunity("Hack event: build a climate solution").category, "hackathon");
+});
+
+test("does not turn generic hack wording into a hackathon", () => {
+  assert.deepEqual(classifyOpportunity("Security news: hackers breach a database"), { relevant: false, category: "", score: 0 });
+  assert.deepEqual(classifyOpportunity("How to hack your productivity"), { relevant: false, category: "", score: 0 });
+});

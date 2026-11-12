@@ -236,6 +236,7 @@ async function storeCandidate(candidate) {
 
     const eventRef = events.doc(eventId);
     const existing = snapshotsById.get(eventId);
+    const wasDuplicate = Boolean(existing?.exists || safeTitleId);
     const previous = existing?.exists ? existing.data() : {};
     if (previous.category && previous.category !== candidate.category) {
       throw new Error("Refusing to merge an event from a different category.");
@@ -295,7 +296,7 @@ async function storeCandidate(candidate) {
     }, { merge: true });
   });
 
-  return eventId;
+  return { eventId, duplicate: wasDuplicate };
 }
 
 async function readEnabledSources() {
@@ -318,7 +319,7 @@ const DIRECT_PLATFORM_SOURCES = [
   { id: "direct-hackerearth", name: "HackerEarth", platform: "HackerEarth", url: "https://www.hackerearth.com/chrome-extension/events/", parser: "generic", maxPages: 1 }
 ];
 function firstValue(...values) { return values.find(v => v !== undefined && v !== null && v !== ""); }
-function directListingCandidate(platform, item) {
+function directListingCandidate(platform, item, diagnostics = null) {
   const org = firstValue(item.organisation?.name, item.organization?.name, item.organizer?.name,
     item.organizer, item.company?.name, item.company, item.host, item.creator, platform.name);
   const title = cleanText(firstValue(item.title, item.name, item.hackathon_name, item.event_name), 180);
@@ -328,7 +329,8 @@ function directListingCandidate(platform, item) {
     : firstValue(item.seo_url, item.url, item.link, item.public_url, item.short_url, item.event_url, item.href);
   if (link && !/^https:\/\//i.test(link)) link = `https://${platform.platform.toLowerCase() === "unstop" ? "unstop.com" : platform.platform.toLowerCase() === "devpost" ? "devpost.com" : platform.platform.toLowerCase() === "devfolio" ? "devfolio.co" : "hackerearth.com"}/${String(link).replace(/^\//, "")}`;
   const sourceUrl = canonicalUrl(link || "");
-  if (!title || !sourceUrl) return null;
+  if (!title) { diagnostics && (diagnostics.missingTitle = (diagnostics.missingTitle || 0) + 1); return null; }
+  if (!sourceUrl) { diagnostics && (diagnostics.missingUrl = (diagnostics.missingUrl || 0) + 1); return null; }
 
   const req = item.regnRequirements || item.registration || item.registration_details || {};
   const deadlineRaw = firstValue(req.end_regn_dt, req.deadline, item.registration_deadline, item.deadline,
@@ -341,8 +343,8 @@ function directListingCandidate(platform, item) {
   const deadline = parseDate(deadlineRaw);
   const startAt = parseDate(startRaw);
   const endAt = parseDate(endRaw);
-  if (deadline && deadline.getTime() < Date.now()) return null;
-  if (endAt && endAt.getTime() < Date.now()) return null;
+  if (deadline && deadline.getTime() < Date.now()) { diagnostics && (diagnostics.expiredDeadline = (diagnostics.expiredDeadline || 0) + 1); return null; }
+  if (endAt && endAt.getTime() < Date.now()) { diagnostics && (diagnostics.expiredEnd = (diagnostics.expiredEnd || 0) + 1); return null; }
 
   const address = item.address_with_country_logo || item.address || item.location || {};
   const countryValue = firstValue(
@@ -444,19 +446,22 @@ async function ingestDirectPlatforms(summary) {
       const rows = await fetchDirectPlatform(platform);
       summary.fetched += rows.length;
       let published = 0;
+      const diagnostics = { missingTitle: 0, missingUrl: 0, expiredDeadline: 0, expiredEnd: 0, rejectedQuality: 0, duplicates: 0 };
       for (const row of rows) {
-        const candidate = directListingCandidate(platform, row);
-        if (!candidate || !isDuplicateCandidate(candidate)) continue;
+        const candidate = directListingCandidate(platform, row, diagnostics);
+        if (!candidate) continue;
+        if (!isDuplicateCandidate(candidate)) { diagnostics.rejectedQuality++; continue; }
         summary.relevant++;
-        await storeCandidate(candidate);
+        const stored = await storeCandidate(candidate);
+        if (stored.duplicate) { summary.duplicates++; diagnostics.duplicates++; }
         summary.published++; published++;
       }
       await db.collection("discoverySources").doc(platform.id).set({
         name: platform.name, platform: platform.platform, type: "direct-api", enabled: true,
         lastRunAt: SERVER_TIME(), lastError: null, lastItemCount: rows.length, lastPublishedCount: published,
-        sourceUrl: platform.url, maxPages: platform.maxPages || 1, updatedAt: SERVER_TIME()
+        sourceUrl: platform.url, maxPages: platform.maxPages || 1, diagnostics, updatedAt: SERVER_TIME()
       }, { merge: true });
-      console.log(`[direct:${platform.name}] fetched=${rows.length} published=${published}`);
+      console.log(`[direct:${platform.name}] fetched=${rows.length} published=${published} skipped=${JSON.stringify(diagnostics)}`);
     } catch (error) {
       const message = String(error.message || error).slice(0, 220);
       summary.errors.push({ source: platform.name, message });
@@ -558,7 +563,8 @@ async function ingestBrabbleListings(summary) {
           sourcePublishedAt: null, ingestedAt: SERVER_TIME(), updatedAt: SERVER_TIME(), lastSeenAt: SERVER_TIME(), sourceIds: [sourceId]
         };
         if (!isDuplicateCandidate(candidate)) continue;
-        await storeCandidate(candidate);
+        const stored = await storeCandidate(candidate);
+        if (stored.duplicate) summary.duplicates++;
         summary.relevant++;
         summary.published++;
         published++;
@@ -628,7 +634,8 @@ async function ingestCodeforcesContests(summary) {
         discoveryScore: 90, sourcePublishedAt: null, ingestedAt: SERVER_TIME(), updatedAt: SERVER_TIME(), lastSeenAt: SERVER_TIME(), sourceIds: [sourceId]
       };
       if (!isDuplicateCandidate(candidate)) continue;
-      await storeCandidate(candidate);
+      const stored = await storeCandidate(candidate);
+      if (stored.duplicate) summary.duplicates++;
       summary.relevant++;
       summary.published++;
       published++;
@@ -703,7 +710,8 @@ async function ingestOpenHpiCourses(summary) {
         lastSeenAt: SERVER_TIME(), sourceIds: ["openhpi-public-course-feed"]
       };
       summary.relevant++;
-      await storeCandidate(candidate);
+      const stored = await storeCandidate(candidate);
+      if (stored.duplicate) summary.duplicates++;
       summary.published++;
     }
   } catch (error) {
@@ -737,7 +745,8 @@ async function ingestYouTube(summary) {
         }, { id: "youtube-data-api", name: item.snippet?.channelTitle || "YouTube channel", type: "youtube", platform: "YouTube", category: "Social media", autoPublish: true });
         if (!candidate || !isDuplicateCandidate(candidate)) continue;
         summary.relevant++;
-        await storeCandidate(candidate); summary.published++;
+        const stored = await storeCandidate(candidate); if (stored.duplicate) summary.duplicates++;
+        summary.published++;
       }
     } catch (error) {
       summary.errors.push({ source: `YouTube search: ${searchTerm}`, message: String(error.message || error).slice(0, 180) });
@@ -747,21 +756,31 @@ async function ingestYouTube(summary) {
 }
 async function expirePastDeadlines() {
   const now = Timestamp.now();
-  const [deadlineSnap, courseEndSnap] = await Promise.all([
-    db.collection("hackathons").where("registrationDeadline", "<=", now).limit(350).get(),
-    db.collection("hackathons").where("endAt", "<=", now).limit(350).get()
-  ]);
-  const dueByDeadline = deadlineSnap.docs.filter(doc => doc.data().visibility === "public" && doc.data().status !== "expired");
-  const courseCategories = new Set(["course", "bootcamp", "certification"]);
-  const dueByEnd = courseEndSnap.docs.filter(doc => doc.data().visibility === "public" && doc.data().status !== "expired" && courseCategories.has(doc.data().category));
-  const dueMap = new Map([...dueByDeadline, ...dueByEnd].map(item => [item.id, item]));
-  const due = [...dueMap.values()];
-  if (!due.length) return 0;
-  const batch = db.batch();
-  due.forEach(item => batch.set(item.ref, { status: "expired", expiredAt: SERVER_TIME(), updatedAt: SERVER_TIME() }, { merge: true }));
-  await batch.commit();
-  return due.length;
+  const pageSize = 350;
+  const dueMap = new Map();
+  async function collectDue(field) {
+    // A single query is intentionally bounded to keep each scheduled run cheap.
+    // The next six-hour run continues cleanup if a collection contains more than the bound.
+    const snap = await db.collection("hackathons").where(field, "<=", now).limit(pageSize).get();
+    for (const doc of snap.docs) {
+      const data = doc.data();
+      if (data.visibility === "public" && data.status !== "expired") dueMap.set(doc.id, doc);
+    }
+  }
+  await Promise.all([collectDue("registrationDeadline"), collectDue("endAt")]);
+  if (!dueMap.size) return 0;
+  const docs = [...dueMap.values()];
+  let expired = 0;
+  for (let offset = 0; offset < docs.length; offset += 450) {
+    const batch = db.batch();
+    const chunk = docs.slice(offset, offset + 450);
+    chunk.forEach(item => batch.set(item.ref, { status: "expired", expiredAt: SERVER_TIME(), updatedAt: SERVER_TIME() }, { merge: true }));
+    await batch.commit();
+    expired += chunk.length;
+  }
+  return expired;
 }
+
 async function runDiscovery() {
   const runRef = db.collection("ingestionRuns").doc();
   const summary = { startedAt: new Date(), sourceCount: 0, fetched: 0, relevant: 0, published: 0, held: 0, duplicates: 0, errors: [] };
@@ -778,7 +797,8 @@ async function runDiscovery() {
           if (!candidate || !isDuplicateCandidate(candidate)) continue;
           summary.relevant++;
           if (candidate.visibility !== "public") { summary.held++; continue; }
-          await storeCandidate(candidate); summary.published++;
+          const stored = await storeCandidate(candidate); if (stored.duplicate) summary.duplicates++;
+          summary.published++;
         }
         await db.collection("discoverySources").doc(source.id).set({ lastRunAt: SERVER_TIME(), lastError: null, lastItemCount: items.length }, { merge: true }).catch(() => {});
       } catch (error) {

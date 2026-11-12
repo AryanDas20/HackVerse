@@ -20,12 +20,15 @@ function classifyOpportunity(text, sourceCategories = []) {
   if (/online course|self[- ]paced course|course enrollment|course enrolment|learning path|massive open online course|\bmooc\b/.test(combined)) return { relevant: true, category: "course", score: 85 };
   if (/case\s?(study|competition|challenge)|business case/.test(combined)) return { relevant: true, category: "case-competition", score: 84 };
   if (/coding contest|programming contest|code jam|coding challenge|\bctf\b|capture the flag|algorithm contest|developer challenge|open source sprint/.test(combined) || /\bcoding\b|\bcontest\b/.test(categories) && /code|program|developer|software|algorithm|security/.test(value)) return { relevant: true, category: "coding-event", score: 82 };
-  if (/\bcompetition\b|challenge programme|challenge program|innovation challenge|student contest/.test(combined)) return { relevant: true, category: "competition", score: 80 };
-  if (/volunteer opportunity|volunteering programme|volunteering program|community service/.test(combined)) return { relevant: true, category: "volunteering", score: 78 };
+  if (/\bcompetition\b|challenge programme|challenge program|innovation challenge|student contest|open competition/.test(combined)) return { relevant: true, category: "competition", score: 80 };
+  if (/volunteer opportunity|volunteering programme|volunteering program|community service|volunteer recruitment/.test(combined)) return { relevant: true, category: "volunteering", score: 78 };
   const explicitCategory = categoryList.find(category => OPPORTUNITY_CATEGORIES.has(category));
   if (explicitCategory) return { relevant: true, category: explicitCategory, score: 80 };
-  const weak = /\bhack\b.{0,30}\b(build|event|challenge|competition)\b/.test(value);
-  return { relevant: weak, category: weak ? "hackathon" : "", score: weak ? 65 : 0 };
+  // Keep the fallback deliberately narrow. Words such as "hack" appear in
+  // unrelated news/articles, so require a clear event/building signal nearby.
+  const weak = /\b(hack|hacking)\b.{0,40}\b(build|event|challenge|competition|athon|submission|register|registration)\b/i.test(value)
+    || /\b(build|event|challenge|competition)\b.{0,40}\b(hack|hacking)\b/i.test(value);
+  return { relevant: weak, category: weak ? "hackathon" : "", score: weak ? 68 : 0 };
 }
 
 module.exports = { OPPORTUNITY_CATEGORIES, classifyOpportunity };

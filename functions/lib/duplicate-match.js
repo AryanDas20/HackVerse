@@ -29,6 +29,7 @@ function sameLocation(a, b) {
   const left = normalizeIdentity(a), right = normalizeIdentity(b);
   if (!left || !right) return false;
   if (left === right) return true;
+  if (left === "online" && right === "online") return true;
   if (left === "online" || right === "online") return false;
   return left.includes(right) || right.includes(left);
 }

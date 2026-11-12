@@ -476,14 +476,17 @@ async function loadEvents({ forceRefresh = false } = {}) {
   updateEventAccessUI();
   if (!forceRefresh) {
     const cached = readOpportunityCache();
-    if (cached) { displayOpportunityRecords(cached); return; }
+    // Render cached data immediately for responsiveness, but still refresh from
+    // Firestore. The previous early return could leave the dashboard showing an
+    // older opportunity count for up to 30 minutes after a discovery run.
+    if (cached) displayOpportunityRecords(cached);
   }
   grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
     // Read public listings in bounded pages rather than silently stopping at 500.
     const loadedDocs = [];
     let cursor = null;
-    for (let page = 0; page < 10; page++) {
+    for (let page = 0; page < 100; page++) {
       const constraints = [where("visibility", "==", "public"), limit(500)];
       if (cursor) constraints.push(startAfter(cursor));
       const snapshot = await getDocs(query(collection(db, "hackathons"), ...constraints));

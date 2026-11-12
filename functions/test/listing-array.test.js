@@ -33,3 +33,14 @@ test("returns an empty array for unsupported or empty responses", () => {
   assert.deepEqual(findListingArray("invalid"), []);
   assert.deepEqual(findListingArray({ data: { message: "No events" } }), []);
 });
+
+
+test("parses deeply nested provider collections", () => {
+  const rows = [{ name: "Nested Devfolio Hackathon" }];
+  assert.deepEqual(findListingArray({ payload: { data: { hackathons: rows } } }), rows);
+});
+
+test("prefers hackathon collections over unrelated arrays", () => {
+  const rows = [{ name: "Devfolio Hackathon" }];
+  assert.deepEqual(findListingArray({ items: [{ label: "metadata" }], data: { hackathons: rows } }), rows);
+});
