@@ -1,19 +1,8 @@
 {
-  "name": "hackverse-functions",
+  "name": "hackverse-discovery",
   "private": true,
-  "engines": {
-    "node": "22"
-  },
+  "engines": { "node": "22" },
   "main": "index.js",
-  "scripts": {
-    "serve": "firebase emulators:start --only functions",
-    "deploy": "echo \"Cloud Functions deployment requires Firebase Blaze. This project stays on Spark and uses GitHub Actions.\" && exit 1",
-    "discover": "node scripts/run-discovery.js",
-    "test": "node --test"
-  },
-  "dependencies": {
-    "firebase-admin": "^14.5.1",
-    "firebase-functions": "^7.4.0",
-    "rss-parser": "^3.13.0"
-  }
+  "scripts": { "discover": "node scripts/run-discovery.js", "test": "node --test" },
+  "dependencies": { "rss-parser": "^3.13.0" }
 }

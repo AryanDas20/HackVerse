@@ -1,47 +1,23 @@
-const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
-const { defineString } = require("firebase-functions/params");
-const logger = process.env.HACKVERSE_STANDALONE === "1"
-  ? { warn: (...args) => console.warn(...args), error: (...args) => console.error(...args) }
-  : require("firebase-functions/logger");
-const { initializeApp, getApps } = require("firebase-admin/app");
-const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
 const Parser = require("rss-parser");
 const crypto = require("node:crypto");
+const { getDatabase, FieldValue, Timestamp, upsertDocuments } = require("./lib/supabase-store");
 const { resolveEventId } = require("./lib/event-id");
 const { cleanText } = require("./lib/clean-text");
 const { findListingArray } = require("./lib/listing-array");
 const { isSafeTitleDuplicate } = require("./lib/duplicate-match");
 const { extractDeadline } = require("./lib/deadline");
 const { OPPORTUNITY_CATEGORIES, classifyOpportunity } = require("./lib/opportunity-category");
-
-if (!getApps().length) initializeApp();
-const db = getFirestore();
-const parser = new Parser({
-  timeout: 15000,
-  headers: { "User-Agent": "HackVerseDiscovery/2.0 (+https://hackverse.example; contact: admin@hackverse.example)" },
-  customFields: { item: [["content:encoded", "contentEncoded"], ["media:description", "mediaDescription"]] }
-});
-const LEGACY_FEEDS = process.env.HACKVERSE_STANDALONE === "1"
-  ? { value: () => process.env.HACKVERSE_RSS_FEEDS || "" }
-  : defineString("HACKVERSE_RSS_FEEDS", { default: "" });
-const YOUTUBE_API_KEY = process.env.HACKVERSE_STANDALONE === "1"
-  ? { value: () => process.env.HACKVERSE_YOUTUBE_API_KEY || "" }
-  : defineString("HACKVERSE_YOUTUBE_API_KEY", { default: "" });
-const YOUTUBE_QUERIES = process.env.HACKVERSE_STANDALONE === "1"
-  ? { value: () => process.env.HACKVERSE_YOUTUBE_QUERIES || "hackathon registration;student hackathon;hackathon challenge" }
-  : defineString("HACKVERSE_YOUTUBE_QUERIES", { default: "hackathon registration;student hackathon;hackathon challenge" });
-const OPENHPI_COURSE_FEED = process.env.HACKVERSE_STANDALONE === "1"
-  ? { value: () => process.env.HACKVERSE_OPENHPI_COURSE_FEED || "https://open.hpi.de/feeds/courses" }
-  : defineString("HACKVERSE_OPENHPI_COURSE_FEED", { default: "https://open.hpi.de/feeds/courses" });
-const BRABBLE_API_KEY = process.env.HACKVERSE_STANDALONE === "1"
-  ? { value: () => process.env.HACKVERSE_BRABBLE_API_KEY || "" }
-  : defineString("HACKVERSE_BRABBLE_API_KEY", { default: "" });
-const HACKVERSE_HTML_CATALOGS = process.env.HACKVERSE_STANDALONE === "1"
-  ? { value: () => process.env.HACKVERSE_HTML_CATALOGS || "" }
-  : defineString("HACKVERSE_HTML_CATALOGS", { default: "" });
+const logger = console;
+const db = getDatabase();
+const parser = new Parser({ timeout: 15000, headers: { "User-Agent": "HackVerseDiscovery/8.0" }, customFields: { item: [["content:encoded", "contentEncoded"], ["media:description", "mediaDescription"]] } });
+const env = name => process.env[name] || "";
+const LEGACY_FEEDS = { value: () => env("HACKVERSE_RSS_FEEDS") };
+const YOUTUBE_API_KEY = { value: () => env("HACKVERSE_YOUTUBE_API_KEY") };
+const YOUTUBE_QUERIES = { value: () => env("HACKVERSE_YOUTUBE_QUERIES") || "hackathon registration;student hackathon;hackathon challenge" };
+const OPENHPI_COURSE_FEED = { value: () => env("HACKVERSE_OPENHPI_COURSE_FEED") || "https://open.hpi.de/feeds/courses" };
+const BRABBLE_API_KEY = { value: () => env("HACKVERSE_BRABBLE_API_KEY") };
+const HACKVERSE_HTML_CATALOGS = { value: () => env("HACKVERSE_HTML_CATALOGS") };
 const SERVER_TIME = FieldValue.serverTimestamp;
-
 function sha(value) { return crypto.createHash("sha256").update(String(value)).digest("hex"); }
 
 function safeHttps(value) {
@@ -193,7 +169,7 @@ function isDuplicateCandidate(data) {
 const RUN_SEEN_URLS = new Set();
 const RUN_SEEN_TITLES = new Set();
 
-// Firestore Spark is quota-sensitive. The old implementation used a transaction
+// Supabase is used for server-side discovery writes. The old implementation used a transaction
 // that read multiple fingerprint/event documents for every candidate and then
 // wrote three documents. With hundreds/thousands of candidates this could burn
 // through the daily read/write quota before discovery even reached later sources.
@@ -203,30 +179,27 @@ const RUN_SEEN_TITLES = new Set();
 //   * the event is therefore written directly to hackathons/{candidate.id}
 //   * duplicate URLs in the same run are skipped in memory
 //   * fingerprint collections are no longer read/written during ingestion
-// This keeps one candidate to one Firestore write while retaining URL-level
+// This keeps one candidate to one hackathon database write while retaining URL-level
 // deduplication and safe repeat runs.
+const RUN_PENDING = new Map();
 async function storeCandidate(candidate) {
-  if (!candidate || !candidate.id || !candidate.sourceUrl) {
-    return { eventId: candidate?.id || "", duplicate: false, skipped: true };
-  }
-
+  if (!candidate || !candidate.id || !candidate.sourceUrl) return { eventId: candidate?.id || "", duplicate: false, skipped: true };
   const urlKey = canonicalUrl(candidate.sourceUrl);
   const titleKey = `${candidate.category || ""}:${String(candidate.titleKey || "")}`;
-  if (RUN_SEEN_URLS.has(urlKey) || (titleKey && RUN_SEEN_TITLES.has(titleKey))) {
-    return { eventId: candidate.id, duplicate: true, skipped: true };
-  }
+  if (RUN_SEEN_URLS.has(urlKey) || (titleKey && RUN_SEEN_TITLES.has(titleKey))) return { eventId: candidate.id, duplicate: true, skipped: true };
   RUN_SEEN_URLS.add(urlKey);
   if (titleKey) RUN_SEEN_TITLES.add(titleKey);
-
-  const eventRef = db.collection("hackathons").doc(candidate.id);
-  await eventRef.set({
-    ...candidate,
-    firstSeenAt: candidate.firstSeenAt || SERVER_TIME(),
-    updatedAt: SERVER_TIME(),
-    lastSeenAt: SERVER_TIME()
-  }, { merge: true });
-
+  RUN_PENDING.set(candidate.id, { ...candidate, firstSeenAt: candidate.firstSeenAt || SERVER_TIME(), updatedAt: SERVER_TIME(), lastSeenAt: SERVER_TIME() });
   return { eventId: candidate.id, duplicate: false, skipped: false };
+}
+async function flushStoreBuffer() {
+  const rows = [...RUN_PENDING.values()].map(data => {
+    const path = `hackathons/${data.id}`;
+    return { path, collection_path: "hackathons", doc_id: data.id, data, owner_uid: null, participants: null, updated_at: new Date().toISOString() };
+  });
+  RUN_PENDING.clear();
+  for (let i = 0; i < rows.length; i += 250) await upsertDocuments(rows.slice(i, i + 250));
+  return rows.length;
 }
 
 const DEFAULT_RSS_SOURCES = [
@@ -444,7 +417,7 @@ async function ingestDirectPlatforms(summary) {
 
 
 // Optional Brabble aggregator API. The API key is read only in the discovery runner,
-// never exposed to the browser. Pages are cached in Firestore and source attribution
+// never exposed to the browser. Pages are cached in hackathon database and source attribution
 // is retained on each listing; registrations still point to the organiser's URL.
 async function ingestBrabbleListings(summary) {
   const apiKey = BRABBLE_API_KEY.value().trim();
@@ -1113,6 +1086,7 @@ async function runDiscovery() {
   const summary = { startedAt: new Date(), sourceCount: 0, fetched: 0, relevant: 0, published: 0, held: 0, duplicates: 0, errors: [] };
   RUN_SEEN_URLS.clear();
   RUN_SEEN_TITLES.clear();
+  RUN_PENDING.clear();
   try {
     const sources = await readEnabledSources(); summary.sourceCount = sources.length;
     for (const source of sources) {
@@ -1138,13 +1112,14 @@ async function runDiscovery() {
         }
       }
     }
-    await ingestDirectPlatforms(summary);
-    await ingestBrabbleListings(summary);
-    await ingestCodeforcesContests(summary);
-    await ingestOpenHpiCourses(summary);
-    await ingestHackClubRss(summary);
-    await ingestHtmlCatalogs(summary);
-    await ingestYouTube(summary);
+    await flushStoreBuffer();
+    await ingestDirectPlatforms(summary); await flushStoreBuffer();
+    await ingestBrabbleListings(summary); await flushStoreBuffer();
+    await ingestCodeforcesContests(summary); await flushStoreBuffer();
+    await ingestOpenHpiCourses(summary); await flushStoreBuffer();
+    await ingestHackClubRss(summary); await flushStoreBuffer();
+    await ingestHtmlCatalogs(summary); await flushStoreBuffer();
+    await ingestYouTube(summary); await flushStoreBuffer();
   } catch (error) {
     summary.errors.push({ source: "discovery", message: String(error.message || error).slice(0, 180) });
     logger.error("Discovery run failed", error);
@@ -1156,42 +1131,9 @@ async function runDiscovery() {
   await runRef.set(summary);
   return { ...summary, runId: runRef.id };
 }
-function requireAdmin(request) {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in first.");
-  if (request.auth.token.admin !== true) throw new HttpsError("permission-denied", "This action requires a HackVerse admin account.");
-}
-if (process.env.HACKVERSE_STANDALONE === "1") {
+if (require.main === module || process.env.HACKVERSE_STANDALONE === "1") {
   runDiscovery()
     .then(result => { console.log("HackVerse discovery result:"); console.log(JSON.stringify(result, null, 2)); if (result.errors?.length) process.exitCode = 1; })
     .catch(error => { console.error("HackVerse discovery failed:", error); process.exitCode = 1; });
-} else {
-exports.scheduledRssIngestion = onSchedule({ schedule: "every 6 hours", timeZone: "Asia/Kolkata", timeoutSeconds: 540, memory: "512MiB" }, async () => runDiscovery());
-exports.runDiscoveryNow = onCall({ enforceAppCheck: false }, async request => { requireAdmin(request); return runDiscovery(); });
-exports.addDiscoverySource = onCall({ enforceAppCheck: false }, async request => {
-  requireAdmin(request);
-  const name = cleanText(request.data?.name, 100);
-  const feedUrl = safeHttps(request.data?.feedUrl);
-  const requestedCategory = String(request.data?.category || "").trim().toLowerCase();
-  const category = OPPORTUNITY_CATEGORIES.has(requestedCategory) ? requestedCategory : "Community";
-  if (!name || !feedUrl) throw new HttpsError("invalid-argument", "Provide a source name and a valid HTTPS RSS feed URL.");
-  const id = sha(canonicalUrl(feedUrl)).slice(0, 32);
-  await db.collection("discoverySources").doc(id).set({
-    name, type: "rss", platform: "RSS", category, feedUrl,
-    enabled: true, autoPublish: request.data?.autoPublish !== false,
-    createdAt: SERVER_TIME(), updatedAt: SERVER_TIME()
-  }, { merge: true });
-  return { id, name, feedUrl, category, autoPublish: request.data?.autoPublish !== false };
-});
-exports.setDiscoverySourceEnabled = onCall({ enforceAppCheck: false }, async request => {
-  requireAdmin(request);
-  const id = String(request.data?.id || "");
-  if (!/^[a-f0-9]{32}$/.test(id)) throw new HttpsError("invalid-argument", "Invalid source ID.");
-  await db.collection("discoverySources").doc(id).update({ enabled: Boolean(request.data?.enabled), updatedAt: SERVER_TIME() });
-  return { id, enabled: Boolean(request.data?.enabled) };
-});
-exports.socialConnectorStatus = onCall({ enforceAppCheck: false }, async request => {
-  requireAdmin(request);
-  return { rss: "available", youtube: "available when HACKVERSE_YOUTUBE_API_KEY is configured", reddit: "requires approved Reddit OAuth application", x: "requires X API access and bearer token", linkedin: "no general public-post search integration", instagram: "no general public-content search integration", facebook: "requires eligible Meta app permissions", discord: "requires a bot invited to selected servers", telegram: "requires a bot added to selected channels" };
-});
-
 }
+module.exports = { runDiscovery, parseCandidate, storeCandidate, readEnabledSources, DEFAULT_RSS_SOURCES, DIRECT_PLATFORM_SOURCES, configuredHtmlCatalogs };

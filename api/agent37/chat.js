@@ -1,6 +1,12 @@
-const { getApps, initializeApp, cert } = require("firebase-admin/app");
-const { getAuth } = require("firebase-admin/auth");
-const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { createClient } = require("@supabase/supabase-js");
+const { getDatabase, FieldValue } = require("../../functions/lib/supabase-store");
+
+function supabaseAdmin() {
+  const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.");
+  return { db: getDatabase(), client: createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } }) };
+}
+
 
 const DAILY_LIMIT = 40;
 const MAX_MESSAGE_LENGTH = 4000;
@@ -8,30 +14,6 @@ const MAX_CONTEXT_EVENTS = 40;
 const MAX_CONTEXT_BUILDERS = 80;
 const MAX_CONTEXT_CONVERSATIONS = 30;
 
-function firebaseAdmin() {
-  const existingApps = getApps();
-  if (existingApps.length) {
-    const app = existingApps[0];
-    return { app, db: getFirestore(app), auth: getAuth(app) };
-  }
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT_JSON in the Vercel environment.");
-  let serviceAccount;
-  try {
-    serviceAccount = JSON.parse(raw);
-  } catch {
-    throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON.");
-  }
-  if (!serviceAccount.project_id || !serviceAccount.client_email || !serviceAccount.private_key) {
-    throw new Error("The Firebase service-account JSON is missing required fields.");
-  }
-  serviceAccount.private_key = String(serviceAccount.private_key).replace(/\\n/g, "\n");
-  const app = initializeApp({
-    credential: cert(serviceAccount),
-    projectId: process.env.FIREBASE_PROJECT_ID || serviceAccount.project_id
-  });
-  return { app, db: getFirestore(app), auth: getAuth(app) };
-}
 
 function clean(value, max = 180) {
   return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
@@ -95,7 +77,7 @@ General behaviour:
 
   const actionGuide = `
 AI WISH / WEBSITE ACTION MODE:
-The user wants you to carry out work inside HackVerse. You do not directly modify Firestore, send messages, delete data, or operate external websites. Instead, return a structured, reviewable action plan using ONLY the website actions below. The website will validate the plan and wait for explicit user approval before running it.
+The user wants you to carry out work inside HackVerse. You do not directly modify  Supabase, send messages, delete data, or operate external websites. Instead, return a structured, reviewable action plan using ONLY the website actions below. The website will validate the plan and wait for explicit user approval before running it.
 
 ALLOWED ACTION SCHEMAS:
 1. {"type":"navigate","page":"home|opportunities|saved|people|messages|aiwish|profile|notifications|settings"}
@@ -199,9 +181,10 @@ module.exports = async function handler(req, res) {
     const idToken = authHeader.match(/^Bearer\s+(.+)$/i)?.[1];
     if (!idToken) return res.status(401).json({ error: "Sign in to use HackVerse AI." });
 
-    const { db, auth: firebaseAuth } = firebaseAdmin();
-    const decoded = await firebaseAuth.verifyIdToken(idToken, true);
-    const uid = decoded.uid;
+    const { db, client } = supabaseAdmin();
+    const { data: userData, error: authError } = await client.auth.getUser(idToken);
+    if (authError || !userData?.user) return res.status(401).json({ error: "Your sign-in has expired. Sign in again." });
+    const uid = userData.user.id;
 
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const conversationId = clean(body.conversationId, 120);
@@ -305,7 +288,7 @@ module.exports = async function handler(req, res) {
     });
   } catch (error) {
     console.error("Agent37 chat endpoint failed", error);
-    const status = error?.code === "auth/id-token-expired" || error?.code === "auth/argument-error" ? 401 : 500;
+    const status = error?.status === 401 ? 401 : 500;
     return res.status(status).json({ error: status === 401 ? "Your sign-in has expired. Sign in again." : (clean(error?.message, 500) || "The AI service is temporarily unavailable.") });
   }
 };

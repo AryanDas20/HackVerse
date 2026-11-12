@@ -1,11 +1,6 @@
 {
   "name": "hackverse-web",
   "private": true,
-  "engines": {
-    "node": "22.x"
-  },
-  "dependencies": {
-    "firebase-admin": "13.5.0",
-    "@supabase/supabase-js": "^2.57.0"
-  }
+  "engines": { "node": "22.x" },
+  "dependencies": { "@supabase/supabase-js": "^2.57.0" }
 }

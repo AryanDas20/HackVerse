@@ -1,23 +1,16 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js";
 import {
-  getAuth, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword,
+  auth, db, functions, supabaseClient, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword,
   signInWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged,
-  sendEmailVerification, reload, updateProfile as updateAuthProfile
-} from "https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js";
-import {
-  getFirestore, collection, doc, getDoc, getDocs, query, where, orderBy,
-  startAt, endAt, startAfter, limit, serverTimestamp, addDoc, setDoc, deleteDoc,
-  onSnapshot, updateDoc, runTransaction, writeBatch
-} from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { supabaseConfig } from "./supabase-config.js";
-import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/13.1.0/firebase-functions.js";
-import { firebaseConfig } from "./firebase-config.js";
+  sendEmailVerification, reload, updateProfile as updateAuthProfile,
+  getDoc, getDocs, collection, doc, query, where, orderBy, startAt, endAt, startAfter, limit,
+  serverTimestamp, addDoc, setDoc, deleteDoc, onSnapshot, updateDoc, runTransaction, writeBatch, httpsCallable
+} from './data-layer.js';
+import { supabaseConfig } from './supabase-config.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
-const CONFIGURED = Boolean(firebaseConfig.apiKey && !String(firebaseConfig.apiKey).startsWith("YOUR_") && firebaseConfig.projectId && !String(firebaseConfig.projectId).startsWith("YOUR_"));
-let app = null, auth = null, db = null, functions = null, supabaseClient = null, currentUser = null, authMode = "signin", isAdminUser = false;
+const CONFIGURED = Boolean(supabaseConfig.url && !String(supabaseConfig.url).startsWith("YOUR_") && supabaseConfig.anonKey && !String(supabaseConfig.anonKey).startsWith("YOUR_"));
+let currentUser = null, authMode = "signin", isAdminUser = false;
 let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [];
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
@@ -57,7 +50,7 @@ function confirmInApp(message,title="Are you sure?") {
 }
 function closeInAppDialog(){const modal=$("#appDialog");if(modal)modal.hidden=true;const resolve=dialogResolver;dialogResolver=null;resolve?.(null);}
 
-const requireAccount = () => { if (!currentUser) { openAuth(); toast("Sign in to use this feature."); return false; } if (!db) { toast("Connect Firebase before using account features."); return false; } return true; };
+const requireAccount = () => { if (!currentUser) { openAuth(); toast("Sign in to use this feature."); return false; } if (!db) { toast("Connect Supabase before using account features."); return false; } return true; };
 const tsMillis = value => value?.toMillis ? value.toMillis() : value?.seconds ? value.seconds * 1000 : (value ? new Date(value).getTime() : 0);
 const friendlyError = error => {
   const code = error?.code || "";
@@ -68,63 +61,35 @@ const friendlyError = error => {
     "auth/invalid-email": "Enter a valid email address.",
     "auth/too-many-requests": "Too many attempts. Wait a while and try again.",
     "auth/popup-closed-by-user": "The Google sign-in window was closed.",
-    "auth/unauthorized-domain": "Add this domain in Firebase Authentication → Settings → Authorized domains.",
-    "permission-denied": "Firebase denied this action. Check that the latest Firestore rules are deployed.",
+    "auth/unauthorized-domain": "Add this domain in Supabase Authentication → Settings → Authorized domains.",
+    "permission-denied": "Supabase denied this action. Check that the latest Supabase database rules are deployed.",
     "USERNAME_TAKEN": "That username is already taken. Choose another one."
   };
   if (error?.message === "USERNAME_TAKEN") return map.USERNAME_TAKEN;
-  return map[code] || error?.message || "Something went wrong. Check your Firebase setup and try again.";
+  return map[code] || error?.message || "Something went wrong. Check your Supabase setup and try again.";
 };
 
-function initFirebase() {
+function initSupabase() {
   if (!CONFIGURED) {
-    setSystemNotice("Firebase is not configured yet. Add your Web App settings in public/firebase-config.js to enable live data, registration, profiles, and chat.");
+    setSystemNotice("Supabase is not configured yet. Add your Supabase project URL and publishable key in public/supabase-config.js to enable live data, registration, profiles, and chat.");
     updateEventAccessUI(); updateAiAccessUI(); renderEvents(); renderSaved(); renderPeopleEmpty(); return;
   }
-  try {
-    app = initializeApp(firebaseConfig); auth = getAuth(app); db = getFirestore(app); functions = getFunctions(app);
-    if (supabaseConfig.url && !supabaseConfig.url.startsWith("YOUR_") && supabaseConfig.anonKey && !supabaseConfig.anonKey.startsWith("YOUR_")) supabaseClient = createClient(supabaseConfig.url, supabaseConfig.anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
-    onAuthStateChanged(auth, async user => {
-      if (user && emailVerificationGuard) return;
-      if (user && user.providerData?.some(p => p.providerId === "password")) {
-        try { await reload(user); } catch (error) { console.warn("Could not refresh email verification state", error); }
-        if (!user.emailVerified) {
-          emailVerificationGuard = true;
-          try { await sendEmailVerification(user).catch(()=>{}); await signOut(auth); }
-          finally { emailVerificationGuard = false; }
-          $("#authMessage").textContent = "Please verify your email before using HackVerse. We sent a verification link.";
-          showModal("authModal");
-          return;
-        }
-      }
-      currentUser = user;
-      // Re-evaluate member-only routes immediately after Firebase auth changes.
-      handleRoute();
-      isAdminUser = false;
-      $("#discoveryAdminPanel").hidden = true;
-      if (user) { try { const token = await user.getIdTokenResult(); isAdminUser = token.claims.admin === true; } catch (e) { console.warn("Admin claim check failed", e); } }
-      $("#discoveryAdminPanel").hidden = !isAdminUser;
-      if (isAdminUser) loadDiscoverySources();
-      $("#authButton").textContent = user ? "Sign out" : "Sign in";
-      $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
-      if (!user) {
-        privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[];renderNotificationCenter(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
-        $("#eventModalContent").innerHTML = "";
-        detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
-        $("#chatPlaceholder").hidden = false; $("#chatActive").hidden = true;
-        activeAiConversationId = null; currentAiMessages = []; pendingAiActions = []; updateAiAccessUI(); renderAiMessages();
-        setSystemNotice(""); updateEventAccessUI(); renderEvents(); searchPeople(); handleRoute(); return;
-      }
-      updateEventAccessUI();
-      await loadEvents();
-      await loadAccountWorkspace();
-      handleRoute();
-      await loadAiHistory();
-    });
-  } catch (error) {
-    console.error("Firebase initialization failed", error);
-    setSystemNotice("Firebase could not start. Check the values in public/firebase-config.js.");
-  }
+  onAuthStateChanged(auth, async user => {
+    currentUser = user;
+    handleRoute();
+    isAdminUser = Boolean(user?.app_metadata?.admin === true || user?.user_metadata?.admin === true);
+    $("#discoveryAdminPanel").hidden = !isAdminUser;
+    if (isAdminUser) loadDiscoverySources();
+    $("#authButton").textContent = user ? "Sign out" : "Sign in";
+    $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
+    if (!user) {
+      privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[]; renderNotificationCenter(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
+      $("#eventModalContent").innerHTML = ""; detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
+      $("#chatPlaceholder").hidden = false; $("#chatActive").hidden = true; activeAiConversationId = null; currentAiMessages = []; pendingAiActions = []; updateAiAccessUI(); renderAiMessages();
+      setSystemNotice(""); updateEventAccessUI(); renderEvents(); searchPeople(); handleRoute(); return;
+    }
+    updateEventAccessUI(); await loadEvents(); await loadAccountWorkspace(); handleRoute(); await loadAiHistory();
+  });
 }
 
 function setSystemNotice(message) {
@@ -135,7 +100,7 @@ function setSystemNotice(message) {
 }
 
 function openAuth(mode = "signin") {
-  if (!CONFIGURED) { toast("Add your Firebase Web App config first."); return; }
+  if (!CONFIGURED) { toast("Add your Supabase Web App config first."); return; }
   setAuthMode(mode); $("#authMessage").textContent = ""; showModal("authModal");
 }
 function closeProfileModal() { if (profileIsMandatory) return; hideModal("profileModal"); }
@@ -469,15 +434,15 @@ async function loadEvents({ forceRefresh = false } = {}) {
   const grid = $("#eventGrid");
   if (!currentUser) { events = []; updateEventAccessUI(); renderEvents(); renderSaved(); return; }
   if (!db) {
-    if (grid) grid.innerHTML = '<div class="loading-card">Connect Firebase to load real opportunities. No sample events are bundled with this website.</div>';
-    $("#eventGridAll").innerHTML = '<div class="loading-card">Connect Firebase to load the live opportunity directory.</div>';
+    if (grid) grid.innerHTML = '<div class="loading-card">Connect Supabase to load real opportunities. No sample events are bundled with this website.</div>';
+    $("#eventGridAll").innerHTML = '<div class="loading-card">Connect Supabase to load the live opportunity directory.</div>';
     return;
   }
   updateEventAccessUI();
   if (!forceRefresh) {
     const cached = readOpportunityCache();
     // Render cached data immediately for responsiveness, but still refresh from
-    // Firestore. The previous early return could leave the dashboard showing an
+    // Supabase database. The previous early return could leave the dashboard showing an
     // older opportunity count for up to 30 minutes after a discovery run.
     if (cached) displayOpportunityRecords(cached);
   }
@@ -502,7 +467,7 @@ async function loadEvents({ forceRefresh = false } = {}) {
     const stale = (() => { try { const cached = JSON.parse(localStorage.getItem(OPPORTUNITY_CACHE_KEY) || "null"); return Array.isArray(cached?.records) ? cached.records : null; } catch { return null; } })();
     if (stale?.length) { displayOpportunityRecords(stale); toast("Showing your last loaded opportunities because the live refresh failed."); }
     else {
-      grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Firestore rules and connection.</div>';
+      grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Supabase database rules and connection.</div>';
       $("#eventGridAll").innerHTML = '<div class="loading-card">The opportunity directory could not be loaded.</div>';
     }
   }
@@ -747,7 +712,7 @@ function renderEvents() {
   if (preview) {
     $("#homeOpportunityCount").textContent = `${events.length} unique active opportunities · ${list.length} match current filters`;
     const top = list.slice(0,6);
-    preview.innerHTML = top.length ? top.map(opportunityCard).join("") : `<div class="loading-card">${db ? (events.length ? "No opportunities match this selection. Explore all opportunities and adjust filters." : "No opportunities have been published yet. New discoveries will appear here automatically.") : "Connect Firebase to load the live opportunity feed."}</div>`;
+    preview.innerHTML = top.length ? top.map(opportunityCard).join("") : `<div class="loading-card">${db ? (events.length ? "No opportunities match this selection. Explore all opportunities and adjust filters." : "No opportunities have been published yet. New discoveries will appear here automatically.") : "Connect Supabase to load the live opportunity feed."}</div>`;
   }
   if (full) {
     $("#allOpportunityCount").textContent = `${list.length} opportunit${list.length === 1 ? "y" : "ies"} found`;
@@ -812,7 +777,7 @@ function renderSaved() {
   preview.querySelectorAll("[data-view-event]").forEach(button => button.addEventListener("click", () => viewEvent(button.dataset.viewEvent)));
 }
 
-function renderPeopleEmpty() { $("#peopleGrid").innerHTML = '<div class="loading-card">Connect Firebase and create a profile to begin discovering teammates.</div>'; }
+function renderPeopleEmpty() { $("#peopleGrid").innerHTML = '<div class="loading-card">Connect Supabase and create a profile to begin discovering teammates.</div>'; }
 async function searchPeople() {
   clearTimeout(peopleSearchTimer);
   peopleSearchTimer = setTimeout(async () => {
@@ -843,7 +808,7 @@ async function searchPeople() {
           || (digits.length >= 7 && String(p.publicPhoneDigits || "").startsWith(digits)));
       }
       renderPeople();
-    } catch (error) { console.error("People search failed", error); $("#peopleResultCount").textContent = "Could not search profiles. Check your Firestore rules and indexes."; $("#peopleGrid").innerHTML = '<div class="loading-card">Profile search is temporarily unavailable.</div>'; }
+    } catch (error) { console.error("People search failed", error); $("#peopleResultCount").textContent = "Could not search profiles. Check your Supabase database rules and indexes."; $("#peopleGrid").innerHTML = '<div class="loading-card">Profile search is temporarily unavailable.</div>'; }
   }, 220);
 }
 function overlapScore(profile) {
@@ -899,7 +864,7 @@ function beginInboxListener() {
       const latest = currentConversations.find(x => x.id === activeConversationId);
       if (latest) { activeConversation = latest; renderChatHeading(); if(currentMessages.length)renderMessages(currentMessages); }
     }
-  }, error => { console.error("Inbox listener", error); $("#conversationList").innerHTML = '<div class="empty-note">Could not load conversations. Check Firestore rules.</div>'; });
+  }, error => { console.error("Inbox listener", error); $("#conversationList").innerHTML = '<div class="empty-note">Could not load conversations. Check Supabase database rules.</div>'; });
 }
 function conversationLabel(conversation) {
   if (conversation.isGroup) return conversation.groupName || "Team conversation";
@@ -995,7 +960,7 @@ function selectConversation(conversation) {
     renderMessages(currentMessages, { animateIds: arrivingIds });
     firstMessagesSnapshot = false;
     hydrateChatAttachmentUrls(conversation.id, currentMessages).catch(error => console.warn("Chat attachment preview unavailable", error)); markConversationDelivered(conversation.id).catch(()=>{}); markConversationRead(conversation.id).catch(()=>{});
-  }, error => { console.error("Messages listener", error); $("#messageList").innerHTML = '<div class="empty-note">Could not load messages. Check Firestore rules.</div>'; });
+  }, error => { console.error("Messages listener", error); $("#messageList").innerHTML = '<div class="empty-note">Could not load messages. Check Supabase database rules.</div>'; });
   startTypingListener(conversation.id);
   renderConversationListFromSnapshotSelection();
 }
@@ -1438,7 +1403,7 @@ async function runSmartTeamMatch(event) {
       "ml":["machine learning","ai","python"],"ai":["artificial intelligence","machine learning","ml"],
       "ui/ux":["ui","ux","figma","design"],"design":["ui/ux","figma","product design"],
       "backend":["api","node","node.js","server"],"node.js":["node","backend","express"],
-      "firebase":["firestore","authentication","google cloud"],"data science":["analytics","python","sql"]
+      "supabase":["supabase","authentication","google cloud"],"data science":["analytics","python","sql"]
     };
     const expand = skill => [skill,...(synonyms[skill]||[])].map(x=>x.toLowerCase());
     const poolOnlyOpen=$("#teamCandidatePool")?.value==="open";
@@ -1536,7 +1501,7 @@ function renderMyProfile() {
 async function loadProjects() {
   if (!currentUser || !db) { renderProjects([]); return; }
   try { const snap = await getDocs(query(collection(db, "projects"), where("ownerUid", "==", currentUser.uid), limit(50))); renderProjects(snap.docs.map(d => ({ id:d.id, ...d.data() })).sort((a,b) => tsMillis(b.createdAt) - tsMillis(a.createdAt))); }
-  catch (error) { console.error(error); $("#myProjects").innerHTML = '<div class="empty-note">Could not load projects. Check Firestore rules.</div>'; }
+  catch (error) { console.error(error); $("#myProjects").innerHTML = '<div class="empty-note">Could not load projects. Check Supabase database rules.</div>'; }
 }
 function renderProjects(projects) {
   const grid = $("#myProjects");
@@ -1931,7 +1896,7 @@ async function sendAiMessage(event) {
     console.error("Agent37 assistant request failed", error);
     const messageText = error?.message || "The AI service could not complete this request.";
     const help = messageText.includes("404") || messageText.toLowerCase().includes("not found")
-      ? `${messageText}\n\nThe /api/agent37/chat endpoint must be deployed on Vercel. A static Firebase Hosting deployment does not run this API route.`
+      ? `${messageText}\n\nThe /api/agent37/chat endpoint must be deployed on Vercel. A static Supabase Hosting deployment does not run this API route.`
       : messageText;
     await persistAiMessage("assistant", `I couldn't complete that request. ${help}`.slice(0, 12000)).catch(() => {});
   } finally {
@@ -1972,7 +1937,7 @@ async function applyAiActions() {
       } else if (action.type === "save_opportunity") {
         if (!savedIds.has(action.eventId)) {
           const saved = await saveEvent(action.eventId);
-          if (!saved) throw new Error("HackVerse could not save that opportunity. Check your connection and Firestore rules.");
+          if (!saved) throw new Error("HackVerse could not save that opportunity. Check your connection and Supabase database rules.");
           completed.push("Saved an opportunity to your shortlist");
         } else {
           completed.push("Opportunity was already in your shortlist");
@@ -2072,7 +2037,7 @@ const tourSteps=[
  {route:"aiwish",selector:"#aiWishPage",title:"AI Wish workspace",text:"Describe a website task in plain language. AI Wish prepares supported changes and waits for your approval before applying them."},
  {route:"profile",selector:"#myProfilePanel",title:"Your builder profile",text:"Your profile is your professional identity on HackVerse. Add skills, education, interests, links and availability, then showcase the projects you build. Your public visibility is controlled in Settings."},
  {route:"notifications",selector:"#activitySummary",title:"Notification centre",text:"Track unread chats and saved opportunity deadlines here. Desktop alerts work while HackVerse is open and your browser has granted notification permission."},
- {route:"settings",selector:".settings-grid",title:"Settings and personalisation",text:"Choose the theme, motion level, text size, notification preferences and profile visibility. Changes are stored in this browser, while your profile visibility is stored with your Firebase profile."},
+ {route:"settings",selector:".settings-grid",title:"Settings and personalisation",text:"Choose the theme, motion level, text size, notification preferences and profile visibility. Changes are stored in this browser, while your profile visibility is stored with your Supabase profile."},
  {route:"home",selector:"#aiLaunchBtn",title:"Meet HackVerse AI",text:"Open the floating Agent37 chatbot for website help. Use the dedicated AI Wish page to describe tasks and review supported website actions before applying them. AI access depends on the server credentials being configured."}
 ];
 let activeTourIndex=-1;
@@ -2213,4 +2178,4 @@ function bindUI() {
 function runHeroSearch() { if (!requireAccount()) return; $("#eventSearch").value = $("#heroSearch").value; renderEvents(); location.hash = "#opportunities"; }
 
 bindUI();
-initFirebase();
+initSupabase();
