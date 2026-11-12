@@ -37,6 +37,9 @@ const OPENHPI_COURSE_FEED = process.env.HACKVERSE_STANDALONE === "1"
 const BRABBLE_API_KEY = process.env.HACKVERSE_STANDALONE === "1"
   ? { value: () => process.env.HACKVERSE_BRABBLE_API_KEY || "" }
   : defineString("HACKVERSE_BRABBLE_API_KEY", { default: "" });
+const HACKVERSE_HTML_CATALOGS = process.env.HACKVERSE_STANDALONE === "1"
+  ? { value: () => process.env.HACKVERSE_HTML_CATALOGS || "" }
+  : defineString("HACKVERSE_HTML_CATALOGS", { default: "" });
 const SERVER_TIME = FieldValue.serverTimestamp;
 
 function sha(value) { return crypto.createHash("sha256").update(String(value)).digest("hex"); }
@@ -592,6 +595,179 @@ async function ingestBrabbleListings(summary) {
 
 // Official public Codeforces contest API. It is read anonymously and queried only once
 // per scheduled discovery run, respecting the provider's documented request rate.
+
+// Public HTML catalog connectors for providers that publish their catalogues openly
+// but do not expose a stable anonymous JSON API. These are intentionally isolated and
+// conservative: if the provider changes its HTML, the source records an error instead
+// of publishing guessed data.
+const DEFAULT_HTML_CATALOGS = [
+  { id: "nptel-course-catalog", name: "NPTEL Courses", platform: "NPTEL", category: "course", url: "https://nptel.ac.in/courses", allow: /nptel\.ac\.in|onlinecourses\.nptel\.ac\.in/i },
+  { id: "swayam-course-catalog", name: "SWAYAM Courses", platform: "SWAYAM", category: "course", url: "https://swayam.gov.in/search_courses", allow: /swayam\.gov\.in|onlinecourses\.nptel\.ac\.in/i },
+  { id: "ibm-skillsbuild-catalog", name: "IBM SkillsBuild", platform: "IBM SkillsBuild", category: "course", url: "https://skillsbuild.org/learning-catalog", allow: /skillsbuild\.org/i },
+  { id: "codechef-contests", name: "CodeChef Contests", platform: "CodeChef", category: "coding-event", url: "https://www.codechef.com/contests", allow: /codechef\.com/i },
+  { id: "codechef-roadmaps", name: "CodeChef Learning Roadmaps", platform: "CodeChef", category: "course", url: "https://www.codechef.com/roadmaps", allow: /codechef\.com/i },
+  { id: "microsoft-learn-paths", name: "Microsoft Learn Training", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/paths", allow: /learn\.microsoft\.com/i },
+  { id: "microsoft-learn-modules", name: "Microsoft Learn Modules", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/modules", allow: /learn\.microsoft\.com/i }
+];
+function configuredHtmlCatalogs() {
+  const raw = HACKVERSE_HTML_CATALOGS.value().trim();
+  if (!raw) return DEFAULT_HTML_CATALOGS;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_HTML_CATALOGS;
+    return parsed.filter(x => x && x.id && x.name && x.url && x.category);
+  } catch {
+    return DEFAULT_HTML_CATALOGS;
+  }
+}
+function decodeHtml(value) {
+  return String(value || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+    .replace(/&nbsp;/gi, " ").replace(/&#x27;/gi, "'")
+    .replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+function extractHtmlLinks(html, source) {
+  let searchableHtml = html;
+  if (source.id === "codechef-contests") {
+    const upcoming = html.search(/Upcoming Contests/i);
+    const past = html.search(/Past Contests/i);
+    if (upcoming >= 0) searchableHtml = html.slice(upcoming, past > upcoming ? past : html.length);
+  }
+  const rows = [];
+  const anchorRe = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+  while ((match = anchorRe.exec(searchableHtml)) && rows.length < 2500) {
+    let href = match[1].replace(/&amp;/gi, "&");
+    const title = cleanText(decodeHtml(match[2]), 180);
+    if (!href || !title || title.length < 6 || /^(home|login|sign in|sign up|menu|search|learn more|view all|read more|add|clear all|filter)$/i.test(title)) continue;
+    if (href.startsWith("/")) {
+      try { href = new URL(href, source.url).toString(); } catch { continue; }
+    } else if (!/^https?:\/\//i.test(href)) continue;
+    if (!source.allow.test(href)) continue;
+    const combined = `${title} ${href}`;
+    const looksRelevant = source.category === "coding-event"
+      ? /contest|challenge|coding|programming|code|competition|starters|dsamonday|devweekend/i.test(combined)
+      : /course|courses|learning|module|path|roadmap|program|certificate|certification|skill/i.test(combined);
+    if (!looksRelevant) continue;
+    if (/^(browse all training|training|courses|modules|learning paths|documentation|support|sign in|register)$/i.test(title)) continue;
+    rows.push({ title, url: href });
+  }
+  const seen = new Set();
+  return rows.filter(row => {
+    const key = canonicalUrl(row.url);
+    if (!key || seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
+function nextHtmlPage(html, source, currentUrl) {
+  const nextRe = /<a\b[^>]*(?:aria-label=["'][^"']*next[^"']*["']|rel=["']next["'])[^>]*href=["']([^"']+)["']/i;
+  const match = html.match(nextRe);
+  if (!match) return null;
+  try {
+    const url = new URL(match[1], currentUrl).toString();
+    return source.allow.test(url) ? url : null;
+  } catch { return null; }
+}
+
+async function ingestHtmlCatalogs(summary) {
+  const catalogs = configuredHtmlCatalogs();
+  for (const source of catalogs) {
+    summary.sourceCount += 1;
+    try {
+      let pageUrl = source.url;
+      const seenPages = new Set();
+      const allRows = [];
+      for (let page = 0; page < 20 && pageUrl && !seenPages.has(pageUrl); page++) {
+        seenPages.add(pageUrl);
+        const response = await fetch(pageUrl, {
+          headers: { Accept: "text/html,application/xhtml+xml", "User-Agent": "HackVerseDiscovery/3.0" },
+          signal: AbortSignal.timeout(25000)
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status} at ${pageUrl}`);
+        const html = await response.text();
+        allRows.push(...extractHtmlLinks(html, source));
+        const next = nextHtmlPage(html, source, pageUrl);
+        if (!next || seenPages.has(next)) break;
+        pageUrl = next;
+      }
+      const rowMap = new Map();
+      for (const row of allRows) { const key = canonicalUrl(row.url); if (key) rowMap.set(key, row); }
+      const rows = [...rowMap.values()].slice(0, 5000);
+      let published = 0;
+      for (const row of rows) {
+        const sourceUrl = canonicalUrl(row.url);
+        if (!sourceUrl) continue;
+        const text = `${row.title} ${source.name}`;
+        const category = source.category;
+        const titleKey = sha(`${category}:${row.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`).slice(0, 40);
+        const candidate = {
+          id: sha(sourceUrl).slice(0, 40), titleKey, title: row.title, category, opportunityType: category,
+          organizer: source.platform, summary: `${row.title} from the official ${source.platform} catalogue.`,
+          description: `Discovered from the official ${source.platform} public catalogue. Open the provider page for the current syllabus, dates, eligibility and registration details.`,
+          sourceUrl, officialEventUrl: sourceUrl, officialRegistrationUrl: sourceUrl,
+          registrationDeadline: null, startAt: null, endAt: null, timezone: null,
+          mode: category === "course" ? "Online" : "Online", location: "Online", city: "", region: "", country: source.platform === "NPTEL" || source.platform === "SWAYAM" ? "India" : "Global",
+          tracks: [], technologies: [], tags: [source.platform, category], skills: [], level: "Open to all",
+          teamSize: category === "coding-event" ? "Individual" : "", prize: "", prizePool: null, currency: null,
+          isFree: null, price: "Check provider", eligibility: "Check the provider's official page",
+          sourcePlatform: source.platform, sourceType: category, sourceName: source.name,
+          attributionText: `Imported from the official ${source.platform} public catalogue.`,
+          verificationStatus: "source-attributed", status: "upcoming", visibility: "public", autoPublished: true,
+          discoveryScore: category === "coding-event" ? 90 : 82,
+          sourcePublishedAt: null, ingestedAt: SERVER_TIME(), updatedAt: SERVER_TIME(), lastSeenAt: SERVER_TIME(), sourceIds: [source.id]
+        };
+        if (!isDuplicateCandidate(candidate)) continue;
+        const stored = await storeCandidate(candidate);
+        if (stored.duplicate) summary.duplicates++;
+        summary.relevant++; summary.published++; published++;
+      }
+      await db.collection("discoverySources").doc(source.id).set({
+        name: source.name, platform: source.platform, type: "html-catalog", category: source.category, enabled: true,
+        sourceUrl: source.url, lastRunAt: SERVER_TIME(), lastError: null, lastItemCount: rows.length,
+        lastPublishedCount: published, updatedAt: SERVER_TIME()
+      }, { merge: true });
+    } catch (error) {
+      const message = String(error.message || error).slice(0, 220);
+      summary.errors.push({ source: source.name, message });
+      await db.collection("discoverySources").doc(source.id).set({
+        name: source.name, platform: source.platform, type: "html-catalog", category: source.category, enabled: true,
+        sourceUrl: source.url, lastRunAt: SERVER_TIME(), lastError: message, updatedAt: SERVER_TIME()
+      }, { merge: true }).catch(() => {});
+      logger.warn(`${source.name} catalog ingestion failed`, { error: message });
+    }
+  }
+}
+
+async function ingestHackClubRss(summary) {
+  const source = { id: "hackclub-events-rss", name: "Hack Club Events", platform: "Hack Club", category: "coding-event", feedUrl: "https://hackclub.com/api/v1/events/rss", type: "rss", enabled: true, autoPublish: true };
+  summary.sourceCount += 1;
+  try {
+    const feed = await parser.parseURL(source.feedUrl);
+    const items = (feed.items || []).slice(0, 120);
+    summary.fetched += items.length;
+    let published = 0;
+    for (const item of items) {
+      const candidate = parseCandidate(item, source);
+      if (!candidate || !isDuplicateCandidate(candidate)) continue;
+      summary.relevant++;
+      const stored = await storeCandidate(candidate);
+      if (stored.duplicate) summary.duplicates++;
+      summary.published++; published++;
+    }
+    await db.collection("discoverySources").doc(source.id).set({
+      name: source.name, platform: source.platform, type: "rss", category: source.category, enabled: true,
+      feedUrl: source.feedUrl, lastRunAt: SERVER_TIME(), lastError: null, lastItemCount: items.length,
+      lastPublishedCount: published, updatedAt: SERVER_TIME()
+    }, { merge: true });
+  } catch (error) {
+    const message = String(error.message || error).slice(0, 220);
+    summary.errors.push({ source: source.name, message });
+    logger.warn("Hack Club RSS ingestion failed", { error: message });
+  }
+}
+
 async function ingestCodeforcesContests(summary) {
   summary.sourceCount += 1;
   const sourceId = "direct-codeforces-contests";
@@ -814,6 +990,8 @@ async function runDiscovery() {
     await ingestBrabbleListings(summary);
     await ingestCodeforcesContests(summary);
     await ingestOpenHpiCourses(summary);
+    await ingestHackClubRss(summary);
+    await ingestHtmlCatalogs(summary);
     await ingestYouTube(summary);
   } catch (error) {
     summary.errors.push({ source: "discovery", message: String(error.message || error).slice(0, 180) });

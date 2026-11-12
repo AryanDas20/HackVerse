@@ -14,6 +14,10 @@ HackStop's discovery runner now has independent direct connectors for these publ
 
 Direct platform connectors run independently. One provider failing does not prevent the other connectors from being attempted. Each run writes source health information to the `discoverySources` collection (`lastRunAt`, `lastError`, `lastItemCount`, and `lastPublishedCount`). Listings retain the source platform and original listing URL.
 
+### Public learning/event catalogues
+
+The discovery runner also checks public catalogues for NPTEL, SWAYAM, IBM SkillsBuild, Microsoft Learn, CodeChef, and Hack Club. These connectors are isolated from the direct hackathon connectors and fail independently. HTML catalogue pages are followed conservatively with a bounded page limit and duplicate-page protection.
+
 ## Important access and coverage notes
 
 - Public listing endpoints are not necessarily supported third-party APIs. They can change, impose rate limits, or disallow automated collection. Check each provider's current terms and robots policy before production use; do not bypass login, anti-bot, or access controls.

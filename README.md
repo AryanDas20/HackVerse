@@ -42,7 +42,7 @@ The current messaging implementation includes replies, reactions, edit/soft-dele
 
 ## Existing discovery automation retained
 
-The GitHub Actions workflow is retained in `.github/workflows/opportunity-discovery.yml`. It runs every six hours and can also be started manually from GitHub Actions. It authenticates to Google Cloud using the repository's existing Workload Identity Federation configuration; no service-account JSON key is stored in GitHub or this ZIP.
+The GitHub Actions workflow is retained in `.github/workflows/hackathon-discovery.yml`. It runs every six hours and can also be started manually from GitHub Actions. It authenticates to Google Cloud using the repository's existing Workload Identity Federation configuration; no service-account JSON key is stored in GitHub or this ZIP.
 
 The discovery engine includes independent direct public-listing connectors for Unstop, Devpost, Devfolio and HackerEarth; the Brabble hackathons hub API, which aggregates multiple upstream platforms; configured Hackalendar/Brabble RSS feeds; Codeforces public contests; and the openHPI dated course feed. The Brabble API is paginated in batches of 200, bounded to 1,000 rows per run, and retains source attribution and the original organiser URL. Unstop, Devpost and Devfolio attempt bounded pagination with repeat-page protection. The admin source panel reports last run, fetched/published counts and connector errors. See `docs/PLATFORM_CONNECTORS.md`, `docs/RELEASE_NOTES_v6.0.0.md` and `docs/RELEASE_NOTES_v6.1.0.md` for exact coverage, directory caching and limitations. Source-attributed listings are not independently fact-checked. Always confirm details at the linked organiser page. No service can guarantee every hackathon published anywhere online.
 
