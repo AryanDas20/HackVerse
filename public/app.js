@@ -369,7 +369,7 @@ async function runDiscoveryManually() {
     const result = await httpsCallable(functions, "runDiscoveryNow")({});
     const data = result.data || {};
     $("#discoveryStatus").textContent = `Checked ${data.sourceCount || 0} sources · fetched ${data.fetched || 0} items · published/updated ${data.published || 0} listings · ${data.errors?.length || 0} source errors.`;
-    await loadEvents(true); await loadDiscoverySources();
+    await loadEvents({ forceRefresh: true }); await loadDiscoverySources();
   } catch (error) { $("#discoveryStatus").textContent = friendlyError(error); }
   finally { button.disabled = false; button.textContent = "Run discovery now ↻"; }
 }
@@ -437,44 +437,35 @@ function deduplicateVisibleOpportunities(records) {
   return unique;
 }
 
-// Public opportunity data changes on the six-hour discovery schedule, not every few minutes.
-// A short local cache prevents repeat full-directory reads on reloads and tab switches.
-const OPPORTUNITY_CACHE_KEY = `hackverse:opportunities:${firebaseConfig.projectId || "default"}:v1`;
-const OPPORTUNITY_CACHE_TTL_MS = 30 * 60 * 1000;
+const OPPORTUNITY_CACHE_KEY = "hackverse-opportunities-cache-v1";
+const OPPORTUNITY_CACHE_TTL = 30 * 60 * 1000;
 function readOpportunityCache() {
   try {
     const cached = JSON.parse(localStorage.getItem(OPPORTUNITY_CACHE_KEY) || "null");
     if (!cached || !Array.isArray(cached.records) || !Number.isFinite(cached.savedAt)) return null;
-    if (Date.now() - cached.savedAt > OPPORTUNITY_CACHE_TTL_MS) return null;
+    if (Date.now() - cached.savedAt >= OPPORTUNITY_CACHE_TTL) return null;
     return cached.records;
   } catch { return null; }
 }
 function writeOpportunityCache(records) {
-  try {
-    localStorage.setItem(OPPORTUNITY_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), records }));
-  } catch (error) {
-    // Storage can be disabled or full; the live Firestore feed remains fully functional.
-    console.warn("Could not cache the public opportunity directory", error);
-  }
+  try { localStorage.setItem(OPPORTUNITY_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), records })); }
+  catch (error) { console.warn("Opportunity cache could not be saved; live directory remains available.", error); }
 }
-function activeOpportunityRecords(records) {
+function displayOpportunityRecords(records) {
   const now = Date.now();
-  return records.filter(event => {
-    if (event.status === "expired") return false;
-    const deadline = tsMillis(event.registrationDeadline);
-    const courseEnd = tsMillis(event.endAt);
+  const loaded = records.filter(e => {
+    if (e.status === "expired") return false;
+    const deadline = tsMillis(e.registrationDeadline);
+    const courseEnd = tsMillis(e.endAt);
     if (deadline && deadline < now) return false;
-    if (["course", "bootcamp", "certification"].includes(eventCategoryValue(event)) && courseEnd && courseEnd < now) return false;
+    if (["course", "bootcamp", "certification"].includes(eventCategoryValue(e)) && courseEnd && courseEnd < now) return false;
     return true;
   });
-}
-function renderLoadedOpportunities(records) {
-  events = deduplicateVisibleOpportunities(activeOpportunityRecords(records));
+  events = deduplicateVisibleOpportunities(loaded);
   events.sort((a,b) => tsMillis(b.updatedAt || b.ingestedAt || b.createdAt) - tsMillis(a.updatedAt || a.ingestedAt || a.createdAt));
   allEventsVisible = 24; populateEventFilterOptions(); renderEvents(); renderSaved();
 }
-
-async function loadEvents(forceRefresh = false) {
+async function loadEvents({ forceRefresh = false } = {}) {
   const grid = $("#eventGrid");
   if (!currentUser) { events = []; updateEventAccessUI(); renderEvents(); renderSaved(); return; }
   if (!db) {
@@ -484,11 +475,8 @@ async function loadEvents(forceRefresh = false) {
   }
   updateEventAccessUI();
   if (!forceRefresh) {
-    const cachedRecords = readOpportunityCache();
-    if (cachedRecords) {
-      renderLoadedOpportunities(cachedRecords);
-      return;
-    }
+    const cached = readOpportunityCache();
+    if (cached) { displayOpportunityRecords(cached); return; }
   }
   grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
@@ -503,15 +491,17 @@ async function loadEvents(forceRefresh = false) {
       if (snapshot.docs.length < 500) break;
       cursor = snapshot.docs[snapshot.docs.length - 1];
     }
-    const loaded = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
-    const active = activeOpportunityRecords(loaded);
-    const unique = deduplicateVisibleOpportunities(active);
-    writeOpportunityCache(unique);
-    renderLoadedOpportunities(unique);
+    const records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
+    writeOpportunityCache(records);
+    displayOpportunityRecords(records);
   } catch (error) {
     console.error("Opportunity feed read failed", error);
-    grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Firestore rules and connection.</div>';
-    $("#eventGridAll").innerHTML = '<div class="loading-card">The opportunity directory could not be loaded.</div>';
+    const stale = (() => { try { const cached = JSON.parse(localStorage.getItem(OPPORTUNITY_CACHE_KEY) || "null"); return Array.isArray(cached?.records) ? cached.records : null; } catch { return null; } })();
+    if (stale?.length) { displayOpportunityRecords(stale); toast("Showing your last loaded opportunities because the live refresh failed."); }
+    else {
+      grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Firestore rules and connection.</div>';
+      $("#eventGridAll").innerHTML = '<div class="loading-card">The opportunity directory could not be loaded.</div>';
+    }
   }
 }
 
@@ -2181,8 +2171,9 @@ function bindUI() {
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
-  $("#refreshEventsBtn").onclick = () => requireAccount() && loadEvents(true);
-  // The public feed is cached for 30 minutes; manual refresh always bypasses the cache.
+  $("#refreshEventsBtn").onclick = () => requireAccount() && loadEvents({ forceRefresh: true });
+  // Refresh at the same 30-minute cadence as the local cache. Manual refresh always bypasses it.
+  // Discovery runs every six hours, so frequent full-directory reads are unnecessary.
   let eventRefreshInProgress = false;
   const refreshOpportunityFeed = async () => {
     if (!currentUser || !db || document.hidden || eventRefreshInProgress) return;

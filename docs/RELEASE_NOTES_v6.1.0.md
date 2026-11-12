@@ -1,22 +1,24 @@
-# HackVerse v6.1.0 — Directory Efficiency & Data Quality
+# HackVerse v6.1.0 — Directory Read Efficiency
 
-## Firestore read reduction
-- Public opportunity records are cached in the visitor's browser for 30 minutes, keyed by Firebase project.
-- Cached records are re-filtered against current deadlines before display, so a deadline passing during the cache window does not keep an opportunity visible.
-- The normal background refresh runs every 30 minutes and reuses a fresh cache. Returning to a tab also respects the cache lifetime.
-- The manual Refresh control and the post-manual-discovery refresh bypass the cache and fetch current Firestore data.
-- Cache storage is best-effort. If browser storage is disabled or full, the live Firestore directory continues to work normally.
+## What changed
+- Added a 30-minute browser-side cache for the public opportunity directory. A valid cache is reused when a signed-in member returns to the directory, navigates back to it, or the tab becomes active, avoiding repeated full Firestore reads during that window.
+- Automatic background refresh now runs every 30 minutes instead of every 15 minutes, aligned with the cache lifetime.
+- The directory's **Refresh** button bypasses the cache and fetches the latest Firestore records immediately.
+- Admin-triggered discovery now forces a fresh directory read after the discovery function completes, so newly published listings are reflected immediately.
+- If a live refresh fails but a previous cache exists, the directory displays the last loaded records and informs the user rather than showing an empty error state.
+- Existing pagination (up to 5,000 public records), expiry filtering, duplicate consolidation, and the six-hour GitHub Actions discovery schedule are retained.
 
-## Discovery and data integrity
-- Preserves v6.0.0's bounded global source pagination, source attribution, canonical URL handling, conservative duplicate matching, and six-hour GitHub Actions schedule.
-- No new provider scraping or private/login-only sources were added. Add future providers only through documented public APIs or permitted RSS/Atom feeds.
-- Existing Firestore records, authentication, rules, indexes, and GitHub secrets are not migrated or rewritten by this release.
+## Compatibility and data handling
+- No Firestore schema, security rules, indexes, GitHub Actions secrets, Workload Identity Federation settings, or Vercel environment variables are changed.
+- Cache data is stored in the browser's local storage and is public opportunity data only; it does not contain user profiles, saved IDs, chat messages, or credentials.
+- Cached records are re-filtered for expired deadlines whenever displayed. The cache is local to each browser and expires after 30 minutes.
+- Manual refresh and post-discovery refresh always bypass the cache.
 
 ## Validation
-- `node --check public/app.js`
-- `npm test --prefix functions` — all 32 tests pass.
+- `node --check public/app.js` passed.
+- `npm test` in `functions/` passed: 32 tests, 0 failures.
+- ZIP integrity and required release files should be verified after packaging.
 
 ## Deployment
-- Replace the repository source with this release while preserving existing Firebase configuration and GitHub repository secrets.
-- No Firestore rules, indexes, IAM, service-account, or Vercel environment-variable changes are required for the browser cache improvement.
-- The six-hour GitHub Actions discovery schedule remains unchanged.
+- Replace the repository contents with this release, preserving the existing repository and GitHub configuration, then commit to `main`.
+- Vercel should deploy the new commit automatically. No Firebase Functions deployment is required for this browser-only change.

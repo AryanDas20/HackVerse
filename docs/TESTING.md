@@ -49,19 +49,10 @@
 - Confirm provider links open in a new tab and event details preserve the original course URL.
 
 
-## v6.1 directory cache checks
-- Sign in and open the opportunity directory; confirm the directory loads and the unique active count is correct.
-- Reload within 30 minutes; confirm cached opportunities render without a new full-directory fetch.
-- Use the manual Refresh control; confirm it bypasses the browser cache and reloads Firestore data.
-- Wait beyond the cache lifetime or clear the site cache; confirm a fresh Firestore load occurs.
-- Test a cached event whose registration deadline has passed; it must be filtered from the active directory even before the cache expires.
-- Disable browser storage or simulate a storage quota error; confirm the live directory still loads.
-
-
-## v6.1 directory cache checks
-- Sign in and open the opportunity directory; confirm the directory loads and the unique active count is correct.
-- Reload within 30 minutes; confirm cached opportunities render without a new full-directory fetch.
-- Use the manual Refresh control; confirm it bypasses the browser cache and reloads Firestore data.
-- Wait beyond the cache lifetime or clear the site cache; confirm a fresh Firestore load occurs.
-- Test a cached event whose registration deadline has passed; it must be filtered from the active directory even before the cache expires.
-- Disable browser storage or simulate a storage quota error; confirm the live directory still loads.
+## v6.1.0 opportunity directory efficiency checks
+- Sign in and open the opportunity directory; confirm the live directory loads and the count is populated.
+- Navigate away and return within 30 minutes; confirm the directory is displayed from the browser cache without a new full-directory read.
+- Select **Refresh**; confirm a fresh Firestore read occurs even when the cache is still valid.
+- Run discovery as an administrator; confirm the directory refreshes from Firestore after the run completes.
+- With a previously loaded cache, simulate a temporary Firestore read failure; confirm the last loaded directory remains visible with a stale-data notice.
+- Wait beyond 30 minutes or clear the browser cache; confirm the next directory load fetches fresh records.
