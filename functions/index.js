@@ -1133,7 +1133,7 @@ async function runDiscovery() {
 }
 if (require.main === module || process.env.HACKVERSE_STANDALONE === "1") {
   runDiscovery()
-    .then(result => { console.log("HackVerse discovery result:"); console.log(JSON.stringify(result, null, 2)); if (result.errors?.length) process.exitCode = 1; })
+    .then(result => { console.log("HackVerse discovery result:"); console.log(JSON.stringify(result, null, 2)); if (result.errors?.some(error => ["discovery", "expiry"].includes(error.source))) process.exitCode = 1; })
     .catch(error => { console.error("HackVerse discovery failed:", error); process.exitCode = 1; });
 }
 module.exports = { runDiscovery, parseCandidate, storeCandidate, readEnabledSources, DEFAULT_RSS_SOURCES, DIRECT_PLATFORM_SOURCES, configuredHtmlCatalogs };
