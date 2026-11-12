@@ -707,6 +707,16 @@ const DEFAULT_HTML_CATALOGS = [
   { id: "profellow-fellowships", name: "ProFellow Fellowships", platform: "ProFellow", category: "fellowship", url: "https://www.profellow.com/fellowships/", allow: /profellow\.com/i, pathAllow: /fellowship/i, maxPages: 4, maxRows: 500, sitemap: true },
   { id: "classcentral-courses", name: "Class Central Courses", platform: "Class Central", category: "course", url: "https://www.classcentral.com/subjects", allow: /classcentral\.com/i, pathAllow: /\/(course|courses|subject|subjects)\//i, maxPages: 4, maxRows: 700, sitemap: true },
 
+  // High-volume scholarship and competition catalogues with public listing pages.
+  { id: "indiascholarships-catalog", name: "IndiaScholarships", platform: "IndiaScholarships", category: "scholarship", url: "https://www.indiascholarships.in/scholarships", allow: /indiascholarships\.in/i, pathAllow: /scholarships|scholarship/i, maxPages: 6, maxRows: 800, sitemap: true },
+  { id: "wemakescholars-scholarships", name: "WeMakeScholars Scholarships", platform: "WeMakeScholars", category: "scholarship", url: "https://www.wemakescholars.com/scholarship", allow: /wemakescholars\.com/i, pathAllow: /scholarship/i, maxPages: 6, maxRows: 1000, sitemap: true },
+  { id: "buddy4study-scholarships", name: "Buddy4Study Scholarships", platform: "Buddy4Study", category: "scholarship", url: "https://www.buddy4study.com/scholarships", allow: /buddy4study\.com/i, pathAllow: /scholarship|article/i, maxPages: 6, maxRows: 1000, sitemap: true },
+  { id: "toph-contest-calendar", name: "Toph Contest Calendar", platform: "Toph", category: "coding-event", url: "https://toph.co/contests/calendar", allow: /toph\.co/i, pathAllow: /contests\//i, maxPages: 6, maxRows: 700, sitemap: true },
+  { id: "code360-contests", name: "Naukri Code360 Contests", platform: "Naukri Code360", category: "coding-event", url: "https://www.naukri.com/code360/contests", allow: /naukri\.com/i, pathAllow: /code360\/contests/i, maxPages: 6, maxRows: 500, sitemap: true },
+  { id: "geeksforgeeks-contests", name: "GeeksforGeeks Contests", platform: "GeeksforGeeks", category: "coding-event", url: "https://www.geeksforgeeks.org/contests/", allow: /geeksforgeeks\.org/i, pathAllow: /contest|challenge/i, maxPages: 6, maxRows: 500, sitemap: true },
+  { id: "kattis-contests", name: "Kattis Contests", platform: "Kattis", category: "coding-event", url: "https://open.kattis.com/contests", allow: /kattis\.com/i, pathAllow: /contest/i, maxPages: 5, maxRows: 500, sitemap: true },
+  { id: "spoj-contests", name: "SPOJ Contests", platform: "SPOJ", category: "coding-event", url: "https://www.spoj.com/contests", allow: /spoj\.com/i, pathAllow: /contest/i, maxPages: 5, maxRows: 500, sitemap: true },
+
   // Additional global opportunity sources. These are public catalogue pages; the
   // generic connector only publishes links that match the source domain/path rules.
   { id: "mlh-hackathons", name: "Major League Hacking", platform: "MLH", category: "hackathon", url: "https://mlh.io/seasons/2026/events", allow: /mlh\.io/i, pathAllow: /events|hackathon|season/i, maxPages: 5, maxRows: 500, sitemap: true },
