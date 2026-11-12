@@ -601,25 +601,55 @@ async function ingestBrabbleListings(summary) {
 // conservative: if the provider changes its HTML, the source records an error instead
 // of publishing guessed data.
 const DEFAULT_HTML_CATALOGS = [
-  { id: "nptel-course-catalog", name: "NPTEL Courses", platform: "NPTEL", category: "course", url: "https://nptel.ac.in/courses", allow: /nptel\.ac\.in|onlinecourses\.nptel\.ac\.in/i, pathAllow: /\/courses\//i, maxPages: 1, maxRows: 80 },
-  { id: "swayam-course-catalog", name: "SWAYAM Courses", platform: "SWAYAM", category: "course", url: "https://swayam.gov.in/search_courses", allow: /swayam\.gov\.in|onlinecourses\.nptel\.ac\.in/i, pathAllow: /search_courses|course/i, maxPages: 1, maxRows: 80 },
-  { id: "ibm-skillsbuild-catalog", name: "IBM SkillsBuild", platform: "IBM SkillsBuild", category: "course", url: "https://skillsbuild.org/learning-catalog", allow: /skillsbuild\.org/i, pathAllow: /learning|course|program/i, maxPages: 1, maxRows: 80 },
-  { id: "codechef-contests", name: "CodeChef Contests", platform: "CodeChef", category: "coding-event", url: "https://www.codechef.com/contests", allow: /codechef\.com/i, pathAllow: /\/contests\//i, maxPages: 1, maxRows: 80 },
-  { id: "codechef-roadmaps", name: "CodeChef Learning Roadmaps", platform: "CodeChef", category: "course", url: "https://www.codechef.com/roadmaps", allow: /codechef\.com/i, pathAllow: /\/roadmaps/i, maxPages: 1, maxRows: 80 },
-  { id: "microsoft-learn-paths", name: "Microsoft Learn Training", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/paths", allow: /learn\.microsoft\.com/i, pathAllow: /\/training\/paths\//i, maxPages: 1, maxRows: 80 },
-  { id: "microsoft-learn-modules", name: "Microsoft Learn Modules", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/modules", allow: /learn\.microsoft\.com/i, pathAllow: /\/training\/modules\//i, maxPages: 1, maxRows: 80 },
+  // Indian/global learning catalogues
+  { id: "nptel-course-catalog", name: "NPTEL Courses", platform: "NPTEL", category: "course", url: "https://nptel.ac.in/courses", allow: /nptel\.ac\.in|onlinecourses\.nptel\.ac\.in/i, pathAllow: /\/courses\//i, maxPages: 3, maxRows: 250 },
+  { id: "swayam-course-catalog", name: "SWAYAM Courses", platform: "SWAYAM", category: "course", url: "https://swayam.gov.in/search_courses", allow: /swayam\.gov\.in|onlinecourses\.nptel\.ac\.in/i, pathAllow: /search_courses|course/i, maxPages: 3, maxRows: 250 },
+  { id: "swayam-plus", name: "SWAYAM Plus", platform: "SWAYAM Plus", category: "course", url: "https://swayamplus.education.gov.in/", allow: /swayamplus\.education\.gov\.in/i, pathAllow: /course|internship|program|learn/i, maxPages: 2, maxRows: 250 },
+  { id: "ibm-skillsbuild-catalog", name: "IBM SkillsBuild", platform: "IBM SkillsBuild", category: "course", url: "https://skillsbuild.org/learning-catalog", allow: /skillsbuild\.org/i, pathAllow: /learning|course|program/i, maxPages: 2, maxRows: 250 },
+  { id: "codechef-roadmaps", name: "CodeChef Learning Roadmaps", platform: "CodeChef", category: "course", url: "https://www.codechef.com/roadmaps", allow: /codechef\.com/i, pathAllow: /\/roadmaps/i, maxPages: 2, maxRows: 250 },
+  { id: "microsoft-learn-paths", name: "Microsoft Learn Training", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/paths", allow: /learn\.microsoft\.com/i, pathAllow: /\/training\/paths\//i, maxPages: 3, maxRows: 250 },
+  { id: "microsoft-learn-modules", name: "Microsoft Learn Modules", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/modules", allow: /learn\.microsoft\.com/i, pathAllow: /\/training\/modules\//i, maxPages: 3, maxRows: 250 },
+  { id: "mit-ocw-courses", name: "MIT OpenCourseWare", platform: "MIT OpenCourseWare", category: "course", url: "https://ocw.mit.edu/courses/", allow: /ocw\.mit\.edu/i, pathAllow: /\/courses\//i, maxPages: 3, maxRows: 250 },
+  { id: "freecodecamp-learning", name: "freeCodeCamp", platform: "freeCodeCamp", category: "certification", url: "https://www.freecodecamp.org/learn/", allow: /freecodecamp\.org/i, pathAllow: /\/learn\//i, maxPages: 2, maxRows: 250 },
+  { id: "cisco-netacad-courses", name: "Cisco Networking Academy", platform: "Cisco Networking Academy", category: "course", url: "https://www.netacad.com/courses", allow: /netacad\.com/i, pathAllow: /\/courses\//i, maxPages: 2, maxRows: 250 },
 
-  // Additional official public catalogues. These are bounded to one page so a
-  // slow/changed provider cannot block the complete six-hour discovery run.
-  { id: "kaggle-competitions", name: "Kaggle Competitions", platform: "Kaggle", category: "competition", url: "https://www.kaggle.com/competitions?listOption=active", allow: /kaggle\.com/i, pathAllow: /\/competitions\//i, maxPages: 1, maxRows: 80 },
-  { id: "atcoder-contests", name: "AtCoder Contests", platform: "AtCoder", category: "coding-event", url: "https://atcoder.jp/contests/", allow: /atcoder\.jp/i, pathAllow: /\/contests\//i, maxPages: 1, maxRows: 80 },
-  { id: "hackerrank-contests", name: "HackerRank Contests", platform: "HackerRank", category: "coding-event", url: "https://www.hackerrank.com/contests", allow: /hackerrank\.com/i, pathAllow: /\/contests\//i, maxPages: 1, maxRows: 80 },
-  { id: "codingame-contests", name: "CodinGame Contests", platform: "CodinGame", category: "coding-event", url: "https://www.codingame.com/contests", allow: /codingame\.com/i, pathAllow: /\/contests\//i, maxPages: 1, maxRows: 80 },
-  { id: "topcoder-challenges", name: "Topcoder Challenges", platform: "Topcoder", category: "competition", url: "https://www.topcoder.com/challenges", allow: /topcoder\.com/i, pathAllow: /\/challenges\//i, maxPages: 1, maxRows: 80 },
-  { id: "imagine-cup-events", name: "Microsoft Imagine Cup", platform: "Microsoft", category: "competition", url: "https://imaginecup.microsoft.com/en-us/Events", allow: /imaginecup\.microsoft\.com/i, pathAllow: /events|competition|challenge/i, maxPages: 1, maxRows: 80 },
-  { id: "mit-ocw-courses", name: "MIT OpenCourseWare", platform: "MIT OpenCourseWare", category: "course", url: "https://ocw.mit.edu/courses/", allow: /ocw\.mit\.edu/i, pathAllow: /\/courses\//i, maxPages: 1, maxRows: 80 },
-  { id: "freecodecamp-learning", name: "freeCodeCamp", platform: "freeCodeCamp", category: "certification", url: "https://www.freecodecamp.org/learn/", allow: /freecodecamp\.org/i, pathAllow: /\/learn\//i, maxPages: 1, maxRows: 80 },
-  { id: "cisco-netacad-courses", name: "Cisco Networking Academy", platform: "Cisco Networking Academy", category: "course", url: "https://www.netacad.com/courses", allow: /netacad\.com/i, pathAllow: /\/courses\//i, maxPages: 1, maxRows: 80 }
+  // Coding contests / hackathons / innovation challenges
+  { id: "codechef-contests", name: "CodeChef Contests", platform: "CodeChef", category: "coding-event", url: "https://www.codechef.com/contests", allow: /codechef\.com/i, pathAllow: /\/contests\//i, maxPages: 2, maxRows: 250 },
+  { id: "kaggle-competitions", name: "Kaggle Competitions", platform: "Kaggle", category: "competition", url: "https://www.kaggle.com/competitions?listOption=active", allow: /kaggle\.com/i, pathAllow: /\/competitions\//i, maxPages: 2, maxRows: 250 },
+  { id: "atcoder-contests", name: "AtCoder Contests", platform: "AtCoder", category: "coding-event", url: "https://atcoder.jp/contests/", allow: /atcoder\.jp/i, pathAllow: /\/contests\//i, maxPages: 2, maxRows: 250 },
+  { id: "hackerrank-contests", name: "HackerRank Contests", platform: "HackerRank", category: "coding-event", url: "https://www.hackerrank.com/contests", allow: /hackerrank\.com/i, pathAllow: /\/contests\//i, maxPages: 2, maxRows: 250 },
+  { id: "codingame-contests", name: "CodinGame Contests", platform: "CodinGame", category: "coding-event", url: "https://www.codingame.com/contests", allow: /codingame\.com/i, pathAllow: /\/contests\//i, maxPages: 2, maxRows: 250 },
+  { id: "topcoder-challenges", name: "Topcoder Challenges", platform: "Topcoder", category: "competition", url: "https://www.topcoder.com/challenges", allow: /topcoder\.com/i, pathAllow: /\/challenges\//i, maxPages: 2, maxRows: 250 },
+  { id: "imagine-cup-events", name: "Microsoft Imagine Cup", platform: "Microsoft", category: "competition", url: "https://imaginecup.microsoft.com/en-us/Events", allow: /imaginecup\.microsoft\.com/i, pathAllow: /events|competition|challenge/i, maxPages: 2, maxRows: 250 },
+
+  // Broad opportunity catalogues. They aggregate multiple official providers and are
+  // useful for categories that do not have one universal public API.
+  { id: "openopportunities-scholarships", name: "Open Opportunities Scholarships", platform: "Open Opportunities", category: "scholarship", url: "https://openopportunities.org/opportunity-type/scholarships/", allow: /openopportunities\.org/i, pathAllow: /opportunity-type\/scholarships/i, maxPages: 3, maxRows: 250 },
+  { id: "openopportunities-internships", name: "Open Opportunities Internships", platform: "Open Opportunities", category: "internship", url: "https://openopportunities.org/opportunity-type/internships/", allow: /openopportunities\.org/i, pathAllow: /opportunity-type\/internships/i, maxPages: 3, maxRows: 250 },
+  { id: "openopportunities-fellowships", name: "Open Opportunities Fellowships", platform: "Open Opportunities", category: "fellowship", url: "https://openopportunities.org/opportunity-type/fellowships/", allow: /openopportunities\.org/i, pathAllow: /opportunity-type\/fellowships/i, maxPages: 3, maxRows: 250 },
+  { id: "openopportunities-grants", name: "Open Opportunities Grants", platform: "Open Opportunities", category: "grant", url: "https://openopportunities.org/opportunity-type/grants/", allow: /openopportunities\.org/i, pathAllow: /opportunity-type\/grants/i, maxPages: 3, maxRows: 250 },
+  { id: "openopportunities-research", name: "Open Opportunities Research", platform: "Open Opportunities", category: "research", url: "https://openopportunities.org/opportunity-type/research/", allow: /openopportunities\.org/i, pathAllow: /opportunity-type\/research/i, maxPages: 3, maxRows: 250 },
+  { id: "openopportunities-competitions", name: "Open Opportunities Competitions", platform: "Open Opportunities", category: "competition", url: "https://openopportunities.org/opportunity-type/competitions/", allow: /openopportunities\.org/i, pathAllow: /opportunity-type\/competitions/i, maxPages: 3, maxRows: 250 },
+  { id: "openopportunities-courses", name: "Open Opportunities Courses", platform: "Open Opportunities", category: "course", url: "https://openopportunities.org/opportunity-type/courses/", allow: /openopportunities\.org/i, pathAllow: /opportunity-type\/courses/i, maxPages: 3, maxRows: 250 },
+  { id: "worldchances-scholarships", name: "World Chances Scholarships", platform: "World Chances", category: "scholarship", url: "https://worldchances.org/en", allow: /worldchances\.org/i, pathAllow: /en/i, maxPages: 3, maxRows: 250 },
+  { id: "worldchances-internships", name: "World Chances Internships", platform: "World Chances", category: "internship", url: "https://worldchances.org/en", allow: /worldchances\.org/i, pathAllow: /en/i, maxPages: 3, maxRows: 250 },
+  { id: "worldchances-fellowships", name: "World Chances Fellowships", platform: "World Chances", category: "fellowship", url: "https://worldchances.org/en", allow: /worldchances\.org/i, pathAllow: /en/i, maxPages: 3, maxRows: 250 },
+  { id: "worldchances-training", name: "World Chances Training", platform: "World Chances", category: "course", url: "https://worldchances.org/en", allow: /worldchances\.org/i, pathAllow: /en/i, maxPages: 3, maxRows: 250 },
+  { id: "takadam-scholarships", name: "Takadam Scholarships", platform: "Takadam", category: "scholarship", url: "https://www.takadam.com/", allow: /takadam\.com/i, pathAllow: /./i, maxPages: 3, maxRows: 250 },
+  { id: "takadam-internships", name: "Takadam Internships", platform: "Takadam", category: "internship", url: "https://www.takadam.com/", allow: /takadam\.com/i, pathAllow: /./i, maxPages: 3, maxRows: 250 },
+  { id: "takadam-fellowships", name: "Takadam Fellowships", platform: "Takadam", category: "fellowship", url: "https://www.takadam.com/", allow: /takadam\.com/i, pathAllow: /./i, maxPages: 3, maxRows: 250 },
+  { id: "takadam-courses", name: "Takadam Online Courses", platform: "Takadam", category: "course", url: "https://www.takadam.com/", allow: /takadam\.com/i, pathAllow: /./i, maxPages: 3, maxRows: 250 },
+  { id: "circlebreaker-scholarships", name: "Circlebreaker Scholarships", platform: "Circlebreaker", category: "scholarship", url: "https://circlebreaker.com/", allow: /circlebreaker\.com/i, pathAllow: /./i, maxPages: 3, maxRows: 250 },
+  { id: "circlebreaker-fellowships", name: "Circlebreaker Fellowships", platform: "Circlebreaker", category: "fellowship", url: "https://circlebreaker.com/", allow: /circlebreaker\.com/i, pathAllow: /./i, maxPages: 3, maxRows: 250 },
+  { id: "circlebreaker-research", name: "Circlebreaker Research Programs", platform: "Circlebreaker", category: "research", url: "https://circlebreaker.com/", allow: /circlebreaker\.com/i, pathAllow: /./i, maxPages: 3, maxRows: 250 },
+  { id: "blueprint-internships", name: "Blueprint Project Internships", platform: "Blueprint Project", category: "internship", url: "https://blueprintproject.app/opportunities", allow: /blueprintproject\.app/i, pathAllow: /opportunities/i, maxPages: 3, maxRows: 250 },
+  { id: "blueprint-scholarships", name: "Blueprint Project Scholarships", platform: "Blueprint Project", category: "scholarship", url: "https://blueprintproject.app/opportunities", allow: /blueprintproject\.app/i, pathAllow: /opportunities/i, maxPages: 3, maxRows: 250 },
+  { id: "blueprint-research", name: "Blueprint Project Research", platform: "Blueprint Project", category: "research", url: "https://blueprintproject.app/opportunities", allow: /blueprintproject\.app/i, pathAllow: /opportunities/i, maxPages: 3, maxRows: 250 },
+  { id: "empower-internships", name: "Empower Student Internships", platform: "Empower", category: "internship", url: "https://economicmobilityproject.org/students/opportunities", allow: /economicmobilityproject\.org/i, pathAllow: /students\/opportunities/i, maxPages: 3, maxRows: 250 },
+  { id: "empower-fellowships", name: "Empower Student Fellowships", platform: "Empower", category: "fellowship", url: "https://economicmobilityproject.org/students/opportunities", allow: /economicmobilityproject\.org/i, pathAllow: /students\/opportunities/i, maxPages: 3, maxRows: 250 },
+  { id: "empower-research", name: "Empower Student Research", platform: "Empower", category: "research", url: "https://economicmobilityproject.org/students/opportunities", allow: /economicmobilityproject\.org/i, pathAllow: /students\/opportunities/i, maxPages: 3, maxRows: 250 },
+  { id: "resquare-opportunities", name: "Resquare Tech Opportunities", platform: "Resquare", category: "competition", url: "https://www.resquare.in/opportunities", allow: /resquare\.in/i, pathAllow: /opportunities/i, maxPages: 3, maxRows: 250 },
+  { id: "accountra-opportunity-board", name: "Accountra Opportunity Board", platform: "Accountra", category: "competition", url: "https://www.accountra.eu/extracurricular", allow: /accountra\.eu/i, pathAllow: /extracurricular/i, maxPages: 2, maxRows: 200 }
 ];
 function configuredHtmlCatalogs() {
   const raw = HACKVERSE_HTML_CATALOGS.value().trim();
@@ -660,9 +690,22 @@ function extractHtmlLinks(html, source) {
     if (!source.allow.test(href)) continue;
     if (source.pathAllow && !source.pathAllow.test(href)) continue;
     const combined = `${title} ${href}`;
-    const looksRelevant = ["coding-event", "competition", "case-competition"].includes(source.category)
-      ? /contest|challenge|coding|programming|code|competition|hackathon|event|starters|dsamonday|devweekend/i.test(combined)
-      : /course|courses|learning|module|path|roadmap|program|certificate|certification|skill/i.test(combined);
+    const looksRelevantByCategory = {
+      "hackathon": /hackathon|buildathon|hack|innovation|challenge|event|competition/i,
+      "coding-event": /contest|challenge|coding|programming|code|competition|event|starters|dsamonday|devweekend/i,
+      "case-competition": /case|challenge|competition|business/i,
+      "competition": /contest|challenge|competition|award|prize|hackathon|innovation/i,
+      "course": /course|courses|learning|module|path|roadmap|program|training|class|lesson/i,
+      "certification": /certificate|certification|credential|exam|learn|course|program/i,
+      "internship": /internship|intern|placement|summer|fellowship|research program/i,
+      "scholarship": /scholarship|funding|financial aid|grant|award/i,
+      "fellowship": /fellowship|fellows|leadership|research program/i,
+      "grant": /grant|funding|award|prize|fellowship/i,
+      "research": /research|phd|doctoral|postdoc|summer research|lab/i,
+      "volunteering": /volunteer|volunteering|service|community/i,
+      "bootcamp": /bootcamp|cohort|intensive|training|academy/i
+    };
+    const looksRelevant = (looksRelevantByCategory[source.category] || /opportunity|program|application|apply|challenge|course|event/i).test(combined);
     if (!looksRelevant) continue;
     if (/^(browse all training|training|courses|modules|learning paths|documentation|support|sign in|register)$/i.test(title)) continue;
     rows.push({ title, url: href });
@@ -690,11 +733,11 @@ async function ingestHtmlCatalogs(summary) {
     summary.sourceCount += 1;
     try {
       const sourceStartedAt = Date.now();
-      const sourceBudgetMs = 40000;
+      const sourceBudgetMs = 60000;
       let pageUrl = source.url;
       const seenPages = new Set();
       const allRows = [];
-      for (let page = 0; page < Math.max(1, Math.min(Number(source.maxPages) || 2, 3)) && pageUrl && !seenPages.has(pageUrl); page++) {
+      for (let page = 0; page < Math.max(1, Math.min(Number(source.maxPages) || 2, 5)) && pageUrl && !seenPages.has(pageUrl); page++) {
         seenPages.add(pageUrl);
         const response = await fetch(pageUrl, {
           headers: { Accept: "text/html,application/xhtml+xml", "User-Agent": "HackVerseDiscovery/3.0" },
@@ -709,7 +752,7 @@ async function ingestHtmlCatalogs(summary) {
       }
       const rowMap = new Map();
       for (const row of allRows) { const key = canonicalUrl(row.url); if (key) rowMap.set(key, row); }
-      const rows = [...rowMap.values()].slice(0, Math.max(20, Math.min(Number(source.maxRows) || 200, 250)));
+      const rows = [...rowMap.values()].slice(0, Math.max(20, Math.min(Number(source.maxRows) || 500, 500)));
       let published = 0;
       let truncated = false;
       for (const row of rows) {
