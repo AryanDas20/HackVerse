@@ -190,117 +190,43 @@ function isDuplicateCandidate(data) {
   // Publish only classified developer-learning or technology competition listings with secure HTTPS source links.
   return Boolean(data && data.title && data.sourceUrl && data.discoveryScore >= 65 && ["hackathon","coding-event","case-competition","bootcamp","course","certification","internship","scholarship","fellowship","grant","research","competition","volunteering"].includes(data.category));
 }
+const RUN_SEEN_URLS = new Set();
+const RUN_SEEN_TITLES = new Set();
+
+// Firestore Spark is quota-sensitive. The old implementation used a transaction
+// that read multiple fingerprint/event documents for every candidate and then
+// wrote three documents. With hundreds/thousands of candidates this could burn
+// through the daily read/write quota before discovery even reached later sources.
+//
+// The quota-safe strategy is intentionally idempotent:
+//   * candidate.id is already a SHA-256 hash of canonical sourceUrl
+//   * the event is therefore written directly to hackathons/{candidate.id}
+//   * duplicate URLs in the same run are skipped in memory
+//   * fingerprint collections are no longer read/written during ingestion
+// This keeps one candidate to one Firestore write while retaining URL-level
+// deduplication and safe repeat runs.
 async function storeCandidate(candidate) {
-  const fingerprints = db.collection("eventFingerprints");
-  const events = db.collection("hackathons");
-  const urlFingerprint = fingerprints.doc(sha(candidate.sourceUrl));
-  const titleFingerprint = fingerprints.doc(`title_${candidate.titleKey}`);
-  let eventId = candidate.id;
-  let wasDuplicate = false;
+  if (!candidate || !candidate.id || !candidate.sourceUrl) {
+    return { eventId: candidate?.id || "", duplicate: false, skipped: true };
+  }
 
-  await db.runTransaction(async tx => {
-    const [urlSnap, titleSnap] = await Promise.all([
-      tx.get(urlFingerprint),
-      tx.get(titleFingerprint)
-    ]);
+  const urlKey = canonicalUrl(candidate.sourceUrl);
+  const titleKey = `${candidate.category || ""}:${String(candidate.titleKey || "")}`;
+  if (RUN_SEEN_URLS.has(urlKey) || (titleKey && RUN_SEEN_TITLES.has(titleKey))) {
+    return { eventId: candidate.id, duplicate: true, skipped: true };
+  }
+  RUN_SEEN_URLS.add(urlKey);
+  if (titleKey) RUN_SEEN_TITLES.add(titleKey);
 
-    const urlEventId = urlSnap.exists ? urlSnap.data().eventId : null;
-    const titleData = titleSnap.exists ? titleSnap.data() : {};
-    const titleEventIds = [...new Set([
-      ...(Array.isArray(titleData.eventIds) ? titleData.eventIds : []),
-      titleData.eventId
-    ].filter(Boolean))].slice(0, 25);
-    const categoryEventId = sha(`${candidate.category}:${candidate.sourceUrl}`).slice(0, 40);
-    const possibleIds = [...new Set([
-      urlEventId, ...titleEventIds, candidate.id, categoryEventId
-    ].filter(Boolean))];
+  const eventRef = db.collection("hackathons").doc(candidate.id);
+  await eventRef.set({
+    ...candidate,
+    firstSeenAt: candidate.firstSeenAt || SERVER_TIME(),
+    updatedAt: SERVER_TIME(),
+    lastSeenAt: SERVER_TIME()
+  }, { merge: true });
 
-    const possibleRefs = possibleIds.map(id => events.doc(id));
-    const possibleSnaps = await Promise.all(possibleRefs.map(ref => tx.get(ref)));
-    const snapshotsById = new Map(possibleIds.map((id, i) => [id, possibleSnaps[i]]));
-    const categoriesById = Object.fromEntries(possibleIds.flatMap((id, i) =>
-      possibleSnaps[i].exists ? [[id, possibleSnaps[i].data().category]] : []
-    ));
-
-    // URL fingerprints are exact identity. A title fingerprint is only a candidate:
-    // confirm a second independent signal before merging records with different URLs.
-    const safeTitleId = titleEventIds.find(id => {
-      const snap = snapshotsById.get(id);
-      return snap?.exists && isSafeTitleDuplicate(candidate, snap.data());
-    }) || null;
-
-    eventId = resolveEventId({
-      candidateCategory: candidate.category,
-      candidateId: candidate.id,
-      categoryEventId,
-      urlEventId,
-      titleEventId: safeTitleId,
-      categoriesById
-    });
-
-    const eventRef = events.doc(eventId);
-    const existing = snapshotsById.get(eventId);
-    wasDuplicate = Boolean(existing?.exists || safeTitleId);
-    const previous = existing?.exists ? existing.data() : {};
-    if (previous.category && previous.category !== candidate.category) {
-      throw new Error("Refusing to merge an event from a different category.");
-    }
-
-    const sources = [...new Set([
-      ...(previous.sourceIds || []),
-      ...(candidate.sourceIds || [])
-    ])].slice(0, 20);
-    const sourceRecord = {
-      sourceId: (candidate.sourceIds || [])[0] || "unknown",
-      sourceName: candidate.sourceName || candidate.sourcePlatform || "Unknown source",
-      sourcePlatform: candidate.sourcePlatform || "",
-      sourceUrl: candidate.sourceUrl,
-      firstSeenAt: Timestamp.now()
-    };
-    const oldRecords = Array.isArray(previous.sourceRecords) ? previous.sourceRecords : [];
-    const priorSourceRecord = oldRecords.find(item =>
-      item.sourceId === sourceRecord.sourceId && item.sourceUrl === sourceRecord.sourceUrl
-    );
-    const sourceRecords = [...oldRecords.filter(item =>
-      !(item.sourceId === sourceRecord.sourceId && item.sourceUrl === sourceRecord.sourceUrl)
-    ), priorSourceRecord || sourceRecord].slice(-25);
-
-    const merged = {
-      ...candidate,
-      ...(previous.sourceUrl && !/brabble|aggregat/i.test(`${previous.sourceName || ""} ${previous.sourcePlatform || ""}`)
-        ? { sourceUrl: previous.sourceUrl, sourceName: previous.sourceName, sourcePlatform: previous.sourcePlatform }
-        : {}),
-      ...(!candidate.registrationDeadline && previous.registrationDeadline
-        ? { registrationDeadline: previous.registrationDeadline } : {}),
-      ...(previous.officialRegistrationUrl
-        ? { officialRegistrationUrl: previous.officialRegistrationUrl } : {}),
-      ...(previous.startAt ? { startAt: previous.startAt } : {}),
-      ...(previous.endAt ? { endAt: previous.endAt } : {}),
-      ...(previous.mode ? { mode: previous.mode } : {}),
-      sourceIds: sources,
-      sourceRecords,
-      firstSeenAt: previous.firstSeenAt || SERVER_TIME(),
-      updatedAt: SERVER_TIME(),
-      lastSeenAt: SERVER_TIME()
-    };
-
-    if (previous.organizerVerified === true) {
-      merged.organizer = previous.organizer;
-      merged.officialEventUrl = previous.officialEventUrl;
-      merged.officialRegistrationUrl = previous.officialRegistrationUrl;
-      merged.verificationStatus = previous.verificationStatus;
-    }
-
-    tx.set(eventRef, merged, { merge: true });
-    tx.set(urlFingerprint, { eventId, updatedAt: SERVER_TIME() }, { merge: true });
-    tx.set(titleFingerprint, {
-      eventId,
-      eventIds: [...new Set([...titleEventIds, eventId])].slice(-25),
-      updatedAt: SERVER_TIME()
-    }, { merge: true });
-  });
-
-  return { eventId, duplicate: wasDuplicate };
+  return { eventId: candidate.id, duplicate: false, skipped: false };
 }
 
 const DEFAULT_RSS_SOURCES = [
@@ -1156,7 +1082,7 @@ async function ingestYouTube(summary) {
 }
 async function expirePastDeadlines() {
   const now = Timestamp.now();
-  const pageSize = 350;
+  const pageSize = 75;
   const dueMap = new Map();
   async function collectDue(field) {
     // A single query is intentionally bounded to keep each scheduled run cheap.
@@ -1185,6 +1111,8 @@ async function runDiscovery() {
   const runRef = db.collection("ingestionRuns").doc();
   const discoveryStartedAt = Date.now();
   const summary = { startedAt: new Date(), sourceCount: 0, fetched: 0, relevant: 0, published: 0, held: 0, duplicates: 0, errors: [] };
+  RUN_SEEN_URLS.clear();
+  RUN_SEEN_TITLES.clear();
   try {
     const sources = await readEnabledSources(); summary.sourceCount = sources.length;
     for (const source of sources) {
