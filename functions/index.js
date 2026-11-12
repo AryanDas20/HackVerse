@@ -337,13 +337,28 @@ function directListingCandidate(platform, item, diagnostics = null) {
   if (!sourceUrl) { diagnostics && (diagnostics.missingUrl = (diagnostics.missingUrl || 0) + 1); return null; }
 
   const req = item.regnRequirements || item.registration || item.registration_details || {};
-  const deadlineRaw = firstValue(req.end_regn_dt, req.deadline, item.registration_deadline, item.deadline,
-    item.submission_period_dates?.end, item.hackathon_setting?.reg_ends_at);
+  const deadlineRaw = firstValue(
+    req.end_regn_dt, req.registration_end, req.registrationEnd, req.deadline,
+    item.registration_deadline, item.registrationDeadline, item.deadline, item.end_registration,
+    item.submission_period_dates?.end, item.hackathon_setting?.reg_ends_at, item.hackathon_setting?.registration_end
+  );
   const startRaw = firstValue(item.start_tz, item.start_timestamp, item.start_date, item.startDate, item.starts_at, item.start_at,
     item.submission_period_dates?.start, item.festival?.start_date);
   const endRaw = firstValue(item.end_tz, item.end_timestamp, item.end_date, item.endDate, item.ends_at, item.end_at,
     item.festival?.end_date);
-  const parseDate = value => { const date = value ? new Date(value) : null; return date && !Number.isNaN(date.getTime()) ? date : null; };
+  const parseDate = value => {
+    if (value === undefined || value === null || value === "") return null;
+    const numeric = typeof value === "number" || /^\d+(?:\.\d+)?$/.test(String(value).trim());
+    let date;
+    if (numeric) {
+      const n = Number(value);
+      // Provider APIs frequently return Unix seconds while JavaScript Date expects milliseconds.
+      date = new Date(n < 100000000000 ? n * 1000 : n);
+    } else {
+      date = new Date(value);
+    }
+    return date && !Number.isNaN(date.getTime()) ? date : null;
+  };
   const deadline = parseDate(deadlineRaw);
   const startAt = parseDate(startRaw);
   const endAt = parseDate(endRaw);
@@ -649,7 +664,21 @@ const DEFAULT_HTML_CATALOGS = [
   { id: "empower-fellowships", name: "Empower Student Fellowships", platform: "Empower", category: "fellowship", url: "https://economicmobilityproject.org/students/opportunities", allow: /economicmobilityproject\.org/i, pathAllow: /students\/opportunities/i, maxPages: 3, maxRows: 250 },
   { id: "empower-research", name: "Empower Student Research", platform: "Empower", category: "research", url: "https://economicmobilityproject.org/students/opportunities", allow: /economicmobilityproject\.org/i, pathAllow: /students\/opportunities/i, maxPages: 3, maxRows: 250 },
   { id: "resquare-opportunities", name: "Resquare Tech Opportunities", platform: "Resquare", category: "competition", url: "https://www.resquare.in/opportunities", allow: /resquare\.in/i, pathAllow: /opportunities/i, maxPages: 3, maxRows: 250 },
-  { id: "accountra-opportunity-board", name: "Accountra Opportunity Board", platform: "Accountra", category: "competition", url: "https://www.accountra.eu/extracurricular", allow: /accountra\.eu/i, pathAllow: /extracurricular/i, maxPages: 2, maxRows: 200 }
+  { id: "accountra-opportunity-board", name: "Accountra Opportunity Board", platform: "Accountra", category: "competition", url: "https://www.accountra.eu/extracurricular", allow: /accountra\.eu/i, pathAllow: /extracurricular/i, maxPages: 2, maxRows: 200 },
+
+  // Large public catalogues. Sitemap discovery is used in addition to visible HTML links
+  // so JavaScript-heavy catalogues can contribute real detail-page URLs without guessing APIs.
+  { id: "coursera-courses", name: "Coursera Courses", platform: "Coursera", category: "course", url: "https://www.coursera.org/browse/", allow: /coursera\.org/i, pathAllow: /\/(learn|specializations|professional-certificates|courses|degrees)\//i, maxPages: 3, maxRows: 600, sitemap: true },
+  { id: "edx-courses", name: "edX Courses", platform: "edX", category: "course", url: "https://www.edx.org/courses", allow: /edx\.org/i, pathAllow: /\/(learn|course|courses|professional-certificate|micromasters|microbachelors)\//i, maxPages: 3, maxRows: 600, sitemap: true },
+  { id: "futurelearn-courses", name: "FutureLearn Courses", platform: "FutureLearn", category: "course", url: "https://www.futurelearn.com/courses", allow: /futurelearn\.com/i, pathAllow: /\/courses\//i, maxPages: 4, maxRows: 600, sitemap: true },
+  { id: "findaphd-research", name: "FindAPhD Research Opportunities", platform: "FindAPhD", category: "research", url: "https://www.findaphd.com/phds/", allow: /findaphd\.com/i, pathAllow: /\/phds\//i, maxPages: 4, maxRows: 800, sitemap: true },
+  { id: "euraxess-research", name: "EURAXESS Research Opportunities", platform: "EURAXESS", category: "research", url: "https://euraxess.ec.europa.eu/jobs", allow: /euraxess\.ec\.europa\.eu/i, pathAllow: /\/(jobs|worldwide)\//i, maxPages: 4, maxRows: 500, sitemap: true },
+  { id: "unv-volunteering", name: "UN Volunteers", platform: "UN Volunteers", category: "volunteering", url: "https://www.unv.org/become-volunteer", allow: /unv\.org/i, pathAllow: /volunteer/i, maxPages: 3, maxRows: 300, sitemap: true },
+  { id: "grants-gov", name: "Grants.gov Funding", platform: "Grants.gov", category: "grant", url: "https://www.grants.gov/search-grants", allow: /grants\.gov/i, pathAllow: /search-grants|search/i, maxPages: 3, maxRows: 400, sitemap: true },
+  { id: "internshala-internships", name: "Internshala Internships", platform: "Internshala", category: "internship", url: "https://internshala.com/internships/", allow: /internshala\.com/i, pathAllow: /internships/i, maxPages: 4, maxRows: 600, sitemap: true },
+  { id: "international-scholarships", name: "International Scholarships", platform: "International Scholarships", category: "scholarship", url: "https://www.internationalscholarships.com/", allow: /internationalscholarships\.com/i, pathAllow: /scholarship|financial-aid|study-abroad/i, maxPages: 4, maxRows: 500, sitemap: true },
+  { id: "profellow-fellowships", name: "ProFellow Fellowships", platform: "ProFellow", category: "fellowship", url: "https://www.profellow.com/fellowships/", allow: /profellow\.com/i, pathAllow: /fellowship/i, maxPages: 4, maxRows: 500, sitemap: true },
+  { id: "classcentral-courses", name: "Class Central Courses", platform: "Class Central", category: "course", url: "https://www.classcentral.com/subjects", allow: /classcentral\.com/i, pathAllow: /\/(course|courses|subject|subjects)\//i, maxPages: 4, maxRows: 700, sitemap: true }
 ];
 function configuredHtmlCatalogs() {
   const raw = HACKVERSE_HTML_CATALOGS.value().trim();
@@ -695,7 +724,7 @@ function extractHtmlLinks(html, source) {
       "coding-event": /contest|challenge|coding|programming|code|competition|event|starters|dsamonday|devweekend/i,
       "case-competition": /case|challenge|competition|business/i,
       "competition": /contest|challenge|competition|award|prize|hackathon|innovation/i,
-      "course": /course|courses|learning|module|path|roadmap|program|training|class|lesson/i,
+      "course": /course|courses|learning|module|path|roadmap|program|training|class|lesson|specialization|certificate|degree|mooc/i,
       "certification": /certificate|certification|credential|exam|learn|course|program/i,
       "internship": /internship|intern|placement|summer|fellowship|research program/i,
       "scholarship": /scholarship|funding|financial aid|grant|award/i,
@@ -727,17 +756,84 @@ function nextHtmlPage(html, source, currentUrl) {
   } catch { return null; }
 }
 
+function decodeUrlSlug(url) {
+  try {
+    const path = new URL(url).pathname.split('/').filter(Boolean).pop() || '';
+    const cleaned = decodeURIComponent(path).replace(/\.(html?|php|aspx?)$/i, '').replace(/[-_+]+/g, ' ').replace(/\b\d{4,}\b/g, '').replace(/\s+/g, ' ').trim();
+    return cleanText(cleaned.replace(/\b\w/g, c => c.toUpperCase()), 180);
+  } catch { return ''; }
+}
+function extractSitemapLocations(xml, max = 5000) {
+  const out = [];
+  const re = /<loc>\s*([^<]+?)\s*<\/loc>/gi;
+  let m;
+  while ((m = re.exec(String(xml || ''))) && out.length < max) {
+    const value = m[1].trim();
+    if (/^https?:\/\//i.test(value)) out.push(value);
+  }
+  return [...new Set(out)];
+}
+async function discoverSitemapUrls(source, budgetMs) {
+  if (!source.sitemap) return [];
+  const deadline = Date.now() + budgetMs;
+  const candidates = new Set();
+  try {
+    const robotsUrl = new URL('/robots.txt', source.url).toString();
+    const response = await fetch(robotsUrl, { headers: { Accept: 'text/plain', 'User-Agent': 'HackVerseDiscovery/4.0' }, signal: AbortSignal.timeout(8000) });
+    if (response.ok) {
+      const robots = await response.text();
+      for (const line of robots.split(/\r?\n/)) {
+        const m = line.match(/^\s*Sitemap:\s*(\S+)/i);
+        if (m && source.allow.test(m[1])) candidates.add(m[1]);
+      }
+    }
+  } catch {}
+  if (!candidates.size) {
+    for (const path of ['/sitemap.xml', '/sitemap_index.xml']) {
+      try {
+        const u = new URL(path, source.url).toString();
+        if (source.allow.test(u)) candidates.add(u);
+      } catch {}
+    }
+  }
+  const visited = new Set();
+  const pageUrls = new Set();
+  const queue = [...candidates].slice(0, 4);
+  while (queue.length && Date.now() < deadline && visited.size < 8 && pageUrls.size < 3000) {
+    const sitemapUrl = queue.shift();
+    if (visited.has(sitemapUrl)) continue;
+    visited.add(sitemapUrl);
+    try {
+      const response = await fetch(sitemapUrl, { headers: { Accept: 'application/xml,text/xml,text/plain', 'User-Agent': 'HackVerseDiscovery/4.0' }, signal: AbortSignal.timeout(8000) });
+      if (!response.ok) continue;
+      const xml = await response.text();
+      for (const loc of extractSitemapLocations(xml, 5000)) {
+        if (/sitemap/i.test(loc) && visited.size + queue.length < 8) queue.push(loc);
+        else if (source.allow.test(loc) && (!source.pathAllow || source.pathAllow.test(loc))) pageUrls.add(loc);
+        if (pageUrls.size >= 3000) break;
+      }
+    } catch {}
+  }
+  return [...pageUrls];
+}
 async function ingestHtmlCatalogs(summary) {
   const catalogs = configuredHtmlCatalogs();
   for (const source of catalogs) {
     summary.sourceCount += 1;
     try {
       const sourceStartedAt = Date.now();
-      const sourceBudgetMs = 60000;
+      const sourceBudgetMs = 45000;
       let pageUrl = source.url;
       const seenPages = new Set();
       const allRows = [];
-      for (let page = 0; page < Math.max(1, Math.min(Number(source.maxPages) || 2, 5)) && pageUrl && !seenPages.has(pageUrl); page++) {
+      if (source.sitemap) {
+        const sitemapUrls = await discoverSitemapUrls(source, 12000);
+        for (const sitemapUrl of sitemapUrls) {
+          const title = decodeUrlSlug(sitemapUrl);
+          if (title && title.length >= 6) allRows.push({ title, url: sitemapUrl });
+        }
+      }
+      for (let page = 0; page < Math.max(1, Math.min(Number(source.maxPages) || 2, 6)) && pageUrl && !seenPages.has(pageUrl); page++) {
         seenPages.add(pageUrl);
         const response = await fetch(pageUrl, {
           headers: { Accept: "text/html,application/xhtml+xml", "User-Agent": "HackVerseDiscovery/3.0" },
@@ -752,7 +848,7 @@ async function ingestHtmlCatalogs(summary) {
       }
       const rowMap = new Map();
       for (const row of allRows) { const key = canonicalUrl(row.url); if (key) rowMap.set(key, row); }
-      const rows = [...rowMap.values()].slice(0, Math.max(20, Math.min(Number(source.maxRows) || 500, 500)));
+      const rows = [...rowMap.values()].slice(0, Math.max(20, Math.min(Number(source.maxRows) || 500, 1000)));
       let published = 0;
       let truncated = false;
       for (const row of rows) {
