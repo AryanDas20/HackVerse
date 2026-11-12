@@ -601,13 +601,25 @@ async function ingestBrabbleListings(summary) {
 // conservative: if the provider changes its HTML, the source records an error instead
 // of publishing guessed data.
 const DEFAULT_HTML_CATALOGS = [
-  { id: "nptel-course-catalog", name: "NPTEL Courses", platform: "NPTEL", category: "course", url: "https://nptel.ac.in/courses", allow: /nptel\.ac\.in|onlinecourses\.nptel\.ac\.in/i },
-  { id: "swayam-course-catalog", name: "SWAYAM Courses", platform: "SWAYAM", category: "course", url: "https://swayam.gov.in/search_courses", allow: /swayam\.gov\.in|onlinecourses\.nptel\.ac\.in/i },
-  { id: "ibm-skillsbuild-catalog", name: "IBM SkillsBuild", platform: "IBM SkillsBuild", category: "course", url: "https://skillsbuild.org/learning-catalog", allow: /skillsbuild\.org/i },
-  { id: "codechef-contests", name: "CodeChef Contests", platform: "CodeChef", category: "coding-event", url: "https://www.codechef.com/contests", allow: /codechef\.com/i },
-  { id: "codechef-roadmaps", name: "CodeChef Learning Roadmaps", platform: "CodeChef", category: "course", url: "https://www.codechef.com/roadmaps", allow: /codechef\.com/i },
-  { id: "microsoft-learn-paths", name: "Microsoft Learn Training", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/paths", allow: /learn\.microsoft\.com/i },
-  { id: "microsoft-learn-modules", name: "Microsoft Learn Modules", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/modules", allow: /learn\.microsoft\.com/i }
+  { id: "nptel-course-catalog", name: "NPTEL Courses", platform: "NPTEL", category: "course", url: "https://nptel.ac.in/courses", allow: /nptel\.ac\.in|onlinecourses\.nptel\.ac\.in/i, pathAllow: /\/courses\//i, maxPages: 1, maxRows: 80 },
+  { id: "swayam-course-catalog", name: "SWAYAM Courses", platform: "SWAYAM", category: "course", url: "https://swayam.gov.in/search_courses", allow: /swayam\.gov\.in|onlinecourses\.nptel\.ac\.in/i, pathAllow: /search_courses|course/i, maxPages: 1, maxRows: 80 },
+  { id: "ibm-skillsbuild-catalog", name: "IBM SkillsBuild", platform: "IBM SkillsBuild", category: "course", url: "https://skillsbuild.org/learning-catalog", allow: /skillsbuild\.org/i, pathAllow: /learning|course|program/i, maxPages: 1, maxRows: 80 },
+  { id: "codechef-contests", name: "CodeChef Contests", platform: "CodeChef", category: "coding-event", url: "https://www.codechef.com/contests", allow: /codechef\.com/i, pathAllow: /\/contests\//i, maxPages: 1, maxRows: 80 },
+  { id: "codechef-roadmaps", name: "CodeChef Learning Roadmaps", platform: "CodeChef", category: "course", url: "https://www.codechef.com/roadmaps", allow: /codechef\.com/i, pathAllow: /\/roadmaps/i, maxPages: 1, maxRows: 80 },
+  { id: "microsoft-learn-paths", name: "Microsoft Learn Training", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/paths", allow: /learn\.microsoft\.com/i, pathAllow: /\/training\/paths\//i, maxPages: 1, maxRows: 80 },
+  { id: "microsoft-learn-modules", name: "Microsoft Learn Modules", platform: "Microsoft Learn", category: "course", url: "https://learn.microsoft.com/en-us/training/modules", allow: /learn\.microsoft\.com/i, pathAllow: /\/training\/modules\//i, maxPages: 1, maxRows: 80 },
+
+  // Additional official public catalogues. These are bounded to one page so a
+  // slow/changed provider cannot block the complete six-hour discovery run.
+  { id: "kaggle-competitions", name: "Kaggle Competitions", platform: "Kaggle", category: "competition", url: "https://www.kaggle.com/competitions?listOption=active", allow: /kaggle\.com/i, pathAllow: /\/competitions\//i, maxPages: 1, maxRows: 80 },
+  { id: "atcoder-contests", name: "AtCoder Contests", platform: "AtCoder", category: "coding-event", url: "https://atcoder.jp/contests/", allow: /atcoder\.jp/i, pathAllow: /\/contests\//i, maxPages: 1, maxRows: 80 },
+  { id: "hackerrank-contests", name: "HackerRank Contests", platform: "HackerRank", category: "coding-event", url: "https://www.hackerrank.com/contests", allow: /hackerrank\.com/i, pathAllow: /\/contests\//i, maxPages: 1, maxRows: 80 },
+  { id: "codingame-contests", name: "CodinGame Contests", platform: "CodinGame", category: "coding-event", url: "https://www.codingame.com/contests", allow: /codingame\.com/i, pathAllow: /\/contests\//i, maxPages: 1, maxRows: 80 },
+  { id: "topcoder-challenges", name: "Topcoder Challenges", platform: "Topcoder", category: "competition", url: "https://www.topcoder.com/challenges", allow: /topcoder\.com/i, pathAllow: /\/challenges\//i, maxPages: 1, maxRows: 80 },
+  { id: "imagine-cup-events", name: "Microsoft Imagine Cup", platform: "Microsoft", category: "competition", url: "https://imaginecup.microsoft.com/en-us/Events", allow: /imaginecup\.microsoft\.com/i, pathAllow: /events|competition|challenge/i, maxPages: 1, maxRows: 80 },
+  { id: "mit-ocw-courses", name: "MIT OpenCourseWare", platform: "MIT OpenCourseWare", category: "course", url: "https://ocw.mit.edu/courses/", allow: /ocw\.mit\.edu/i, pathAllow: /\/courses\//i, maxPages: 1, maxRows: 80 },
+  { id: "freecodecamp-learning", name: "freeCodeCamp", platform: "freeCodeCamp", category: "certification", url: "https://www.freecodecamp.org/learn/", allow: /freecodecamp\.org/i, pathAllow: /\/learn\//i, maxPages: 1, maxRows: 80 },
+  { id: "cisco-netacad-courses", name: "Cisco Networking Academy", platform: "Cisco Networking Academy", category: "course", url: "https://www.netacad.com/courses", allow: /netacad\.com/i, pathAllow: /\/courses\//i, maxPages: 1, maxRows: 80 }
 ];
 function configuredHtmlCatalogs() {
   const raw = HACKVERSE_HTML_CATALOGS.value().trim();
@@ -646,9 +658,10 @@ function extractHtmlLinks(html, source) {
       try { href = new URL(href, source.url).toString(); } catch { continue; }
     } else if (!/^https?:\/\//i.test(href)) continue;
     if (!source.allow.test(href)) continue;
+    if (source.pathAllow && !source.pathAllow.test(href)) continue;
     const combined = `${title} ${href}`;
-    const looksRelevant = source.category === "coding-event"
-      ? /contest|challenge|coding|programming|code|competition|starters|dsamonday|devweekend/i.test(combined)
+    const looksRelevant = ["coding-event", "competition", "case-competition"].includes(source.category)
+      ? /contest|challenge|coding|programming|code|competition|hackathon|event|starters|dsamonday|devweekend/i.test(combined)
       : /course|courses|learning|module|path|roadmap|program|certificate|certification|skill/i.test(combined);
     if (!looksRelevant) continue;
     if (/^(browse all training|training|courses|modules|learning paths|documentation|support|sign in|register)$/i.test(title)) continue;
@@ -676,14 +689,16 @@ async function ingestHtmlCatalogs(summary) {
   for (const source of catalogs) {
     summary.sourceCount += 1;
     try {
+      const sourceStartedAt = Date.now();
+      const sourceBudgetMs = 40000;
       let pageUrl = source.url;
       const seenPages = new Set();
       const allRows = [];
-      for (let page = 0; page < 20 && pageUrl && !seenPages.has(pageUrl); page++) {
+      for (let page = 0; page < Math.max(1, Math.min(Number(source.maxPages) || 2, 3)) && pageUrl && !seenPages.has(pageUrl); page++) {
         seenPages.add(pageUrl);
         const response = await fetch(pageUrl, {
           headers: { Accept: "text/html,application/xhtml+xml", "User-Agent": "HackVerseDiscovery/3.0" },
-          signal: AbortSignal.timeout(25000)
+          signal: AbortSignal.timeout(12000)
         });
         if (!response.ok) throw new Error(`HTTP ${response.status} at ${pageUrl}`);
         const html = await response.text();
@@ -694,9 +709,14 @@ async function ingestHtmlCatalogs(summary) {
       }
       const rowMap = new Map();
       for (const row of allRows) { const key = canonicalUrl(row.url); if (key) rowMap.set(key, row); }
-      const rows = [...rowMap.values()].slice(0, 5000);
+      const rows = [...rowMap.values()].slice(0, Math.max(20, Math.min(Number(source.maxRows) || 200, 250)));
       let published = 0;
+      let truncated = false;
       for (const row of rows) {
+        if (Date.now() - sourceStartedAt >= sourceBudgetMs) {
+          truncated = true;
+          break;
+        }
         const sourceUrl = canonicalUrl(row.url);
         if (!sourceUrl) continue;
         const text = `${row.title} ${source.name}`;
@@ -728,6 +748,7 @@ async function ingestHtmlCatalogs(summary) {
         sourceUrl: source.url, lastRunAt: SERVER_TIME(), lastError: null, lastItemCount: rows.length,
         lastPublishedCount: published, updatedAt: SERVER_TIME()
       }, { merge: true });
+      console.log(`[catalog:${source.name}] fetched=${rows.length} published=${published}${truncated ? " truncated=source-budget" : ""}`);
     } catch (error) {
       const message = String(error.message || error).slice(0, 220);
       summary.errors.push({ source: source.name, message });
@@ -960,6 +981,7 @@ async function expirePastDeadlines() {
 
 async function runDiscovery() {
   const runRef = db.collection("ingestionRuns").doc();
+  const discoveryStartedAt = Date.now();
   const summary = { startedAt: new Date(), sourceCount: 0, fetched: 0, relevant: 0, published: 0, held: 0, duplicates: 0, errors: [] };
   try {
     const sources = await readEnabledSources(); summary.sourceCount = sources.length;
@@ -999,6 +1021,8 @@ async function runDiscovery() {
   }
   try { summary.expired = await expirePastDeadlines(); } catch (error) { summary.errors.push({ source: "expiry", message: String(error.message || error).slice(0, 180) }); }
   summary.finishedAt = new Date();
+  summary.durationMs = Date.now() - discoveryStartedAt;
+  console.log(`[discovery] completed in ${Math.round(summary.durationMs / 1000)}s sources=${summary.sourceCount} fetched=${summary.fetched} published=${summary.published} errors=${summary.errors.length}`);
   await runRef.set(summary);
   return { ...summary, runId: runRef.id };
 }
