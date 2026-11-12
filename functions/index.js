@@ -303,13 +303,36 @@ async function storeCandidate(candidate) {
   return { eventId, duplicate: wasDuplicate };
 }
 
+const DEFAULT_RSS_SOURCES = [
+  { id: "rss-opportunitydesk", name: "Opportunity Desk", platform: "Opportunity Desk", category: "scholarship", type: "rss", feedUrl: "https://opportunitydesk.org/feed/", enabled: true, autoPublish: true },
+  { id: "rss-scholars4dev", name: "Scholars4Dev", platform: "Scholars4Dev", category: "scholarship", type: "rss", feedUrl: "https://www.scholars4dev.com/feed/", enabled: true, autoPublish: true },
+  { id: "rss-opportunitiesforyouth", name: "Opportunities for Youth", platform: "Opportunities for Youth", category: "fellowship", type: "rss", feedUrl: "https://opportunitiesforyouth.org/feed/", enabled: true, autoPublish: true },
+  { id: "rss-scholarshipscorner", name: "Scholarships Corner", platform: "Scholarships Corner", category: "scholarship", type: "rss", feedUrl: "https://scholarshipscorner.website/feed/", enabled: true, autoPublish: true },
+  { id: "rss-brabble-coding-contests", name: "Brabble.ai Coding Contests", platform: "Brabble.ai", category: "coding-event", type: "rss", feedUrl: "https://brabble.ai/rss/coding-contests.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-case-competitions", name: "Brabble.ai Case Competitions", platform: "Brabble.ai", category: "case-competition", type: "rss", feedUrl: "https://brabble.ai/rss/case-competitions.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-school-students", name: "Brabble.ai School Opportunities", platform: "Brabble.ai", category: "competition", type: "rss", feedUrl: "https://brabble.ai/rss/school-students.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-college-students", name: "Brabble.ai College Opportunities", platform: "Brabble.ai", category: "competition", type: "rss", feedUrl: "https://brabble.ai/rss/college-students.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-unstop", name: "Brabble.ai Unstop Feed", platform: "Brabble.ai", category: "competition", type: "rss", feedUrl: "https://brabble.ai/rss/platforms/unstop.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-devpost", name: "Brabble.ai Devpost Feed", platform: "Brabble.ai", category: "hackathon", type: "rss", feedUrl: "https://brabble.ai/rss/platforms/devpost.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-mlh", name: "Brabble.ai MLH Feed", platform: "Brabble.ai", category: "hackathon", type: "rss", feedUrl: "https://brabble.ai/rss/platforms/mlh.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-internshala", name: "Brabble.ai Internshala Feed", platform: "Brabble.ai", category: "internship", type: "rss", feedUrl: "https://brabble.ai/rss/platforms/internshala.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-codeforces", name: "Brabble.ai Codeforces Feed", platform: "Brabble.ai", category: "coding-event", type: "rss", feedUrl: "https://brabble.ai/rss/platforms/codeforces.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-codechef", name: "Brabble.ai CodeChef Feed", platform: "Brabble.ai", category: "coding-event", type: "rss", feedUrl: "https://brabble.ai/rss/platforms/codechef.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-leetcode", name: "Brabble.ai LeetCode Feed", platform: "Brabble.ai", category: "coding-event", type: "rss", feedUrl: "https://brabble.ai/rss/platforms/leetcode.xml", enabled: true, autoPublish: true },
+  { id: "rss-brabble-ethglobal", name: "Brabble.ai ETHGlobal Feed", platform: "Brabble.ai", category: "hackathon", type: "rss", feedUrl: "https://brabble.ai/rss/platforms/ethglobal.xml", enabled: true, autoPublish: true }
+];
+
 async function readEnabledSources() {
   const snap = await db.collection("discoverySources").where("enabled", "==", true).limit(50).get();
   const sources = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(s => s.type === "rss" && safeHttps(s.feedUrl));
   const legacy = LEGACY_FEEDS.value().split(",").map(x => safeHttps(x.trim())).filter(Boolean)
     .map(url => ({ id: sha(url).slice(0, 20), name: new URL(url).hostname, type: "rss", platform: "RSS", feedUrl: url, enabled: true, autoPublish: true }));
   const seen = new Set(sources.map(s => canonicalUrl(s.feedUrl)));
-  for (const item of legacy) if (!seen.has(canonicalUrl(item.feedUrl))) sources.push(item);
+  for (const item of legacy) if (!seen.has(canonicalUrl(item.feedUrl))) { sources.push(item); seen.add(canonicalUrl(item.feedUrl)); }
+  for (const item of DEFAULT_RSS_SOURCES) {
+    const safe = safeHttps(item.feedUrl);
+    if (safe && !seen.has(canonicalUrl(safe))) { sources.push({ ...item, feedUrl: safe }); seen.add(canonicalUrl(safe)); }
+  }
   return sources;
 }
 
@@ -636,6 +659,10 @@ const DEFAULT_HTML_CATALOGS = [
   { id: "codingame-contests", name: "CodinGame Contests", platform: "CodinGame", category: "coding-event", url: "https://www.codingame.com/contests", allow: /codingame\.com/i, pathAllow: /\/contests\//i, maxPages: 2, maxRows: 250 },
   { id: "topcoder-challenges", name: "Topcoder Challenges", platform: "Topcoder", category: "competition", url: "https://www.topcoder.com/challenges", allow: /topcoder\.com/i, pathAllow: /\/challenges\//i, maxPages: 2, maxRows: 250 },
   { id: "imagine-cup-events", name: "Microsoft Imagine Cup", platform: "Microsoft", category: "competition", url: "https://imaginecup.microsoft.com/en-us/Events", allow: /imaginecup\.microsoft\.com/i, pathAllow: /events|competition|challenge/i, maxPages: 2, maxRows: 250 },
+
+  // Additional high-volume opportunity publishers / public portals.
+  { id: "aicte-internshala", name: "AICTE National Internship Portal — Internshala", platform: "AICTE / Internshala", category: "internship", url: "https://internship.aicte-india.org/internships/internshala", allow: /internship\.aicte-india\.org/i, pathAllow: /internshala|internship|opening|posting/i, maxPages: 6, maxRows: 800 },
+  { id: "nasa-space-apps", name: "NASA Space Apps Challenge", platform: "NASA Space Apps", category: "hackathon", url: "https://www.spaceappschallenge.org/", allow: /spaceappschallenge\.org/i, pathAllow: /challenge|event|2026|2027|local/i, maxPages: 5, maxRows: 500, sitemap: true },
 
   // Broad opportunity catalogues. They aggregate multiple official providers and are
   // useful for categories that do not have one universal public API.
@@ -1155,7 +1182,7 @@ async function runDiscovery() {
         const feedUrl = safeHttps(source.feedUrl);
         if (!feedUrl) throw new Error("Feed URL must use HTTPS and must not point to localhost.");
         const feed = await parser.parseURL(feedUrl);
-        const items = (feed.items || []).slice(0, 60); summary.fetched += items.length;
+        const items = (feed.items || []).slice(0, 120); summary.fetched += items.length;
         for (const item of items) {
           const candidate = parseCandidate(item, source);
           if (!candidate || !isDuplicateCandidate(candidate)) continue;
