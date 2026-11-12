@@ -193,6 +193,7 @@ async function storeCandidate(candidate) {
   const urlFingerprint = fingerprints.doc(sha(candidate.sourceUrl));
   const titleFingerprint = fingerprints.doc(`title_${candidate.titleKey}`);
   let eventId = candidate.id;
+  let wasDuplicate = false;
 
   await db.runTransaction(async tx => {
     const [urlSnap, titleSnap] = await Promise.all([
@@ -236,7 +237,7 @@ async function storeCandidate(candidate) {
 
     const eventRef = events.doc(eventId);
     const existing = snapshotsById.get(eventId);
-    const wasDuplicate = Boolean(existing?.exists || safeTitleId);
+    wasDuplicate = Boolean(existing?.exists || safeTitleId);
     const previous = existing?.exists ? existing.data() : {};
     if (previous.category && previous.category !== candidate.category) {
       throw new Error("Refusing to merge an event from a different category.");
