@@ -13,6 +13,7 @@ const { cleanText } = require("./lib/clean-text");
 const { findListingArray } = require("./lib/listing-array");
 const { isSafeTitleDuplicate } = require("./lib/duplicate-match");
 const { extractDeadline } = require("./lib/deadline");
+const { OPPORTUNITY_CATEGORIES, classifyOpportunity } = require("./lib/opportunity-category");
 
 if (!getApps().length) initializeApp();
 const db = getFirestore();
@@ -57,25 +58,8 @@ function canonicalUrl(value) {
   u.searchParams.sort();
   return u.toString().replace(/\/$/, "");
 }
-const OPPORTUNITY_CATEGORIES = new Set([
-  "hackathon", "coding-event", "case-competition", "bootcamp", "course", "certification"
-]);
 function classify(text, sourceCategories = []) {
-  const value = String(text || "").toLowerCase();
-  const categoryList = (Array.isArray(sourceCategories) ? sourceCategories : [sourceCategories])
-    .map(x => String(x || "").toLowerCase().trim()).filter(Boolean);
-  const categories = categoryList.join(" ");
-  const combined = `${value} ${categories}`;
-  if (/\bhackathon\b|\bhack-a-thon\b/.test(combined)) return { relevant: true, category: "hackathon", score: 95 };
-  if (/boot\s?camp|developer intensive|coding intensive/.test(combined)) return { relevant: true, category: "bootcamp", score: 88 };
-  if (/professional certification|certification exam|certificate programme|certificate program|certification course/.test(combined)) return { relevant: true, category: "certification", score: 86 };
-  if (/online course|self[- ]paced course|course enrollment|course enrolment|learning path|massive open online course|\bmooc\b/.test(combined)) return { relevant: true, category: "course", score: 85 };
-  if (/case\s?(study|competition|challenge)|business case/.test(combined)) return { relevant: true, category: "case-competition", score: 84 };
-  if (/coding contest|programming contest|code jam|coding challenge|\bctf\b|capture the flag|algorithm contest|developer challenge|open source sprint/.test(combined) || /\bcoding\b|\bcontest\b/.test(categories) && /code|program|developer|software|algorithm|security/.test(value)) return { relevant: true, category: "coding-event", score: 82 };
-  const explicitCategory = categoryList.find(category => OPPORTUNITY_CATEGORIES.has(category));
-  if (explicitCategory) return { relevant: true, category: explicitCategory, score: 80 };
-  const weak = /\bhack\b.{0,30}\b(build|event|challenge|competition)\b/.test(value);
-  return { relevant: weak, category: weak ? "hackathon" : "", score: weak ? 65 : 0 };
+  return classifyOpportunity(text, sourceCategories);
 }
 function extractOrganizer(text, fallback) {
   const match = String(text || "").match(/^\s*([^·\-]{2,100})\s*·\s*via\s+/i);
@@ -145,6 +129,12 @@ function parseCandidate(item, source) {
   if (/bootcamps/i.test(sourceHint)) categoryHints.push("bootcamp");
   if (/certifications/i.test(sourceHint)) categoryHints.push("certification course");
   if (/online-courses|courses/i.test(sourceHint)) categoryHints.push("online course");
+  if (/internships/i.test(sourceHint)) categoryHints.push("internship");
+  if (/scholarships/i.test(sourceHint)) categoryHints.push("scholarship");
+  if (/fellowships/i.test(sourceHint)) categoryHints.push("fellowship");
+  if (/grants/i.test(sourceHint)) categoryHints.push("grant");
+  if (/research/i.test(sourceHint)) categoryHints.push("research opportunity");
+  if (/competitions/i.test(sourceHint)) categoryHints.push("competition");
   const text = `${title} ${summary} ${categoryHints.join(" ")}`;
   const relevance = classify(text, categoryHints);
   const sourceUrl = canonicalUrl(item.link || item.url || "");
@@ -195,7 +185,7 @@ function parseCandidate(item, source) {
 
 function isDuplicateCandidate(data) {
   // Publish only classified developer-learning or technology competition listings with secure HTTPS source links.
-  return Boolean(data && data.title && data.sourceUrl && data.discoveryScore >= 65 && ["hackathon","coding-event","case-competition","bootcamp","course","certification"].includes(data.category));
+  return Boolean(data && data.title && data.sourceUrl && data.discoveryScore >= 65 && ["hackathon","coding-event","case-competition","bootcamp","course","certification","internship","scholarship","fellowship","grant","research","competition","volunteering"].includes(data.category));
 }
 async function storeCandidate(candidate) {
   const fingerprints = db.collection("eventFingerprints");

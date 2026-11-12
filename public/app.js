@@ -507,8 +507,15 @@ async function loadEvents({ forceRefresh = false } = {}) {
 
 function eventCategoryValue(event) {
   const raw = String(event.category || event.opportunityType || event.type || "").toLowerCase();
-  if (["hackathon","bootcamp","course","certification","coding-event","case-competition"].includes(raw)) return raw;
+  if (["hackathon","bootcamp","course","certification","coding-event","case-competition","internship","scholarship","fellowship","grant","research","competition","volunteering"].includes(raw)) return raw;
   const text = `${event.title || ""} ${event.summary || ""} ${(event.tags || []).join(" ")}`.toLowerCase();
+  if (/\binternship\b|summer intern|winter intern/.test(text)) return "internship";
+  if (/\bscholarship\b|bursary|tuition waiver/.test(text)) return "scholarship";
+  if (/\bfellowship\b/.test(text)) return "fellowship";
+  if (/\bgrant\b|seed funding/.test(text)) return "grant";
+  if (/research assistant|research opportunity|research programme|research program/.test(text)) return "research";
+  if (/volunteer opportunity|volunteering programme|volunteering program/.test(text)) return "volunteering";
+  if (/\bcompetition\b|innovation challenge|student contest/.test(text)) return "competition";
   if (/boot ?camp|accelerator programme|developer intensive/.test(text)) return "bootcamp";
   if (/certif(?:ication|ied)|credential exam/.test(text)) return "certification";
   if (/online course|course enrollment|self.?paced course|learning path|mooc/.test(text)) return "course";
@@ -600,7 +607,7 @@ function opportunityCard(event, index) {
   const deadlineMs = tsMillis(event.registrationDeadline);
   const deadlineText = deadlineMs ? (deadlineMs < Date.now() ? "Deadline passed" : `Closes ${dateLabel(event.registrationDeadline)}`) : "Deadline not listed";
   const categoryValue = eventCategoryValue(event);
-  const prize = ["course", "bootcamp", "certification"].includes(categoryValue)
+  const prize = ["course", "bootcamp", "certification", "internship", "scholarship", "fellowship", "grant", "research"].includes(categoryValue)
     ? (event.isFree === true ? "Free learning" : (event.price || "Check provider details"))
     : (event.prize || (Number(event.prizePool) > 0 ? `${esc(event.currency || "")} ${Number(event.prizePool).toLocaleString()}` : "Prize details not listed"));
   const organizer = event.organizer || event.sourceName || "Organiser not listed";
@@ -1797,7 +1804,7 @@ async function persistAiMessage(role, content) {
 function validateAiActions(actions) {
   if (!Array.isArray(actions)) return [];
   const pages = new Set(["home", "opportunities", "saved", "people", "messages", "aiwish", "profile", "notifications", "settings"]);
-  const categories = new Set(["hackathon", "case-competition", "coding-event", "bootcamp", "course", "certification", "other"]);
+  const categories = new Set(["hackathon", "case-competition", "coding-event", "bootcamp", "course", "certification", "internship", "scholarship", "fellowship", "grant", "research", "competition", "volunteering", "other"]);
   const eventIds = new Set(events.map(event => event.id));
   return actions.slice(0, 8).map(action => {
     if (!action || typeof action !== "object") return null;

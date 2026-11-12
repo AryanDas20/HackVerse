@@ -91,7 +91,7 @@ If the new folder is not already a Git clone, do not run these commands blindly;
 
 ### 4. Verify automatic discovery
 
-Open <https://github.com/AryanDas20/HackVerse/actions>, select **HackVerse Automatic Hackathon Discovery**, then choose **Run workflow**. Confirm the job ends with a green check. Scheduled runs are at 00:00, 06:00, 12:00 and 18:00 UTC (approximately 05:30, 11:30, 17:30 and 23:30 India time).
+Open <https://github.com/AryanDas20/HackVerse/actions>, select **HackVerse Automatic Opportunity Discovery**, then choose **Run workflow**. Confirm the job ends with a green check. Scheduled runs are at 00:00, 06:00, 12:00 and 18:00 UTC (approximately 05:30, 11:30, 17:30 and 23:30 India time).
 
 The GitHub Actions workflow uses `npm ci --prefix functions` with the committed lockfile. On your Mac, install dependencies once before running the standalone script:
 
@@ -105,7 +105,8 @@ Open your Vercel site and confirm:
 - Home shows a limited preview and Explore opens the full opportunity directory.
 - Read details opens the event modal with the source link and (for courses) provider, instructor and language when supplied.
 - Country, region, format, type, skill, level, cost, deadline and source filters respond.
-- Selecting Courses shows openHPI-backed upcoming/current listings plus official course catalogues; Bootcamps and Certifications show relevant provider catalogues.
+- The opportunity type filter includes hackathons, coding and case competitions, bootcamps, online courses, certifications, internships, scholarships, fellowships, grants, research opportunities and volunteering.
+- Discovery runs every six hours using existing direct providers plus public RSS feeds and category-focused Google News RSS searches. Some search results are announcements rather than official registration pages; users should verify all details on the linked organiser/provider page.
 - Saved opens a separate page.
 - Public profiles can be searched; private profiles and unshared contact information are not exposed.
 - Direct chats, group creation, group membership controls, message search and 15-minute edit/delete work with two test accounts.
