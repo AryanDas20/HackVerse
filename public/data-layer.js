@@ -145,7 +145,7 @@ async function fetchRows(collectionRef, constraints = []) {
       case ">=": request = request.gte(scalarColumn, String(constraint.value)); break;
       case "<": request = request.lt(scalarColumn, String(constraint.value)); break;
       case "<=": request = request.lte(scalarColumn, String(constraint.value)); break;
-      case "array-contains": request = request.contains(jsonColumn, [constraint.value]); break;
+      case "array-contains": request = request.contains("participants", [constraint.value]); break;
     }
   }
   const orderConstraints = constraints.filter(item => item.type === "orderBy");
