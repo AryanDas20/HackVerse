@@ -1778,68 +1778,253 @@ async function persistAiMessage(role, content) {
 
 function validateAiActions(actions) {
   if (!Array.isArray(actions)) return [];
-  const pages = new Set(["home", "opportunities", "saved", "people", "messages", "aiwish", "profile", "notifications", "settings"]);
-  const categories = new Set(["hackathon", "case-competition", "coding-event", "bootcamp", "course", "certification", "internship", "scholarship", "fellowship", "grant", "research", "competition", "volunteering", "other"]);
-  const eventIds = new Set(events.map(event => event.id));
+
+  const pages = new Set([
+    "home","opportunities","saved","people","messages",
+    "aiwish","profile","notifications","settings"
+  ]);
+
+  const categories = new Set([
+    "hackathon","case-competition","coding-event","bootcamp",
+    "course","certification","internship","scholarship",
+    "fellowship","grant","research","competition",
+    "volunteering","other"
+  ]);
+
+  const eventIds = new Set(events.map(e => String(e.id)));
+  const conversationMap = new Map(
+    currentConversations.map(c => [String(c.id), c])
+  );
+  const messageMap = new Map(
+    currentMessages.map(m => [String(m.id), m])
+  );
+  const builders = new Set(
+    aiAvailableBuilders.map(p => String(p.uid))
+  );
+
   return actions.slice(0, 8).map(action => {
-    if (!action || typeof action !== "object") return null;
-    const type = String(action.type || "");
-    if (type === "navigate" && pages.has(action.page)) return { type, page: action.page };
-    if (type === "search_opportunities") return {
-      type,
-      query: String(action.query || "").slice(0, 100),
-      skill: String(action.skill || "").slice(0, 60),
-      category: categories.has(action.category) ? action.category : "all",
-      country: String(action.country || "").slice(0, 60)
-    };
-    if ((type === "open_opportunity" || type === "save_opportunity") && eventIds.has(String(action.eventId || "")))
-      return { type, eventId: String(action.eventId) };
-    if (type === "search_builders" && String(action.query || "").trim())
-      return { type, query: String(action.query).trim().slice(0, 100) };
-    if(type === "update_profile"){
-      const next={type};
-      if(typeof action.displayName==="string"&&action.displayName.trim())next.displayName=action.displayName.trim().slice(0,80);
-      if(typeof action.bio==="string")next.bio=action.bio.trim().slice(0,500);
-      if(Object.keys(next).length>1)return next;
-    }
-    if (type === "create_project" && String(action.title || "").trim() && String(action.description || "").trim())
+    if (!action || typeof action !== 'object') return null;
+
+    const type = String(action.type || '').trim();
+
+    if (type === 'navigate' && pages.has(action.page))
+      return { type, page: action.page };
+
+    if (type === 'search_opportunities')
       return {
         type,
-        title: String(action.title).trim().slice(0, 100),
-        description: String(action.description).trim().slice(0, 600),
-        techStack: Array.isArray(action.techStack) ? action.techStack.map(value => String(value).slice(0, 40)).slice(0, 12) : [],
-        visibility: action.visibility === "public" ? "public" : "private"
+        query: String(action.query || '').slice(0, 100),
+        skill: String(action.skill || '').slice(0, 60),
+        category: categories.has(action.category) ? action.category : 'all',
+        country: String(action.country || '').slice(0, 60)
       };
-    if (type === "create_group" && String(action.groupName || "").trim() && Array.isArray(action.memberUids)) {
-      const allowed = new Set(aiAvailableBuilders.map(p => p.uid));
-      const memberUids = [...new Set(action.memberUids.map(String))].filter(uid => allowed.has(uid) && uid !== currentUser?.uid).slice(0,10);
-      if (memberUids.length) return { type, groupName: String(action.groupName).trim().slice(0,60), memberUids };
+
+    if ((type === 'open_opportunity' || type === 'save_opportunity') &&
+        eventIds.has(String(action.eventId || '')))
+      return { type, eventId: String(action.eventId) };
+
+    if (type === 'search_builders')
+      return { type, query: String(action.query || '').trim().slice(0, 100) };
+
+    if (type === 'start_direct_conversation') {
+      const uid = String(action.uid || '');
+      if (!uid || uid === currentUser?.uid || !builders.has(uid)) return null;
+      return { type, uid };
     }
-    if (type === "send_message" && currentConversations.some(c => c.id === String(action.conversationId)) && String(action.text || "").trim())
-      return { type, conversationId: String(action.conversationId), text: String(action.text).trim().slice(0,2000) };
-    if (type === "update_settings") {
-      const next = {};
-      if (["dark","light"].includes(action.theme)) next.theme=action.theme;
-      if (["full","reduced"].includes(action.motion)) next.motion=action.motion;
-      if (["normal","large","larger"].includes(action.textSize)) next.textSize=action.textSize;
-      if (Object.keys(next).length) return { type, ...next };
+
+    if (type === 'create_group') {
+      const name = String(action.groupName || '').trim();
+      if (!name || !Array.isArray(action.memberUids)) return null;
+      const memberUids = [...new Set(action.memberUids.map(String))]
+        .filter(uid => uid && uid !== currentUser?.uid && builders.has(uid))
+        .slice(0, 10);
+      if (!memberUids.length) return null;
+      return { type, groupName: name.slice(0, 60), memberUids };
     }
+
+    if (type === 'add_group_member') {
+      const conversationId = String(action.conversationId || '');
+      const uid = String(action.uid || '');
+      const c = conversationMap.get(conversationId);
+      if (!c?.isGroup || !uid || !builders.has(uid)) return null;
+      const manager = c.createdBy === currentUser?.uid ||
+        (c.admins || []).includes(currentUser?.uid);
+      if (!manager || (c.participants || []).includes(uid)) return null;
+      return { type, conversationId, uid };
+    }
+
+    if (type === 'remove_group_member') {
+      const conversationId = String(action.conversationId || '');
+      const uid = String(action.uid || '');
+      const c = conversationMap.get(conversationId);
+      if (!c?.isGroup || !uid || uid === c.createdBy) return null;
+      const manager = c.createdBy === currentUser?.uid ||
+        (c.admins || []).includes(currentUser?.uid);
+      if (!manager || !(c.participants || []).includes(uid)) return null;
+      return { type, conversationId, uid };
+    }
+
+    if (type === 'update_group') {
+      const conversationId = String(action.conversationId || '');
+      const c = conversationMap.get(conversationId);
+      if (!c?.isGroup) return null;
+      const manager = c.createdBy === currentUser?.uid ||
+        (c.admins || []).includes(currentUser?.uid);
+      if (!manager) return null;
+
+      const result = { type, conversationId };
+      if (typeof action.groupName === 'string') {
+        const name = action.groupName.trim();
+        if (!name || name.length > 60) return null;
+        result.groupName = name;
+      }
+      if (typeof action.groupDescription === 'string')
+        result.groupDescription = action.groupDescription.trim().slice(0, 300);
+      if (typeof action.groupPhotoUrl === 'string')
+        result.groupPhotoUrl = validUrl(action.groupPhotoUrl.trim());
+      if (Object.keys(result).length === 2) return null;
+      return result;
+    }
+
+    if (type === 'toggle_group_admin') {
+      const conversationId = String(action.conversationId || '');
+      const uid = String(action.uid || '');
+      const c = conversationMap.get(conversationId);
+      if (!c?.isGroup || c.createdBy !== currentUser?.uid) return null;
+      if (!uid || uid === c.createdBy || !(c.participants || []).includes(uid)) return null;
+      return { type, conversationId, uid, makeAdmin: Boolean(action.makeAdmin) };
+    }
+
+    if (type === 'delete_group') {
+      const conversationId = String(action.conversationId || '');
+      const reason = String(action.reason || '').trim();
+      const c = conversationMap.get(conversationId);
+      if (!c?.isGroup || c.createdBy !== currentUser?.uid) return null;
+      if (reason.length < 8 || reason.length > 300) return null;
+      return { type, conversationId, reason };
+    }
+
+    if (type === 'send_message') {
+      const conversationId = String(action.conversationId || '');
+      const text = String(action.text || '').trim();
+      const c = conversationMap.get(conversationId);
+      if (!c || c.deleted || !(c.participants || []).includes(currentUser?.uid)) return null;
+      if (!text || text.length > 2000) return null;
+      return { type, conversationId, text };
+    }
+
+    if (type === 'edit_message') {
+      const messageId = String(action.messageId || '');
+      const text = String(action.text || '').trim();
+      const m = messageMap.get(messageId);
+      const created = m ? tsMillis(m.createdAt) : 0;
+      if (!m || m.authorUid !== currentUser?.uid || !text || text.length > 2000) return null;
+      if (!created || Date.now() - created > 15 * 60 * 1000) return null;
+      return { type, messageId, text };
+    }
+
+    if (type === 'delete_message') {
+      const messageId = String(action.messageId || '');
+      const m = messageMap.get(messageId);
+      if (!m) return null;
+      const c = conversationMap.get(String(m.conversationId || activeConversationId));
+      const admin = Boolean(c?.isGroup &&
+        (c.createdBy === currentUser?.uid || (c.admins || []).includes(currentUser?.uid)));
+      const created = tsMillis(m.createdAt);
+      if (!created || Date.now() - created > 60 * 60 * 1000) return null;
+      if (m.authorUid !== currentUser?.uid && !admin) return null;
+      return { type, messageId, scope: action.scope === 'everyone' ? 'everyone' : 'self' };
+    }
+
+    if (type === 'react_message') {
+      const messageId = String(action.messageId || '');
+      const emoji = String(action.emoji || '').trim();
+      if (!messageMap.has(messageId) || !emoji || emoji.length > 16) return null;
+      return { type, messageId, emoji };
+    }
+
+    if (type === 'forward_message') {
+      const messageId = String(action.messageId || '');
+      const targetConversationId = String(action.targetConversationId || '');
+      const m = messageMap.get(messageId);
+      const c = conversationMap.get(targetConversationId);
+      if (!m || !c || m.deleted || m.attachment) return null;
+      if (!(c.participants || []).includes(currentUser?.uid)) return null;
+      return { type, messageId, targetConversationId };
+    }
+
+    if (type === 'hide_conversation' || type === 'clear_conversation') {
+      const conversationId = String(action.conversationId || '');
+      const c = conversationMap.get(conversationId);
+      if (!c || !(c.participants || []).includes(currentUser?.uid)) return null;
+      return { type, conversationId };
+    }
+
+    if (type === 'update_profile') {
+      const result = { type };
+      if (typeof action.displayName === 'string' && action.displayName.trim())
+        result.displayName = action.displayName.trim().slice(0, 80);
+      if (typeof action.bio === 'string')
+        result.bio = action.bio.trim().slice(0, 500);
+      return Object.keys(result).length > 1 ? result : null;
+    }
+
+    if (type === 'create_project') {
+      const title = String(action.title || '').trim();
+      const description = String(action.description || '').trim();
+      if (!title || !description) return null;
+      return {
+        type,
+        title: title.slice(0, 100),
+        description: description.slice(0, 600),
+        techStack: Array.isArray(action.techStack) ?
+          action.techStack.map(v => String(v).slice(0, 40)).slice(0, 12) : [],
+        visibility: action.visibility === 'public' ? 'public' : 'private'
+      };
+    }
+
+    if (type === 'delete_project') {
+      const projectId = String(action.projectId || '').trim();
+      return projectId ? { type, projectId } : null;
+    }
+
+    if (type === 'update_settings') {
+      const result = {};
+      if (['dark','light'].includes(action.theme)) result.theme = action.theme;
+      if (['full','reduced'].includes(action.motion)) result.motion = action.motion;
+      if (['normal','large','larger'].includes(action.textSize)) result.textSize = action.textSize;
+      return Object.keys(result).length ? { type, ...result } : null;
+    }
+
     return null;
   }).filter(Boolean);
 }
 
 function aiActionLabel(action) {
-  if (action.type === "navigate") return `Open the ${action.page} section`;
-  if (action.type === "search_opportunities") return `Search opportunities${action.query ? ` for “${action.query}”` : ""}${action.category !== "all" ? ` · ${action.category}` : ""}`;
-  if (action.type === "open_opportunity") return `Open: ${events.find(item => item.id === action.eventId)?.title || "selected opportunity"}`;
-  if (action.type === "save_opportunity") return `Save: ${events.find(item => item.id === action.eventId)?.title || "selected opportunity"}`;
-  if (action.type === "search_builders") return `Search community for “${action.query}”`;
-  if(action.type === "update_profile")return `Update your profile${action.displayName?` · display name: ${action.displayName}`:""}${action.bio!==undefined?" · bio":""}`;
-  if (action.type === "create_project") return `Create ${action.visibility === "public" ? "public" : "private"} project: ${action.title}`;
-  if (action.type === "create_group") return `Create group “${action.groupName}” with ${action.memberUids.length} selected builders`;
-  if (action.type === "send_message") return `Send a message in ${conversationLabel(currentConversations.find(c=>c.id===action.conversationId)||{})}: “${action.text.slice(0,90)}”`;
-  if (action.type === "update_settings") return `Update interface settings${action.theme?` · ${action.theme} theme`:""}${action.motion?` · ${action.motion} motion`:""}${action.textSize?` · ${action.textSize} text`:""}`;
-  return "Apply website action";
+  if (action.type === 'navigate') return 'Open the ' + action.page + ' section';
+  if (action.type === 'search_opportunities') return 'Search opportunities' + (action.query ? ' for “' + action.query + '”' : '');
+  if (action.type === 'open_opportunity') return 'Open selected opportunity';
+  if (action.type === 'save_opportunity') return 'Save selected opportunity';
+  if (action.type === 'search_builders') return 'Search community for “' + action.query + '”';
+  if (action.type === 'start_direct_conversation') return 'Start a direct conversation with the selected builder';
+  if (action.type === 'create_group') return 'Create group “' + action.groupName + '” with ' + action.memberUids.length + ' builders';
+  if (action.type === 'add_group_member') return 'Add selected builder to the group';
+  if (action.type === 'remove_group_member') return 'Remove selected member from the group';
+  if (action.type === 'update_group') return 'Update group details';
+  if (action.type === 'toggle_group_admin') return action.makeAdmin ? 'Promote member to group admin' : 'Remove group admin role';
+  if (action.type === 'delete_group') return 'Delete selected group';
+  if (action.type === 'send_message') return 'Send message: “' + action.text.slice(0, 90) + '”';
+  if (action.type === 'edit_message') return 'Edit selected message';
+  if (action.type === 'delete_message') return action.scope === 'everyone' ? 'Delete message for everyone' : 'Remove message from your view';
+  if (action.type === 'react_message') return 'React to selected message with ' + action.emoji;
+  if (action.type === 'forward_message') return 'Forward selected message to another conversation';
+  if (action.type === 'hide_conversation') return 'Hide selected conversation';
+  if (action.type === 'clear_conversation') return 'Clear selected conversation from your view';
+  if (action.type === 'update_profile') return 'Update your profile';
+  if (action.type === 'create_project') return 'Create ' + action.visibility + ' project: ' + action.title;
+  if (action.type === 'delete_project') return 'Delete your project';
+  if (action.type === 'update_settings') return 'Update interface settings';
+  return 'Apply website action';
 }
 
 function renderAiActionReview() {
@@ -1854,62 +2039,87 @@ function renderAiActionReview() {
 async function sendAiMessage(event) {
   event.preventDefault();
   if (!requireAccount() || isAiSending) return;
-  const input = $("#aiInput");
+
+  const input = $('#aiInput');
   const message = input.value.trim();
   if (!message) return;
-  if (message.length > 4000) { toast("Keep each AI request under 4,000 characters."); return; }
+  if (message.length > 4000) {
+    toast('Keep each AI request under 4,000 characters.');
+    return;
+  }
+
   if (!activeAiConversationId || activeAiConversationMode !== aiMode) {
     const created = await startAiConversation(aiMode);
     if (!created) return;
   }
+
   isAiSending = true;
-  $("#aiSendBtn").disabled = true;
-  $("#aiSendBtn").textContent = "…";
-  input.value = "";
+  $('#aiSendBtn').disabled = true;
+  $('#aiSendBtn').textContent = '…';
+  input.value = '';
   pendingAiActions = [];
   renderAiActionReview();
+
   try {
-    await persistAiMessage("user", message);
-    const conversationRef = doc(db, "aiConversations", activeAiConversationId);
+    await persistAiMessage('user', message);
+    const conversationRef = doc(db, 'aiConversations', activeAiConversationId);
     await updateDoc(conversationRef, {
-      title: currentAiMessages.filter(item => item.role === "user").length <= 1 ? message.slice(0, 48) : (activeAiConversationMode === "wish" ? "AI Wish · " : "Help · ") + message.slice(0, 34),
+      title: currentAiMessages.filter(item => item.role === 'user').length <= 1
+        ? message.slice(0, 48)
+        : (activeAiConversationMode === 'wish' ? 'AI Wish · ' : 'Help · ') + message.slice(0, 34),
       preview: message.slice(0, 120),
       mode: aiMode,
       updatedAt: serverTimestamp()
     });
-    if (aiMode === "wish") {
-      try { aiAvailableBuilders = await searchPublicProfiles("", 200); } catch { aiAvailableBuilders = []; }
+
+    if (aiMode === 'wish') {
+      try { aiAvailableBuilders = await searchPublicProfiles('', 200); }
+      catch { aiAvailableBuilders = []; }
     }
+
     const token = await currentUser.getIdToken();
-    const response = await fetch("/api/agent37/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-      body: JSON.stringify({ conversationId: activeAiConversationId, mode: aiMode, message, page: (location.hash || "#home").slice(1) })
+    const response = await fetch('/api/agent37/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      },
+      body: JSON.stringify({
+        conversationId: activeAiConversationId,
+        mode: aiMode,
+        message,
+        page: (location.hash || '#home').slice(1),
+        activeConversationId: activeConversationId || ''
+      })
     });
+
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `AI service returned ${response.status}.`);
-    const reply = String(data.reply || "I could not prepare a response. Please try again.").slice(0, 12000);
-    await persistAiMessage("assistant", reply);
-    if (aiMode === "wish") {
+    if (!response.ok) throw new Error(data.error || 'AI service returned ' + response.status + '.');
+
+    const reply = String(data.reply || 'I could not prepare a response. Please try again.').slice(0, 12000);
+    await persistAiMessage('assistant', reply);
+
+    if (aiMode === 'wish') {
       pendingAiActions = validateAiActions(data.actions);
       renderAiActionReview();
-      if (Array.isArray(data.actions) && data.actions.length && !pendingAiActions.length) {
-        await persistAiMessage("assistant", "I couldn't validate the requested website actions. Try describing a search, navigation, save, community lookup or project creation task more specifically.");
-      }
     }
-    await updateDoc(conversationRef, { preview: reply.slice(0, 120), updatedAt: serverTimestamp() });
+
+    await updateDoc(conversationRef, {
+      preview: reply.slice(0, 120),
+      updatedAt: serverTimestamp()
+    });
     await loadAiHistory();
+
   } catch (error) {
-    console.error("Agent37 assistant request failed", error);
-    const messageText = error?.message || "The AI service could not complete this request.";
-    const help = messageText.includes("404") || messageText.toLowerCase().includes("not found")
-      ? `${messageText}\n\nThe /api/agent37/chat endpoint must be deployed on Vercel. A static Supabase Hosting deployment does not run this API route.`
-      : messageText;
-    await persistAiMessage("assistant", `I couldn't complete that request. ${help}`.slice(0, 12000)).catch(() => {});
+    console.error('Agent37 assistant request failed', error);
+    await persistAiMessage(
+      'assistant',
+      'I could not complete that request. ' + (error?.message || 'The AI service failed.')
+    ).catch(() => {});
   } finally {
     isAiSending = false;
-    $("#aiSendBtn").disabled = false;
-    $("#aiSendBtn").textContent = "↑";
+    $('#aiSendBtn').disabled = false;
+    $('#aiSendBtn').textContent = '↑';
     input.focus();
   }
 }
@@ -1918,99 +2128,389 @@ async function applyAiActions() {
   if (!requireAccount() || !pendingAiActions.length) return;
   const actions = pendingAiActions.slice();
   const summary = actions.map(aiActionLabel).join("\n• ");
-  if (!(await confirmInApp(`Apply these ${actions.length} HackVerse action${actions.length === 1 ? "" : "s"}?\n\n• ${summary}\n\nReview the details before continuing.`,"Review AI Wish actions"))) return;
+  if (!(await confirmInApp(`Apply these ${actions.length} HackVerse action${actions.length === 1 ? "" : "s"}?\n\n• ${summary}\n\nReview the details before continuing.`, "Review AI Wish actions"))) return;
+
   const completed = [];
+  const failed = [];
+
+  const fail = (action, error) => {
+    failed.push(`${aiActionLabel(action)} — ${friendlyError(error)}`);
+  };
+
   try {
     for (const action of actions) {
-      if (action.type === "navigate") {
-        location.hash = `#${action.page}`;
-        completed.push(`Opened ${action.page}`);
-      } else if (action.type === "search_opportunities") {
-        $("#eventSearch").value = action.query;
-        $("#eventSkill").value = action.skill;
-        $("#eventCategory").value = action.category;
-        if (action.country) {
-          const option = [...$("#eventCountry").options].find(item => item.value.toLowerCase() === action.country.toLowerCase());
-          if (option) $("#eventCountry").value = option.value;
+      try {
+        if (action.type === "navigate") {
+          location.hash = `#${action.page}`;
+          completed.push(`Opened ${action.page}`);
+
+        } else if (action.type === "search_opportunities") {
+          $("#eventSearch").value = action.query || "";
+          $("#eventSkill").value = action.skill || "";
+          $("#eventCategory").value = action.category || "";
+          if (action.country) {
+            const option = [...$("#eventCountry").options].find(item => item.value.toLowerCase() === String(action.country).toLowerCase());
+            if (option) $("#eventCountry").value = option.value;
+          }
+          allEventsVisible = 24;
+          renderEvents();
+          location.hash = "#opportunities";
+          completed.push("Applied opportunity search filters");
+
+        } else if (action.type === "open_opportunity") {
+          location.hash = "#opportunities";
+          await viewEvent(action.eventId);
+          completed.push("Opened opportunity details");
+
+        } else if (action.type === "save_opportunity") {
+          if (!savedIds.has(action.eventId)) {
+            const saved = await saveEvent(action.eventId);
+            if (!saved) throw new Error("HackVerse could not save that opportunity.");
+            completed.push("Saved an opportunity to your shortlist");
+          } else {
+            completed.push("Opportunity was already in your shortlist");
+          }
+
+        } else if (action.type === "search_builders") {
+          const searchQuery = String(action.query || "").trim().toLowerCase().replace(/^@/, "");
+          $("#peopleSearch").value = action.query || "";
+          location.hash = "#people";
+
+          if (!db) throw new Error("Community search is unavailable until Supabase is configured.");
+
+          $("#peopleResultCount").textContent = "Searching public builder profiles…";
+
+          const profiles = await searchPublicProfiles(searchQuery, 200);
+          people = (profiles || []).filter(p => p.uid !== currentUser?.uid);
+
+          if (searchQuery) {
+            const q = searchQuery;
+            people = people.filter(p => {
+              const haystack = [
+                p.displayName,
+                p.username,
+                p.college,
+                p.collegeShort,
+                p.course,
+                p.publicEmail,
+                ...(p.skills || []),
+                ...(p.interests || [])
+              ].filter(Boolean).join(" ").toLowerCase();
+              return haystack.includes(q);
+            });
+          }
+
+          renderPeople();
+          $("#peopleResultCount").textContent = `${people.length} builder${people.length === 1 ? "" : "s"} found`;
+          completed.push(`Found ${people.length} builder${people.length === 1 ? "" : "s"} in the community`);
+
+        } else if (action.type === "start_direct_conversation") {
+          const profile = aiAvailableBuilders.find(p => p.uid === action.uid);
+          if (!profile) throw new Error("That builder is no longer available in the public directory.");
+          await startDirectConversation(profile);
+          completed.push(`Started a conversation with ${profile.displayName || "the builder"}`);
+
+        } else if (action.type === "create_group") {
+          const selected = aiAvailableBuilders.filter(p => (action.memberUids || []).includes(p.uid));
+          if (selected.length !== (action.memberUids || []).length) {
+            throw new Error("One or more selected builders are no longer available.");
+          }
+          await createGroupWithMembers(action.groupName, selected, action.groupDescription || "", action.groupPhotoUrl || "");
+          completed.push(`Created group “${action.groupName}”`);
+
+        } else if (action.type === "add_group_member") {
+          if (!activeConversation?.isGroup || activeConversation.id !== action.conversationId) {
+            throw new Error("Open the target group before adding a member.");
+          }
+          await addGroupMember(action.uid);
+          completed.push("Added a member to the group");
+
+        } else if (action.type === "remove_group_member") {
+          if (!activeConversation?.isGroup || activeConversation.id !== action.conversationId) {
+            throw new Error("Open the target group before removing a member.");
+          }
+          const c = activeConversation;
+          if (c.createdBy !== currentUser.uid && !(c.admins || []).includes(currentUser.uid)) {
+            throw new Error("You do not have permission to remove group members.");
+          }
+          const uid = action.uid;
+          if (!c.participants?.includes(uid)) throw new Error("That member is not in the group.");
+          const participants = (c.participants || []).filter(x => x !== uid);
+          const participantNames = { ...(c.participantNames || {}) };
+          delete participantNames[uid];
+          await updateDoc(doc(db, "conversations", c.id), { participants, participantNames, updatedAt: serverTimestamp() });
+          activeConversation = { ...c, participants, participantNames };
+          renderChatHeading();
+          completed.push("Removed a member from the group");
+
+        } else if (action.type === "update_group") {
+          if (!activeConversation?.isGroup || activeConversation.id !== action.conversationId) {
+            throw new Error("Open the target group before updating it.");
+          }
+          const c = activeConversation;
+          if (c.createdBy !== currentUser.uid && !(c.admins || []).includes(currentUser.uid)) {
+            throw new Error("You do not have permission to update this group.");
+          }
+          const updates = {
+            updatedAt: serverTimestamp()
+          };
+          if (action.groupName) updates.groupName = String(action.groupName).trim().slice(0, 60);
+          if (action.groupDescription !== undefined) updates.groupDescription = String(action.groupDescription).trim().slice(0, 300);
+          if (action.groupPhotoUrl !== undefined) updates.groupPhotoUrl = validUrl(String(action.groupPhotoUrl || ""));
+          if (!updates.groupName && !updates.groupDescription && !("groupPhotoUrl" in updates)) {
+            throw new Error("No valid group changes were provided.");
+          }
+          await updateDoc(doc(db, "conversations", c.id), updates);
+          activeConversation = { ...c, ...updates, updatedAt: Date.now() };
+          renderChatHeading();
+          completed.push("Updated group details");
+
+        } else if (action.type === "toggle_group_admin") {
+          if (!activeConversation?.isGroup || activeConversation.id !== action.conversationId) {
+            throw new Error("Open the target group before changing admin status.");
+          }
+          const c = activeConversation;
+          if (c.createdBy !== currentUser.uid) throw new Error("Only the group creator can change admin status.");
+          if (action.uid === c.createdBy) throw new Error("The group creator is always an admin.");
+          const admins = new Set(c.admins || [c.createdBy]);
+          if (!c.participants?.includes(action.uid)) throw new Error("That member is not in the group.");
+          if (admins.has(action.uid)) admins.delete(action.uid);
+          else admins.add(action.uid);
+          admins.add(c.createdBy);
+          const nextAdmins = [...admins];
+          await updateDoc(doc(db, "conversations", c.id), { admins: nextAdmins, updatedAt: serverTimestamp() });
+          activeConversation = { ...c, admins: nextAdmins };
+          completed.push(admins.has(action.uid) ? "Promoted group member to admin" : "Removed group admin role");
+
+        } else if (action.type === "delete_group") {
+          if (!activeConversation?.isGroup || activeConversation.id !== action.conversationId) {
+            throw new Error("Open the target group before deleting it.");
+          }
+          const c = activeConversation;
+          if (c.createdBy !== currentUser.uid) throw new Error("Only the group creator can delete this group.");
+          const confirmation = String(action.reason || "Deleted by the group creator").trim().slice(0, 300);
+          if (confirmation.length < 8) throw new Error("A group deletion reason must contain at least 8 characters.");
+          await updateDoc(doc(db, "conversations", c.id), {
+            deleted: true,
+            deletedBy: currentUser.uid,
+            deletionNote: confirmation,
+            deletedAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+          if (stopMessageListener) stopMessageListener();
+          stopMessageListener = null;
+          activeConversation = null;
+          activeConversationId = null;
+          currentMessages = [];
+          $("#chatActive").hidden = true;
+          $("#chatPlaceholder").hidden = false;
+          completed.push("Deleted the group");
+
+        } else if (action.type === "send_message") {
+          const conversation = currentConversations.find(c => c.id === action.conversationId);
+          if (!conversation || !(conversation.participants || []).includes(currentUser.uid)) {
+            throw new Error("That conversation is no longer available to your account.");
+          }
+          const text = String(action.text || "").trim();
+          if (!text || text.length > 2000) throw new Error("Message must contain 1–2,000 characters.");
+          await addDoc(collection(db, "conversations", action.conversationId, "messages"), {
+            authorUid: currentUser.uid,
+            authorName: publicProfile?.displayName || currentUser.displayName || "Member",
+            text,
+            kind: "text",
+            createdAt: serverTimestamp()
+          });
+          await updateDoc(doc(db, "conversations", action.conversationId), {
+            lastMessage: text.slice(0, 180),
+            lastMessageSender: currentUser.uid,
+            lastMessageAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+          completed.push(`Sent a message in ${conversationLabel(conversation)}`);
+
+        } else if (action.type === "edit_message") {
+          const conversation = currentConversations.find(c => c.id === action.conversationId);
+          if (!conversation || !(conversation.participants || []).includes(currentUser.uid)) throw new Error("Conversation unavailable.");
+          const ref = doc(db, "conversations", action.conversationId, "messages", action.messageId);
+          const snap = await getDoc(ref);
+          if (!snap.exists()) throw new Error("Message not found.");
+          const message = snap.data();
+          if (message.authorUid !== currentUser.uid) throw new Error("You can edit only your own messages.");
+          const created = tsMillis(message.createdAt);
+          if (!created || Date.now() - created > 15 * 60 * 1000) throw new Error("Messages can only be edited within 15 minutes.");
+          const text = String(action.text || "").trim();
+          if (!text || text.length > 2000) throw new Error("Message must contain 1–2,000 characters.");
+          await updateDoc(ref, { text, edited: true, editedAt: serverTimestamp() });
+          completed.push("Edited your message");
+
+        } else if (action.type === "delete_message") {
+          const conversation = currentConversations.find(c => c.id === action.conversationId);
+          if (!conversation || !(conversation.participants || []).includes(currentUser.uid)) throw new Error("Conversation unavailable.");
+          const ref = doc(db, "conversations", action.conversationId, "messages", action.messageId);
+          const snap = await getDoc(ref);
+          if (!snap.exists()) throw new Error("Message not found.");
+          const message = snap.data();
+          const isGroupAdmin = Boolean(conversation.isGroup && (conversation.createdBy === currentUser.uid || (conversation.admins || []).includes(currentUser.uid)));
+          const created = tsMillis(message.createdAt);
+          if (action.forEveryone) {
+            if (!((message.authorUid === currentUser.uid || isGroupAdmin) && created && Date.now() - created <= 60 * 60 * 1000)) {
+              throw new Error("You do not have permission to delete this message for everyone.");
+            }
+            await updateDoc(ref, { text: "This message was deleted.", deleted: true, deletedAt: serverTimestamp() });
+            completed.push("Deleted a message for everyone");
+          } else {
+            await updateDoc(ref, { [`hiddenForBy.${currentUser.uid}`]: true });
+            completed.push("Removed a message from your view");
+          }
+
+        } else if (action.type === "react_message") {
+          const conversation = currentConversations.find(c => c.id === action.conversationId);
+          if (!conversation || !(conversation.participants || []).includes(currentUser.uid)) throw new Error("Conversation unavailable.");
+          const ref = doc(db, "conversations", action.conversationId, "messages", action.messageId);
+          const snap = await getDoc(ref);
+          if (!snap.exists()) throw new Error("Message not found.");
+          const reactions = { ...(snap.data().reactions || {}) };
+          if (reactions[currentUser.uid] === action.emoji) delete reactions[currentUser.uid];
+          else reactions[currentUser.uid] = action.emoji || "👍";
+          await updateDoc(ref, { reactions });
+          completed.push("Updated a message reaction");
+
+        } else if (action.type === "forward_message") {
+          const sourceConversation = currentConversations.find(c => c.id === action.conversationId);
+          const targetConversation = currentConversations.find(c => c.id === action.targetConversationId);
+          if (!sourceConversation || !targetConversation) throw new Error("Source or destination conversation is unavailable.");
+          if (!(sourceConversation.participants || []).includes(currentUser.uid) || !(targetConversation.participants || []).includes(currentUser.uid)) {
+            throw new Error("You do not have access to both conversations.");
+          }
+          const sourceRef = doc(db, "conversations", action.conversationId, "messages", action.messageId);
+          const sourceSnap = await getDoc(sourceRef);
+          if (!sourceSnap.exists()) throw new Error("Message not found.");
+          const source = sourceSnap.data();
+          if (source.attachment) throw new Error("Only text messages can be forwarded directly.");
+          const text = String(source.text || "");
+          await addDoc(collection(db, "conversations", action.targetConversationId, "messages"), {
+            authorUid: currentUser.uid,
+            authorName: publicProfile?.displayName || currentUser.displayName || "Member",
+            text,
+            kind: "text",
+            forwarded: true,
+            createdAt: serverTimestamp()
+          });
+          await updateDoc(doc(db, "conversations", action.targetConversationId), {
+            lastMessage: text.slice(0, 180),
+            lastMessageSender: currentUser.uid,
+            lastMessageAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+          completed.push("Forwarded a message");
+
+        } else if (action.type === "hide_conversation") {
+          const conversation = currentConversations.find(c => c.id === action.conversationId);
+          if (!conversation || !(conversation.participants || []).includes(currentUser.uid)) throw new Error("Conversation unavailable.");
+          const ref = doc(db, "conversations", action.conversationId);
+          await updateDoc(ref, { [`hiddenForBy.${currentUser.uid}`]: true, updatedAt: serverTimestamp() });
+          completed.push("Hidden the conversation");
+
+        } else if (action.type === "clear_conversation") {
+          const conversation = currentConversations.find(c => c.id === action.conversationId);
+          if (!conversation || !(conversation.participants || []).includes(currentUser.uid)) throw new Error("Conversation unavailable.");
+          const snap = await getDocs(collection(db, "conversations", action.conversationId, "messages"));
+          const writes = snap.docs.map(m => updateDoc(m.ref, { [`hiddenForBy.${currentUser.uid}`]: true }));
+          await Promise.all(writes);
+          completed.push("Cleared the conversation from your view");
+
+        } else if (action.type === "create_project") {
+          const title = String(action.title || "").trim();
+          const description = String(action.description || "").trim();
+          if (!title || !description) throw new Error("Project title and description are required.");
+          await addDoc(collection(db, "projects"), {
+            ownerUid: currentUser.uid,
+            ownerName: publicProfile?.displayName || currentUser.displayName || "Member",
+            title: title.slice(0, 120),
+            description: description.slice(0, 2000),
+            techStack: Array.isArray(action.techStack) ? action.techStack.slice(0, 20) : [],
+            projectUrl: "",
+            githubUrl: "",
+            visibility: action.visibility === "private" ? "private" : "public",
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+          await loadProjects();
+          location.hash = "#profile";
+          completed.push(`Created ${action.visibility === "private" ? "private" : "public"} project “${title}”`);
+
+        } else if (action.type === "delete_project") {
+          const projectRef = doc(db, "projects", action.projectId);
+          const snap = await getDoc(projectRef);
+          if (!snap.exists()) throw new Error("Project not found.");
+          if (snap.data().ownerUid !== currentUser.uid) throw new Error("You can delete only your own projects.");
+          await deleteDoc(projectRef);
+          await loadProjects();
+          completed.push("Deleted your project");
+
+        } else if (action.type === "update_profile") {
+          const updates = { updatedAt: serverTimestamp() };
+          const publicUpdates = { updatedAt: serverTimestamp() };
+          if (action.displayName) {
+            updates.displayName = action.displayName;
+            updates["profileData.displayName"] = action.displayName;
+            publicUpdates.displayName = action.displayName;
+            publicUpdates.nameLower = action.displayName.toLowerCase();
+          }
+          if (action.bio !== undefined) {
+            updates["profileData.bio"] = action.bio;
+            publicUpdates.bio = action.bio;
+          }
+          await updateDoc(doc(db, "users", currentUser.uid), updates);
+          if (publicProfile?.profileVisibility !== "private") await updateDoc(doc(db, "publicProfiles", currentUser.uid), publicUpdates);
+          if (action.displayName) await updateAuthProfile(currentUser, { displayName: action.displayName }).catch(() => {});
+          privateProfile = { ...(privateProfile || {}), ...(action.displayName ? { displayName: action.displayName } : {}), profileData: { ...(privateProfile?.profileData || {}), ...(action.displayName ? { displayName: action.displayName } : {}), ...(action.bio !== undefined ? { bio: action.bio } : {}) } };
+          if (publicProfile) publicProfile = { ...publicProfile, ...(action.displayName ? { displayName: action.displayName, nameLower: action.displayName.toLowerCase() } : {}), ...(action.bio !== undefined ? { bio: action.bio } : {}) };
+          renderMyProfile();
+          loadSettingsUI();
+          completed.push("Updated your profile details");
+
+        } else if (action.type === "update_settings") {
+          const prefs = readAppPrefs();
+          Object.assign(prefs, {
+            ...(action.theme ? { theme: action.theme } : {}),
+            ...(action.motion ? { motion: action.motion } : {}),
+            ...(action.textSize ? { textSize: action.textSize } : {})
+          });
+          localStorage.setItem("hackverse-app-preferences", JSON.stringify(prefs));
+          applyAppPrefs();
+          loadSettingsUI();
+          completed.push("Updated interface settings");
         }
-        allEventsVisible = 24;
-        renderEvents();
-        location.hash = "#opportunities";
-        completed.push("Applied opportunity search filters");
-      } else if (action.type === "open_opportunity") {
-        location.hash = "#opportunities";
-        viewEvent(action.eventId);
-        completed.push("Opened opportunity details");
-      } else if (action.type === "save_opportunity") {
-        if (!savedIds.has(action.eventId)) {
-          const saved = await saveEvent(action.eventId);
-          if (!saved) throw new Error("HackVerse could not save that opportunity. Check your connection and Supabase database rules.");
-          completed.push("Saved an opportunity to your shortlist");
-        } else {
-          completed.push("Opportunity was already in your shortlist");
-        }
-      } else if (action.type === "search_builders") {
-        $("#peopleSearch").value = action.query;
-        location.hash = "#people";
-        searchPeople();
-        completed.push("Started a community search");
-      } else if(action.type === "update_profile") {
-        const updates={updatedAt:serverTimestamp()};
-        const publicUpdates={updatedAt:serverTimestamp()};
-        if(action.displayName){updates.displayName=action.displayName;updates["profileData.displayName"]=action.displayName;publicUpdates.displayName=action.displayName;publicUpdates.nameLower=action.displayName.toLowerCase();}
-        if(action.bio!==undefined){updates["profileData.bio"]=action.bio;publicUpdates.bio=action.bio;}
-        await updateDoc(doc(db,"users",currentUser.uid),updates);
-        if(publicProfile?.profileVisibility!=="private")await updateDoc(doc(db,"publicProfiles",currentUser.uid),publicUpdates);
-        if(action.displayName)await updateAuthProfile(currentUser,{displayName:action.displayName}).catch(()=>{});
-        privateProfile={...(privateProfile||{}),...(action.displayName?{displayName:action.displayName}:{}),profileData:{...(privateProfile?.profileData||{}),...(action.displayName?{displayName:action.displayName}:{}),...(action.bio!==undefined?{bio:action.bio}:{})}};
-        if(publicProfile)publicProfile={...publicProfile,...(action.displayName?{displayName:action.displayName,nameLower:action.displayName.toLowerCase()}:{}),...(action.bio!==undefined?{bio:action.bio}:{})};
-        renderMyProfile();loadSettingsUI();completed.push("Updated your profile details");
-      } else if (action.type === "create_project") {
-        await addDoc(collection(db, "projects"), {
-          ownerUid: currentUser.uid,
-          ownerName: publicProfile?.displayName || currentUser.displayName || "Member",
-          title: action.title,
-          description: action.description,
-          techStack: action.techStack,
-          projectUrl: "",
-          githubUrl: "",
-          visibility: action.visibility,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-        await loadProjects();
-        location.hash = "#profile";
-        completed.push(`Created ${action.visibility} project “${action.title}”`);
-      } else if (action.type === "create_group") {
-        const selected = aiAvailableBuilders.filter(p=>action.memberUids.includes(p.uid));
-        if(selected.length!==action.memberUids.length)throw new Error("One or more suggested builders are no longer available in the public directory.");
-        await createGroupWithMembers(action.groupName,selected);
-        completed.push(`Created group “${action.groupName}”`);
-      } else if (action.type === "send_message") {
-        const conversation=currentConversations.find(c=>c.id===action.conversationId);
-        if(!conversation || !(conversation.participants||[]).includes(currentUser.uid))throw new Error("That conversation is no longer available to your account.");
-        await addDoc(collection(db,"conversations",action.conversationId,"messages"),{authorUid:currentUser.uid,authorName:publicProfile?.displayName||currentUser.displayName||"Member",text:action.text,kind:"text",createdAt:serverTimestamp()});
-        await updateDoc(doc(db,"conversations",action.conversationId),{lastMessage:action.text.slice(0,180),lastMessageSender:currentUser.uid,lastMessageAt:serverTimestamp(),updatedAt:serverTimestamp()});
-        completed.push(`Sent a message in ${conversationLabel(conversation)}`);
-      } else if (action.type === "update_settings") {
-        const prefs=readAppPrefs();Object.assign(prefs,{...(action.theme?{theme:action.theme}:{}),...(action.motion?{motion:action.motion}:{}),...(action.textSize?{textSize:action.textSize}:{})});localStorage.setItem("hackverse-app-preferences",JSON.stringify(prefs));applyAppPrefs();loadSettingsUI();
-        completed.push("Updated interface settings");
+      } catch (error) {
+        console.error("AI ACTION FAILED:", action?.type, action, error);
+        fail(action, error);
       }
     }
+
     pendingAiActions = [];
     renderAiActionReview();
-    toast(`${completed.length} AI action${completed.length === 1 ? "" : "s"} applied.`);
-    const resultText = `Done. ${completed.join("; ")}.`;
+
+    const resultParts = [];
+    if (completed.length) resultParts.push(`Completed ${completed.length} action${completed.length === 1 ? "" : "s"}: ${completed.join("; ")}.`);
+    if (failed.length) resultParts.push(`Could not complete ${failed.length} action${failed.length === 1 ? "" : "s"}: ${failed.join(" | ")}`);
+    const resultText = resultParts.join(" ") || "No actions were applied.";
+
+    if (failed.length && completed.length === 0) toast(`${failed.length} AI action${failed.length === 1 ? "" : "s"} failed.`); else if (completed.length) toast(`${completed.length} AI action${completed.length === 1 ? "" : "s"} applied.`);
+
     await persistAiMessage("assistant", resultText);
-    await updateDoc(doc(db, "aiConversations", activeAiConversationId), { preview: resultText.slice(0, 120), updatedAt: serverTimestamp() });
+    if (activeAiConversationId) {
+      await updateDoc(doc(db, "aiConversations", activeAiConversationId), {
+        preview: resultText.slice(0, 120),
+        updatedAt: serverTimestamp()
+      });
+    }
     await loadAiHistory();
   } catch (error) {
-    toast(`Some actions could not be applied: ${friendlyError(error)}`);
-    await persistAiMessage("assistant", `I applied ${completed.length} action(s), but the remaining work stopped because: ${friendlyError(error)}`).catch(() => {});
+    console.error("AI executor failed", error);
+    toast(`AI executor error: ${friendlyError(error)}`);
   }
 }
-
-
 
 function readAppPrefs(){try{return JSON.parse(localStorage.getItem("hackverse-app-preferences")||"{}");}catch{return {};}}
 function applyAppPrefs(){const p=readAppPrefs();document.body.classList.toggle("light",p.theme==="light");document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");document.body.dataset.fontFamily=p.fontFamily||"dm";}

@@ -87,10 +87,19 @@ function matches(row, constraint) {
 async function requireSession() {
   const { data, error } = await supabaseClient.auth.getSession();
   if (error) throw error;
-  const session = data?.session;
+
+  let session = data?.session || null;
+
+  if (!session?.access_token) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const retry = await supabaseClient.auth.getSession();
+    session = retry?.data?.session || null;
+  }
+
   if (!session?.access_token) {
     throw new Error("You must be signed in to access HackVerse data.");
   }
+
   return session;
 }
 
@@ -301,12 +310,13 @@ export async function sendPasswordResetEmail(_auth, email) { return auth.sendPas
 export async function signOut(_auth) { return auth.signOut(); }
 
 export async function onAuthStateChanged(_auth, callback) {
-  const { data } = await supabaseClient.auth.getUser();
-  auth.currentUser = adaptUser(data.user);
+  const { data, error } = await supabaseClient.auth.getSession();
+  if (error) throw error;
+  auth.currentUser = adaptUser(data?.session?.user || null);
   queueMicrotask(() => callback(auth.currentUser));
 
-  const subscription = supabaseClient.auth.onAuthStateChange((_event, user) => {
-    auth.currentUser = adaptUser(user);
+  const subscription = supabaseClient.auth.onAuthStateChange((_event, session) => {
+    auth.currentUser = adaptUser(session?.user || null);
     queueMicrotask(() => callback(auth.currentUser));
   });
 
