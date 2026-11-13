@@ -723,22 +723,11 @@ async function loadEvents({ forceRefresh = false } = {}) {
   }
   grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
-    // Load the complete public opportunity directory in pages. A previous
-    // single-page cap of 500 silently hid older records (often leaving ~400
-    // active opportunities after expiry filtering). Paginate without a hard
-    // total cap, while keeping each database request bounded.
-    const records = [];
-    let cursor = null;
-    const pageSize = 500;
-    while (true) {
-      const constraints = [where("visibility", "==", "public"), limit(pageSize)];
-      if (cursor) constraints.splice(1, 0, startAfter(cursor));
-      const page = await getDocs(query(collection(db, "hackathons"), ...constraints));
-      if (page.empty) break;
-      records.push(...page.docs.map(d => ({ id: d.id, ...d.data() })));
-      cursor = page.docs[page.docs.length - 1];
-      if (page.size < pageSize) break;
-    }
+    // Keep first-load reads bounded to one page. The cached directory paints
+    // immediately on repeat visits; a dedicated paginated directory can extend
+    // this when a member searches or opens the full listing.
+    const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(500)));
+    const records = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     writeOpportunityCache(records);
     displayOpportunityRecords(records);
   } catch (error) {

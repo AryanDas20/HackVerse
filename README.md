@@ -149,8 +149,3 @@ Only seed posts containing `[HV13-SEED]` are replaced on repeat runs. Do not use
 - This repository can run code/unit/static checks but cannot validate live OAuth, production Supabase RLS, Storage policies, email delivery, Vercel secrets, or actual devices. Those need staging deployment tests.
 - The legacy document adapter uses visibility-aware polling, not a persistent realtime socket for every collection. It pauses inactive chat listeners and backs off polling to reduce load. A future Realtime migration or server-sent event layer can further reduce request volume for very large usage.
 - The report queue stores and reviews reports; staff must still investigate, apply moderation decisions and publish a clear appeals/escalation policy.
-
-
-## v14.1 opportunity directory fix
-
-The public opportunity directory now loads all matching records using cursor-based pagination (500 records per request) instead of stopping after the first 500. Expired and duplicate opportunities are still filtered from the active display. No database migration is required for this frontend fix.
