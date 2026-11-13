@@ -1,0 +1,101 @@
+/* HackVerse v14 — sharing, mobile inbox and lower-render-cost interface */
+
+/* Posts: keep the writing surface out of the way until somebody starts a post. */
+.social-posts-page .section-heading { align-items: center; }
+#focusPostComposer[aria-expanded="true"] { border-color: var(--accent); }
+.social-composer[hidden] { display: none !important; }
+.social-composer { gap: 14px; padding: clamp(14px, 2.2vw, 22px); }
+.social-composer-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.social-composer-heading > div { display: grid; gap: 4px; }
+.social-composer-heading b { color: var(--text); font-size: 14px; }
+.social-composer-heading small { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.social-composer textarea { min-height: 145px; padding: 15px 16px; font-size: 14px; }
+.social-composer-extra { grid-template-columns: minmax(0,1fr) minmax(125px,.48fr) minmax(115px,.42fr) minmax(115px,.42fr); }
+.social-composer-extra input { grid-column: 1 / 2; }
+.social-composer-submit { display: flex; justify-content: flex-end; grid-column: 1 / -1; }
+.social-composer-submit .btn { min-width: 190px; }
+.social-file-label { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: 11px; }
+.social-file-label input { min-width: 0; max-width: 100%; padding: 7px !important; font-size: 10px !important; }
+.social-post-card { contain: layout paint; }
+.social-post-actions button { min-height: 39px; }
+.social-post-actions button[data-social-share] { color: var(--accent); border-color: color-mix(in srgb,var(--accent) 22%,transparent); background: color-mix(in srgb,var(--accent) 7%,transparent); }
+
+/* Opportunity cards remain balanced when the extra Share action is present. */
+.event-actions { flex-wrap: wrap; }
+.event-actions button { min-height: 36px; }
+.event-detail-actions { flex-wrap: wrap; }
+.project-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 13px; }
+.project-card-actions .text-danger { min-height: 36px; }
+
+/* A consistent rich preview when an opportunity, post or project is shared in chat. */
+.chat-shared-card { display: grid; gap: 7px; width: min(100%, 360px); margin: 5px 0 8px; padding: 13px; border: 1px solid color-mix(in srgb,var(--accent) 28%,var(--line)); border-radius: 13px; color: var(--text); background: linear-gradient(135deg,color-mix(in srgb,var(--accent) 10%,var(--surface2)),var(--surface2)); text-decoration: none; }
+.chat-shared-kicker { color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.chat-shared-card b { color: var(--text); font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+.chat-shared-card small { color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.chat-shared-link { color: var(--accent); font-size: 11px; font-weight: 700; }
+.message-forwarded { display: block; margin: 0 0 5px; color: var(--muted); font-size: 9px; font-style: italic; }
+
+/* WhatsApp-like mobile pattern: list first, conversation second, explicit back navigation. */
+.chat-workspace.whatsapp-shell { min-width: 0; }
+.chat-mobile-back { display: none; }
+@media (max-width: 680px) {
+  .social-posts-page .section-heading { align-items: flex-start; }
+  .social-posts-page .section-heading > .btn { width: auto; flex: 0 0 auto; }
+  .social-composer-extra { grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: stretch; }
+  .social-composer-extra > input { grid-column: 1 / -1; }
+  .social-composer-extra .social-file-label { grid-column: 1 / -1; flex-wrap: wrap; }
+  .social-composer-submit { grid-column: 1 / -1; }
+  .social-composer-submit .btn { width: 100%; }
+  .chat-workspace.whatsapp-shell { display: grid !important; grid-template-columns: minmax(0,1fr) !important; grid-template-rows: minmax(0,1fr); width: 100%; height: min(calc(100dvh - 185px), 820px) !important; min-height: 430px; max-height: 820px; overflow: hidden; border-radius: 16px; }
+  .chat-workspace.whatsapp-shell .chat-sidebar { display: flex; flex-direction: column; min-width: 0; width: 100%; max-height: none; height: 100%; border: 0; border-radius: 16px; }
+  .chat-workspace.whatsapp-shell .chat-sidebar-head { flex: 0 0 auto; }
+  .chat-workspace.whatsapp-shell .chat-filter-tabs { flex: 0 0 auto; }
+  .chat-workspace.whatsapp-shell .chat-search-wrap { flex: 0 0 auto; }
+  .chat-workspace.whatsapp-shell .conversation-list { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .chat-workspace.whatsapp-shell .chat-main { display: none; width: 100%; min-width: 0; min-height: 0; height: 100%; border: 0; border-radius: 16px; }
+  .chat-workspace.whatsapp-shell .chat-main .chat-active { min-height: 0; height: 100%; }
+  .chat-workspace.whatsapp-shell.has-active-chat .chat-sidebar { display: none; }
+  .chat-workspace.whatsapp-shell.has-active-chat .chat-main { display: flex; }
+  .chat-workspace.whatsapp-shell .chat-heading { flex: 0 0 auto; min-height: 64px; align-items: center; }
+  .chat-workspace.whatsapp-shell .chat-head-actions { align-items: center; flex-direction: row; gap: 5px; }
+  .chat-workspace.whatsapp-shell .chat-mobile-back { display: inline-flex; flex: 0 0 40px; width: 40px; min-width: 40px; height: 40px; align-items: center; justify-content: center; margin-right: 2px; border-radius: 12px; font-size: 20px; }
+  .chat-workspace.whatsapp-shell .chat-contact { min-width: 0; flex: 1 1 auto; }
+  .chat-workspace.whatsapp-shell .chat-main .message-list { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .chat-workspace.whatsapp-shell .composer-tools { flex: 0 0 auto; }
+  .chat-workspace.whatsapp-shell .message-composer { flex: 0 0 auto; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  .chat-workspace.whatsapp-shell .chat-placeholder { display: none; }
+  .chat-workspace.whatsapp-shell:not(.has-active-chat) .chat-main { display: none; }
+  .chat-workspace.whatsapp-shell .conversation-item { min-height: 68px; }
+  .chat-workspace.whatsapp-shell .chat-sidebar-foot { flex: 0 0 auto; }
+}
+@media (max-width: 390px) {
+  .social-posts-page .section-heading > .btn { padding-inline: 11px; font-size: 11px; }
+  .chat-workspace.whatsapp-shell { height: min(calc(100dvh - 160px), 760px) !important; min-height: 390px; }
+  .chat-workspace.whatsapp-shell .chat-head-actions .chat-tool:not(.chat-mobile-back) { min-width: 34px; width: 34px; height: 34px; }
+  .chat-workspace.whatsapp-shell .chat-mobile-back { min-width: 36px; width: 36px; flex-basis: 36px; }
+}
+
+/* Reduce costly decorative paints and transitions on compact/touch devices. */
+@media (max-width: 820px) {
+  .ambient { display: none; }
+  .topbar { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+  .social-post-card, .project-card, .opportunity-card { box-shadow: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+@media (max-width: 680px) {
+  /* The builder directory becomes a WhatsApp-like contact list on phones. */
+  #people.people-page, #people { min-width: 0; }
+  #peopleGrid.people-grid { grid-template-columns: minmax(0,1fr); gap: 8px; }
+  #peopleGrid .person-card { display: grid; grid-template-columns: minmax(0,1fr); gap: 7px; padding: 12px; border-radius: 13px; }
+  #peopleGrid .person-top { display: flex; align-items: center; gap: 10px; }
+  #peopleGrid .person-top .avatar { flex: 0 0 42px; width: 42px; height: 42px; }
+  #peopleGrid .person-title { flex: 1 1 auto; min-width: 0; }
+  #peopleGrid .person-college, #peopleGrid .person-bio { margin: 0; font-size: 11px; line-height: 1.45; }
+  #peopleGrid .skill-tags { gap: 5px; }
+  #peopleGrid .person-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  #peopleGrid .person-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  #peopleGrid .person-actions button { min-height: 36px; padding: 7px 10px; }
+}

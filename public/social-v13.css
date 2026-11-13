@@ -1,11 +1,5 @@
 /* HackVerse v13 — social feed, dedicated public profiles, reporting, and adaptive layouts. */
 :root { --social-card: var(--surface); --social-shadow: 0 10px 34px rgba(0,0,0,.08); }
-.home-feed-preferences { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:12px auto 26px; padding:16px 18px; border:1px solid var(--line); border-radius:16px; background:var(--surface); }
-.home-feed-preferences>div:first-child { display:grid; gap:3px; min-width:0; }
-.home-feed-preferences b { color:var(--text); font-size:14px; }
-.home-feed-preferences small { color:var(--muted); font-size:12px; }
-.home-feed-preference-controls { display:flex; gap:8px; align-items:center; }
-.home-feed-preference-controls select { min-width:170px; max-width:100%; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--surface2); color:var(--text); }
 .social-posts-page,.public-profile-page,.report-center-page { max-width:1000px; }
 .social-composer,.report-form { display:grid; gap:13px; padding:18px; margin:0 0 17px; border:1px solid var(--line); border-radius:18px; background:var(--surface); box-shadow:var(--social-shadow); }
 .social-composer textarea,.report-form textarea { width:100%; min-height:95px; resize:vertical; border:1px solid var(--line); border-radius:12px; background:var(--surface2); color:var(--text); padding:13px 14px; font:inherit; line-height:1.6; }
@@ -77,7 +71,7 @@
 .report-history-row small { color:var(--muted); font-size:10px; }
 .report-status { align-self:center; border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); font-size:10px; }
 .report-safety-note { margin-top:18px; color:var(--muted); font-size:11px; line-height:1.7; }
-.home-feed-preferences select:focus-visible,.social-composer :focus-visible,.report-form :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 50%,transparent); outline-offset:2px; }
+.social-composer :focus-visible,.report-form :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 50%,transparent); outline-offset:2px; }
 .chat-mobile-back { display:none; }
 .chat-workspace.has-active-chat .chat-main { min-width:0; }
 .sr-only { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
@@ -87,9 +81,6 @@
   .public-profile-cover { height:170px; }
 }
 @media(max-width:680px) {
-  .home-feed-preferences { align-items:stretch; flex-direction:column; padding:14px; }
-  .home-feed-preference-controls { display:grid; grid-template-columns:minmax(0,1fr) auto; }
-  .home-feed-preference-controls select { min-width:0; }
   .social-posts-page .section-heading,.report-center-page .section-heading { align-items:flex-start; }
   .social-composer,.report-form,.social-post-card { padding:13px; border-radius:14px; }
   .social-composer-extra { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }

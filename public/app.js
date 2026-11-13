@@ -12,7 +12,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const CONFIGURED = Boolean(supabaseConfig.url && !String(supabaseConfig.url).startsWith("YOUR_") && supabaseConfig.anonKey && !String(supabaseConfig.anonKey).startsWith("YOUR_"));
 let currentUser = null, authMode = "signin", isAdminUser = false;
 let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [];
-let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null;
+let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null, chatReturnHash = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
 let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
 let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [], isSendingChatMessage = false;
@@ -107,6 +107,139 @@ function socialAvatar(profile, size = "") {
   const src = validUrl(profile?.avatar_url || profile?.avatarUrl || "");
   return `<span class="social-avatar ${size}">${src ? `<img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(profile?.display_name || profile?.displayName || profile?.username))}</span>`;
 }
+function shareCanvasText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 4) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  let line = "", lines = [];
+  for (const word of words) {
+    const test = line ? `${line} ${word}` : word;
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = word; }
+    else line = test;
+    if (lines.length >= maxLines) break;
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  if (lines.length === maxLines && words.join(" ").length > lines.join(" ").length) {
+    let last = lines[maxLines - 1];
+    while (ctx.measureText(`${last}…`).width > maxWidth && last.length) last = last.slice(0, -1);
+    lines[maxLines - 1] = `${last.trimEnd()}…`;
+  }
+  lines.forEach((value, index) => ctx.fillText(value, x, y + index * lineHeight));
+  return lines.length;
+}
+function makeShareCardBlob(item) {
+  return new Promise((resolve, reject) => {
+    try {
+      const canvas = document.createElement("canvas"); canvas.width = 1080; canvas.height = 1080;
+      const ctx = canvas.getContext("2d"); if (!ctx) throw new Error("Canvas is unavailable.");
+      const gradient = ctx.createLinearGradient(0, 0, 1080, 1080);
+      gradient.addColorStop(0, "#14121b"); gradient.addColorStop(.52, "#27202d"); gradient.addColorStop(1, "#121b20");
+      ctx.fillStyle = gradient; ctx.fillRect(0, 0, 1080, 1080);
+      const glow = ctx.createRadialGradient(860, 170, 20, 860, 170, 520);
+      glow.addColorStop(0, "rgba(255,87,131,.48)"); glow.addColorStop(1, "rgba(255,87,131,0)");
+      ctx.fillStyle = glow; ctx.fillRect(0, 0, 1080, 1080);
+      ctx.save(); ctx.globalAlpha = .18; ctx.strokeStyle = "#f7c36a"; ctx.lineWidth = 2;
+      for (let r = 0; r < 6; r++) { ctx.beginPath(); ctx.arc(920, 180, 110 + r * 44, 0, Math.PI * 2); ctx.stroke(); }
+      ctx.restore();
+      const rounded = (x,y,w,h,r) => { ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); };
+      ctx.fillStyle = "rgba(255,255,255,.07)"; rounded(68, 68, 944, 944, 42); ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,.15)"; ctx.lineWidth = 2; rounded(68, 68, 944, 944, 42); ctx.stroke();
+      ctx.fillStyle = "#f7f1ee"; ctx.font = "800 38px Arial, sans-serif"; ctx.fillText("HACK", 112, 158);
+      ctx.fillStyle = "#ff6b72"; ctx.fillText("VERSE", 238, 158);
+      ctx.fillStyle = "rgba(255,255,255,.65)"; ctx.font = "600 19px Arial, sans-serif"; ctx.fillText("DISCOVER  ·  CONNECT  ·  CREATE", 112, 202);
+      const type = String(item.type || "update").toUpperCase();
+      ctx.fillStyle = "#ff647f"; rounded(112, 278, Math.min(300, Math.max(178, 30 + type.length * 15)), 54, 27); ctx.fill();
+      ctx.fillStyle = "#201722"; ctx.font = "800 20px Arial, sans-serif"; ctx.fillText(type, 138, 313);
+      ctx.fillStyle = "#fffaf8"; ctx.font = "800 58px Arial, sans-serif";
+      const titleLines = shareCanvasText(ctx, item.title || "A new idea from HackVerse", 112, 430, 820, 72, 3);
+      const descY = 430 + Math.max(1, titleLines) * 72 + 46;
+      ctx.fillStyle = "rgba(255,250,248,.78)"; ctx.font = "400 29px Arial, sans-serif";
+      shareCanvasText(ctx, item.description || "Explore this update and connect with the builder community.", 112, descY, 820, 42, 2);
+      ctx.fillStyle = "rgba(255,255,255,.10)"; rounded(112, 820, 820, 112, 24); ctx.fill();
+      ctx.fillStyle = "#ffcf82"; ctx.font = "700 20px Arial, sans-serif"; ctx.fillText("OPEN THE LINK", 144, 860);
+      ctx.fillStyle = "#fffaf8"; ctx.font = "500 19px Arial, sans-serif";
+      shareCanvasText(ctx, item.url || location.origin, 144, 899, 750, 25, 2);
+      ctx.fillStyle = "rgba(255,255,255,.58)"; ctx.font = "500 18px Arial, sans-serif"; ctx.fillText("Built for people who build.", 112, 978);
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Could not create the share image.")), "image/png");
+    } catch (error) { reject(error); }
+  });
+}
+function downloadShareCard(blob, filename) {
+  const objectUrl = URL.createObjectURL(blob); const link = document.createElement("a");
+  link.href = objectUrl; link.download = filename; document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+}
+function shareFilename(item) {
+  const slug = String(item.title || item.type || "update").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "update";
+  return `hackverse-${slug}.png`;
+}
+async function shareExternally(item) {
+  const url = validUrl(item.url) || `${location.origin}/#home`;
+  const normalized = { ...item, url };
+  try {
+    const blob = await makeShareCardBlob(normalized);
+    const file = new File([blob], shareFilename(normalized), { type: "image/png" });
+    const payload = { title: normalized.title || "HackVerse", text: `${normalized.description || "Explore this on HackVerse."}\n${url}`, url };
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ ...payload, files: [file] });
+      toast("Share card sent."); return;
+    }
+    downloadShareCard(blob, shareFilename(normalized));
+    if (navigator.share) {
+      await navigator.share(payload); toast("PNG downloaded and link shared."); return;
+    }
+    await navigator.clipboard.writeText(url);
+    toast("Square PNG downloaded and link copied. Attach the PNG when sharing externally.");
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    try { await navigator.clipboard.writeText(url); toast("Link copied. Your browser could not create the image share."); }
+    catch { toast("Could not share this item from this browser."); }
+  }
+}
+async function sendSharedItemToConversation(item, conversationId, forwarded = false) {
+  if (!currentUser || !db || !conversationId) throw new Error("Choose a chat before sharing.");
+  const title = String(item.title || "HackVerse update").slice(0, 180);
+  const description = String(item.description || "").slice(0, 600);
+  const url = validUrl(item.url) || `${location.origin}/#home`;
+  const text = `${forwarded ? "Forwarded" : "Shared"} ${item.type || "update"}: ${title}\n${description}\n${url}`.slice(0, 2000);
+  await addDoc(collection(db, "conversations", conversationId, "messages"), {
+    authorUid: currentUser.uid,
+    authorName: publicProfile?.displayName || currentUser.displayName || "Member",
+    text, kind: "share", forwarded: Boolean(forwarded), sharedItem: { type: item.type || "update", title, description, url, sourceId: String(item.sourceId || "").slice(0, 120) },
+    createdAt: serverTimestamp()
+  });
+  await updateDoc(doc(db, "conversations", conversationId), {
+    lastMessage: `Shared: ${title}`.slice(0, 180), lastMessageSender: currentUser.uid,
+    lastMessageAt: serverTimestamp(), updatedAt: serverTimestamp()
+  });
+}
+async function forwardSharedItem(item) {
+  if (!requireAccount()) return;
+  const choices = currentConversations.slice(0, 20);
+  if (!choices.length) { toast("Open another conversation before forwarding."); return; }
+  const listing = choices.map((c, i) => `${i + 1}. ${conversationLabel(c)}`).join("\n");
+  const entered = await promptInApp("Share in a chat", `Choose a destination chat:\n${listing}`, "1", "Destination number");
+  if (entered === null) return;
+  const target = choices[Number(entered) - 1];
+  if (!target) { toast("Choose a valid conversation number."); return; }
+  try { await sendSharedItemToConversation(item, target.id, false); toast(`Shared in ${conversationLabel(target)}.`); }
+  catch (error) { toast(friendlyError(error)); }
+}
+async function openShareMenu(item) {
+  const restricted = item.visibility === "private" || item.visibility === "followers";
+  if (restricted) {
+    await chooseInApp("Sharing is restricted", "This item is not public. Change its visibility to Public before forwarding or sharing it outside its allowed audience.", [{ value: "cancel", label: "Close", variant: "outline" }]);
+    return;
+  }
+  const choices = [{ value: "chat", label: "Share in a HackVerse chat", variant: "primary" }];
+  choices.push({ value: "external", label: "Share externally + PNG", variant: "outline" });
+  choices.push({ value: "copy", label: "Copy link", variant: "outline" }, { value: "cancel", label: "Cancel", variant: "outline" });
+  const choice = await chooseInApp("Share this on HackVerse", "Choose how you would like to share this item.", choices);
+  if (choice === "chat") await forwardSharedItem(item);
+  else if (choice === "external") await shareExternally(item);
+  else if (choice === "copy") {
+    try { await navigator.clipboard.writeText(validUrl(item.url) || `${location.origin}/#home`); toast("Link copied."); }
+    catch { toast("Clipboard access was blocked by your browser."); }
+  }
+}
 function renderSocialPost(post) {
   const author = post.author || {};
   const own = post.author_id === currentUser?.uid;
@@ -141,10 +274,13 @@ function bindSocialPostActions(root) {
     try { await socialRequest("repost", { postId: button.dataset.socialRepost }); toast("Reposted to your network."); await loadSocialFeed({ reset: true }); }
     catch (error) { toast(error.message); }
   });
-  bind("[data-social-share]", async button => {
-    const url = `${location.origin}/post/${encodeURIComponent(button.dataset.socialShare)}`;
-    try { if (navigator.share) await navigator.share({ title: "HackVerse post", text: "Explore this post on HackVerse", url }); else { await navigator.clipboard.writeText(url); toast("Posts link copied."); } }
-    catch (error) { if (error?.name !== "AbortError") toast("Could not share this link on this device."); }
+  bind("[data-social-share]", button => {
+    const postId = button.dataset.socialShare;
+    const card = button.closest("[data-social-post]");
+    const title = card?.querySelector(".social-post-text")?.textContent?.trim().slice(0, 120) || "A builder update on HackVerse";
+    const visibility = card?.querySelector(".social-post-visibility")?.textContent?.trim() || "public";
+    const author = card?.querySelector(".social-author-copy button")?.textContent?.trim() || "A HackVerse builder";
+    openShareMenu({ type: "post", title, description: `${author} shared an update with the HackVerse community.`, url: `${location.origin}/post/${encodeURIComponent(postId)}`, sourceId: postId, visibility });
   });
   bind("[data-social-report]", button => {
     location.hash = "#reports"; setTimeout(() => { const type=$("#reportTargetType"); const target=$("#reportTargetId"); if(type&&target){type.value="post";target.value=button.dataset.socialReport;updateReportFields();} }, 0);
@@ -238,7 +374,7 @@ async function createSocialPost(event) {
       mediaUrl=prepared.publicUrl; mediaType="image";
     }
     await socialRequest("create-post", { content, mediaUrl, mediaType, visibility: $("#socialPostVisibility").value });
-    $("#socialPostForm").reset(); message.textContent = "Post published."; await loadSocialFeed({ reset: true });
+    $("#socialPostForm").reset(); message.textContent = "Post published."; $("#socialPostForm").hidden = true; $("#focusPostComposer").setAttribute("aria-expanded", "false"); toast("Post published."); await loadSocialFeed({ reset: true });
   } catch (error) { message.textContent = error.message; }
   finally { button.disabled = false; }
 }
@@ -332,12 +468,6 @@ async function loadSocialNotifications(){
   try{const data=await socialRequest("notifications");const items=data.notifications||[];host.innerHTML=items.map(item=>{const actor=esc(item.actor?.display_name||"A builder");const text={follow:`started following you`,follow_request:`requested to follow you`,follow_accepted:`accepted your follow request`,upvote:`upvoted your post`,downvote:`downvoted your post`,comment:`commented on your post`,mention:`mentioned you`,repost:`reposted your post`}[item.type]||"interacted with your account";return `<button type="button" class="notification-item ${item.is_read?"":"unread"}" data-social-notification="${esc(item.id)}" data-notification-post="${esc(item.post_id||"")}"><span class="notification-icon">${item.type==="follow"?"＋":"✦"}</span><span><b>${actor} ${text}</b><small>${esc(socialTime(item.created_at))}</small></span><i>${item.is_read?"SEEN":"NEW"}</i></button>`;}).join("")||'<div class="empty-note">No builder activity yet.</div>';
     host.querySelectorAll("[data-social-notification]").forEach(button=>button.addEventListener("click",async()=>{try{await socialRequest("mark-read",{ids:[button.dataset.socialNotification]});if(button.dataset.notificationPost){location.hash="#posts";}await loadSocialNotifications();}catch(error){toast(error.message);}}));
   }catch(error){host.innerHTML=`<div class="empty-note">${esc(error.message)}</div>`;}
-}
-function saveHomeFeedPreference() {
-  const value=$("#homeFeedPreference")?.value||"overview";
-  localStorage.setItem("hackverse-home-feed-v13",value);
-  if(currentUser) socialRequest("preferences",{save:true,homeFeed:value}).catch(error=>console.warn("Could not sync home feed preference",error));
-  toast("Your Home preference is saved.");
 }
 
 function initSupabase() {
@@ -872,7 +1002,7 @@ function opportunityCard(event, index) {
   const place = event.location || [event.city,event.region,event.country].filter(Boolean).join(", ") || (mode === "Online" ? "Online / remote" : "Location not listed");
   const track = (event.tracks || event.tags || []).slice(0,2).join(" · ");
   const sourceCredit = event.sourceName === "Brabble.ai" ? ' · via <a href="https://brabble.ai/" target="_blank" rel="noopener noreferrer">Brabble.ai</a>' : (event.sourceName && event.organizer ? ` · via ${esc(event.sourceName)}` : "");
-  return `<article class="event-card opportunity-card"><div class="event-banner b${(index%3)+1}"><span class="tag">${esc(cat)}</span><span class="tag">${esc(mode)}</span></div><div class="event-body"><div class="event-source">${esc(organizer)}${sourceCredit}</div><h3>${esc(event.title || "Untitled opportunity")}</h3><p class="event-desc">${esc(event.summary || "Open the original organiser listing for its full details.")}</p><div class="event-facts"><span>◎ ${esc(place)}</span>${track ? `<span>✦ ${esc(track)}</span>` : ""}<span>◷ ${esc(deadlineText)}</span></div><div class="event-bottom"><span class="event-prize">${esc(prize)}</span><div class="event-actions"><button class="save-btn" data-save="${esc(event.id)}">${savedIds.has(event.id)?"♥ Saved":"♡ Save"}</button><button class="register-btn" data-view-event="${esc(event.id)}">Read details ↗</button></div></div></div></article>`;
+  return `<article class="event-card opportunity-card"><div class="event-banner b${(index%3)+1}"><span class="tag">${esc(cat)}</span><span class="tag">${esc(mode)}</span></div><div class="event-body"><div class="event-source">${esc(organizer)}${sourceCredit}</div><h3>${esc(event.title || "Untitled opportunity")}</h3><p class="event-desc">${esc(event.summary || "Open the original organiser listing for its full details.")}</p><div class="event-facts"><span>◎ ${esc(place)}</span>${track ? `<span>✦ ${esc(track)}</span>` : ""}<span>◷ ${esc(deadlineText)}</span></div><div class="event-bottom"><span class="event-prize">${esc(prize)}</span><div class="event-actions"><button class="save-btn" data-save="${esc(event.id)}">${savedIds.has(event.id)?"♥ Saved":"♡ Save"}</button><button class="save-btn" data-share-opportunity="${esc(event.id)}">↗ Share</button><button class="register-btn" data-view-event="${esc(event.id)}">Read details ↗</button></div></div></div></article>`;
 }
 function renderLearningCatalog() {
   const panel = $("#learningCatalog");
@@ -1012,7 +1142,14 @@ function renderEvents() {
   [preview,full].filter(Boolean).forEach(grid => {
     grid.querySelectorAll("[data-save]").forEach(button => button.addEventListener("click", () => saveEvent(button.dataset.save)));
     grid.querySelectorAll("[data-view-event]").forEach(button => button.addEventListener("click", () => viewEvent(button.dataset.viewEvent)));
+    grid.querySelectorAll("[data-share-opportunity]").forEach(button => button.addEventListener("click", () => shareOpportunity(button.dataset.shareOpportunity)));
   });
+}
+function shareOpportunity(eventId) {
+  const event = events.find(row => row.id === eventId); if (!event) return;
+  const url = validUrl(event.officialRegistrationUrl || event.officialEventUrl || event.sourceUrl) || `${location.origin}/#opportunities`;
+  const desc = [event.organizer || event.sourceName, event.summary || event.description, event.registrationDeadline ? `Deadline: ${dateLabel(event.registrationDeadline)}` : ""].filter(Boolean).join(" · ").slice(0, 500);
+  openShareMenu({ type: "opportunity", title: event.title || "HackVerse opportunity", description: desc, url, sourceId: event.id, visibility: "public" });
 }
 function viewEvent(eventId) {
   if (!requireAccount()) return;
@@ -1031,8 +1168,9 @@ function viewEvent(eventId) {
   ].filter(([,v]) => v !== null && v !== undefined && String(v).trim() && String(v) !== "Not provided");
   const fullDescription = event.description || event.summary || "The source did not provide a longer description. Open the organiser listing for current requirements and details.";
   const url = validUrl(event.officialRegistrationUrl || event.officialEventUrl || event.sourceUrl);
-  $("#eventModalContent").innerHTML = `<div class="event-detail-hero"><span class="detail-category">${esc(cat)}</span><span class="detail-status">${esc(event.verificationStatus || "Source attributed")}</span><h2 id="eventModalTitle">${esc(event.title || "Opportunity details")}</h2><p>${esc(event.organizer || event.sourceName || "Organiser not listed")}</p></div><div class="event-detail-description"><h3>About this opportunity</h3><p>${esc(fullDescription)}</p></div><div class="event-detail-grid">${rows.map(([k,v])=>`<div class="event-detail-fact"><small>${esc(k)}</small><strong>${esc(v)}</strong></div>`).join("")}</div><div class="event-detail-actions"><button class="btn btn-outline" data-save="${esc(event.id)}">${savedIds.has(event.id)?"♥ Saved":"♡ Save opportunity"}</button>${url ? `<a class="btn btn-primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open organiser / registration page ↗</a>` : ""}</div><small class="event-source-disclaimer">Details are based on the connected source and may change. Confirm requirements and deadlines on the organiser's page.</small>`;
+  $("#eventModalContent").innerHTML = `<div class="event-detail-hero"><span class="detail-category">${esc(cat)}</span><span class="detail-status">${esc(event.verificationStatus || "Source attributed")}</span><h2 id="eventModalTitle">${esc(event.title || "Opportunity details")}</h2><p>${esc(event.organizer || event.sourceName || "Organiser not listed")}</p></div><div class="event-detail-description"><h3>About this opportunity</h3><p>${esc(fullDescription)}</p></div><div class="event-detail-grid">${rows.map(([k,v])=>`<div class="event-detail-fact"><small>${esc(k)}</small><strong>${esc(v)}</strong></div>`).join("")}</div><div class="event-detail-actions"><button class="btn btn-outline" data-save="${esc(event.id)}">${savedIds.has(event.id)?"♥ Saved":"♡ Save opportunity"}</button><button class="btn btn-outline" id="shareEventDetailBtn" type="button">↗ Share</button>${url ? `<a class="btn btn-primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open organiser / registration page ↗</a>` : ""}</div><small class="event-source-disclaimer">Details are based on the connected source and may change. Confirm requirements and deadlines on the organiser's page.</small>`;
   $("#eventModalContent [data-save]").onclick = () => saveEvent(event.id);
+  $("#shareEventDetailBtn").onclick = () => shareOpportunity(event.id);
   showModal("eventModal");
 }
 
@@ -1063,6 +1201,7 @@ function renderSaved() {
   preview.innerHTML = savedEvents.length ? savedEvents.map(opportunityCard).join("") : `<div class="loading-card">${currentUser ? "Your saved opportunities will appear here when you bookmark an event." : "Sign in to save and revisit opportunities."}</div>`;
   preview.querySelectorAll("[data-save]").forEach(button => button.addEventListener("click", () => saveEvent(button.dataset.save)));
   preview.querySelectorAll("[data-view-event]").forEach(button => button.addEventListener("click", () => viewEvent(button.dataset.viewEvent)));
+  preview.querySelectorAll("[data-share-opportunity]").forEach(button => button.addEventListener("click", () => shareOpportunity(button.dataset.shareOpportunity)));
 }
 
 function renderPeopleEmpty() { $("#peopleGrid").innerHTML = '<div class="loading-card">Connect Supabase and create a profile to begin discovering teammates.</div>'; }
@@ -1144,13 +1283,13 @@ function beginInboxListener() {
   stopInboxListener = onSnapshot(inboxQuery, snapshot => {
     currentConversations = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(c => !c.deleted).sort((a,b) => tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
     renderConversationList(currentConversations);
-    renderNotificationCenter();
+    if (location.hash === "#notifications") renderNotificationCenter();
     const notificationBaselineKey=`hv-inbox-baseline-${currentUser.uid}`;
     if(localStorage.getItem(notificationBaselineKey)==="1") notifyIncomingActivity(currentConversations);
     else { currentConversations.forEach(c=>{const stamp=tsMillis(c.lastMessageAt);if(stamp)localStorage.setItem(`hv-notified-${currentUser.uid}-${c.id}`,String(stamp));});localStorage.setItem(notificationBaselineKey,"1"); }
     if (activeConversationId) {
       const latest = currentConversations.find(x => x.id === activeConversationId);
-      if (latest) { activeConversation = latest; renderChatHeading(); if(currentMessages.length)renderMessages(currentMessages); }
+      if (latest) { activeConversation = latest; renderChatHeading(); }
     }
   }, error => { console.error("Inbox listener", error); $("#conversationList").innerHTML = '<div class="empty-note">Could not load conversations. Check Supabase database rules.</div>'; });
 }
@@ -1194,7 +1333,7 @@ function renderConversationList(rows) {
     const preview = c.lastMessageSender === currentUser?.uid ? `You: ${c.lastMessage || ""}` : (c.lastMessage || (c.isGroup ? "Group created" : "Say hello"));
     return `<button class="conversation-item ${c.id === activeConversationId ? "selected" : ""} ${unread ? "has-unread" : ""}" data-conversation="${esc(c.id)}"><span class="conversation-avatar ${c.isGroup ? "group-avatar" : ""}">${esc(avatar)}</span><span class="conversation-copy"><b>${esc(conversationLabel(c))}</b><small>${esc(preview)}</small></span><span class="conversation-side-meta"><time>${esc(time)}</time>${unread ? '<i class="unread-dot"></i>' : (pinned.has(c.id) ? '<i class="pinned-mark">⌖</i>' : '')}</span></button>`;
   }).join("");
-  list.querySelectorAll("[data-conversation]").forEach(b => b.onclick = () => selectConversation(visible.find(c => c.id === b.dataset.conversation)));
+  list.querySelectorAll("[data-conversation]").forEach(b => b.onclick = () => { chatReturnHash = null; selectConversation(visible.find(c => c.id === b.dataset.conversation)); });
 }
 async function hideChatForMe() {
   if(!activeConversationId||!requireAccount())return;
@@ -1239,19 +1378,46 @@ function selectConversation(conversation) {
     pendingChatFile = null;
     renderPendingChatAttachment();
   }
-  activeConversation = conversation; activeConversationId = conversation.id; replyingToMessageId = null;
+  activeConversation = conversation; activeConversationId = conversation.id; replyingToMessageId = null; currentMessages = [];
+  $("#messageList").innerHTML = '<div class="loading-card">Loading conversation…</div>';
   $("#chatPlaceholder").hidden = true; $("#chatActive").hidden = false; $(".chat-workspace")?.classList.add("has-active-chat"); renderChatHeading(); updateReplyPreview();
   if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
-  const messagesQuery = query(collection(db, "conversations", conversation.id, "messages"), orderBy("createdAt", "desc"), limit(300));
-  let firstMessagesSnapshot = true;
+  lastTypingPublishedAt = 0;
+  const conversationId = conversation.id;
+  const messagesQuery = query(collection(db, "conversations", conversation.id, "messages"), orderBy("createdAt", "desc"), limit(120));
+  let firstMessagesSnapshot = true, pendingSnapshot = null, renderFrame = 0, lastReceiptMessageId = "";
   stopMessageListener = onSnapshot(messagesQuery, snapshot => {
-    const nextMessages = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).reverse();
-    const oldIds = new Set(currentMessages.map(message => message.id));
-    const arrivingIds = new Set(firstMessagesSnapshot ? [] : nextMessages.filter(message => !oldIds.has(message.id)).map(message => message.id));
-    currentMessages = nextMessages;
-    renderMessages(currentMessages, { animateIds: arrivingIds });
-    firstMessagesSnapshot = false;
-    hydrateChatAttachmentUrls(conversation.id, currentMessages).catch(error => console.warn("Chat attachment preview unavailable", error)); markConversationDelivered(conversation.id).catch(()=>{}); markConversationRead(conversation.id).catch(()=>{});
+    pendingSnapshot = snapshot;
+    if (renderFrame) return;
+    renderFrame = requestAnimationFrame(() => {
+      renderFrame = 0;
+      if (activeConversationId !== conversationId || !pendingSnapshot) return;
+      const currentSnapshot = pendingSnapshot; pendingSnapshot = null;
+      const previousById = new Map(currentMessages.map(message => [message.id, message]));
+      const nextMessages = currentSnapshot.docs.map(d => {
+        const next = { id: d.id, ...d.data() };
+        const previous = previousById.get(next.id);
+        // Firestore snapshots contain the stored path, not the signed URL. Keep an
+        // already-hydrated URL when a reaction/edit/read receipt causes a new snapshot.
+        if (next.attachment?.storagePath && !next.attachment.url && previous?.attachment?.url) {
+          next.attachment = { ...next.attachment, url: previous.attachment.url };
+        }
+        return next;
+      }).reverse();
+      const oldIds = new Set(previousById.keys());
+      const arrivingIds = new Set(firstMessagesSnapshot ? [] : nextMessages.filter(message => !oldIds.has(message.id)).map(message => message.id));
+      const addedAttachments = nextMessages.filter(message => message.attachment?.storagePath && !message.attachment?.url);
+      currentMessages = nextMessages;
+      renderMessages(currentMessages, { animateIds: arrivingIds, forceBottom: firstMessagesSnapshot });
+      firstMessagesSnapshot = false;
+      if (addedAttachments.length) hydrateChatAttachmentUrls(conversationId, nextMessages).catch(error => console.warn("Chat attachment preview unavailable", error));
+      const latestIncoming = [...nextMessages].reverse().find(message => message.authorUid !== currentUser?.uid);
+      if (latestIncoming && latestIncoming.id !== lastReceiptMessageId) {
+        lastReceiptMessageId = latestIncoming.id;
+        markConversationDelivered(conversationId).catch(()=>{});
+        markConversationRead(conversationId).catch(()=>{});
+      }
+    });
   }, error => { console.error("Messages listener", error); $("#messageList").innerHTML = '<div class="empty-note">Could not load messages. Check Supabase database rules.</div>'; });
   startTypingListener(conversation.id);
   renderConversationListFromSnapshotSelection();
@@ -1269,6 +1435,7 @@ function renderMessages(messages, options = {}) {
   const clearAt=tsMillis(activeConversation?.clearAtBy?.[currentUser?.uid]);
   const visible = messages.filter(m => !m.hiddenForBy?.[currentUser?.uid] && (!clearAt || tsMillis(m.createdAt)>clearAt)).filter(m => !term || String(m.text || "").toLowerCase().includes(term) || String(m.authorName || "").toLowerCase().includes(term) || String(m.attachment?.name || "").toLowerCase().includes(term));
   const box = $("#messageList"); if (!box) return;
+  const wasNearBottom = options.forceBottom || (box.scrollHeight - box.scrollTop - box.clientHeight < 140);
   if ($("#messageSearchCount")) $("#messageSearchCount").textContent = term ? `${visible.length} matches` : `${messages.length} messages`;
   if (!visible.length) { box.innerHTML = `<div class="empty-note message-empty">${term ? "No messages match your search." : "This is the beginning of this chat. Say hello 👋"}</div>`; return; }
   const prefs = getChatPreferences(); const starred = new Set(prefs.starred || []);
@@ -1293,8 +1460,10 @@ function renderMessages(messages, options = {}) {
     const deliveredByAll = recipients.length && recipients.every(uid=>tsMillis(deliveredAt[uid])>=created && created>0);
     const deliveryLabel=readByAll?"Read":deliveredByAll?"Delivered":"Sent";
     const status = mine ? `<span class="message-ticks ${readByAll?"read":deliveredByAll?"delivered":""}" title="${deliveryLabel}">${readByAll?"✓✓":deliveredByAll?"✓✓":"✓"}</span>` : "";
-    const messageText = m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || "");
-    return `<article class="message-row ${mine ? "mine" : "theirs"} ${animateIds.has(m.id) ? "is-new" : ""}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${reply}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}${isPinnedHere?'<small class="message-pinned-label">⌖ Pinned on this device</small>':""}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-pin-message="${esc(m.id)}" title="Pin on this device">${isPinnedHere?"⌖":"♧"}</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine&&canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}${!mine?`<button type="button" data-report-message="${esc(m.id)}" title="Report message">⚑</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete for me or everyone">⌫</button><button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
+    const messageText = m.sharedItem ? "" : (m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || ""));
+    const shared = m.sharedItem ? `<a class="chat-shared-card" href="${esc(validUrl(m.sharedItem.url) || "#home")}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-kicker">${esc(m.sharedItem.type || "Shared item")} · HACKVERSE</span><b>${esc(m.sharedItem.title || "Shared update")}</b><small>${esc(m.sharedItem.description || "Open this shared item.")}</small><span class="chat-shared-link">Open link ↗</span></a>` : "";
+    const forwarded = m.forwarded ? '<small class="message-forwarded">↪ Forwarded</small>' : "";
+    return `<article class="message-row ${mine ? "mine" : "theirs"} ${animateIds.has(m.id) ? "is-new" : ""}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${forwarded}${reply}${shared}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}${isPinnedHere?'<small class="message-pinned-label">⌖ Pinned on this device</small>':""}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-pin-message="${esc(m.id)}" title="Pin on this device">${isPinnedHere?"⌖":"♧"}</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine&&canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}${!mine?`<button type="button" data-report-message="${esc(m.id)}" title="Report message">⚑</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete for me or everyone">⌫</button><button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
   }).join("");
   box.querySelectorAll("[data-view-message-author]").forEach(b => b.onclick = () => { if (b.dataset.viewMessageAuthor) viewMember(b.dataset.viewMessageAuthor); });
   box.querySelectorAll("[data-edit-message]").forEach(b => b.onclick = () => editMessage(b.dataset.editMessage));
@@ -1306,7 +1475,7 @@ function renderMessages(messages, options = {}) {
   box.querySelectorAll("[data-pin-message]").forEach(b => b.onclick = () => togglePinMessage(b.dataset.pinMessage));
   box.querySelectorAll("[data-report-message]").forEach(b => b.onclick = () => reportMessage(b.dataset.reportMessage));
   box.querySelectorAll("[data-forward-message]").forEach(b => b.onclick = () => forwardMessage(b.dataset.forwardMessage));
-  box.scrollTop = box.scrollHeight;
+  if (wasNearBottom) box.scrollTop = box.scrollHeight;
 }
 function formatFileSize(bytes) { if (!bytes) return "File"; const units=["B","KB","MB","GB"]; let value=bytes,index=0; while(value>=1024&&index<units.length-1){value/=1024;index++;} return `${value.toFixed(index?1:0)} ${units[index]}`; }
 function setReply(messageId) { const message=currentMessages.find(m=>m.id===messageId); if(!message)return; replyingToMessageId=messageId; updateReplyPreview(); $("#messageText").focus(); }
@@ -1337,6 +1506,13 @@ async function forwardMessage(messageId) {
   const m=currentMessages.find(x=>x.id===messageId); if(!m)return;
   const choices=currentConversations.filter(c=>c.id!==activeConversationId).slice(0,20);
   if(!choices.length){toast("Open another conversation before forwarding.");return;}
+  if(m.sharedItem){
+    const listing=choices.map((c,i)=>`${i+1}. ${conversationLabel(c)}`).join("\n");
+    const entered=await promptInApp("Forward shared item", `Choose the destination number:\n${listing}`, "1", "Destination number");
+    if(entered===null)return;const target=choices[Number(entered)-1]; if(!target){toast("Choose a valid conversation number.");return;}
+    try{await sendSharedItemToConversation(m.sharedItem,target.id,true);toast("Shared item forwarded.");}catch(error){toast(friendlyError(error));}
+    return;
+  }
   if(m.attachment){toast("For privacy, download the attachment and upload it again in the destination chat. Only text messages can be forwarded directly.");return;}
   const listing=choices.map((c,i)=>`${i+1}. ${conversationLabel(c)}`).join("\n");
   const entered=await promptInApp("Forward message", `Choose the destination number:\n${listing}`, "1", "Destination number");
@@ -1353,10 +1529,15 @@ function startTypingListener(conversationId) {
     const indicator=$("#typingIndicator"); if(indicator){indicator.hidden=!active.length;indicator.textContent=active.length===1?`${active[0].displayName||"Someone"} is typing…`:`${active.length} people are typing…`;}
   },()=>{});
 }
+let lastTypingPublishedAt = 0;
 async function publishTyping() {
   if(!currentUser||!activeConversationId||!db)return;
-  try{await setDoc(doc(db,"conversations",activeConversationId,"typing",currentUser.uid),{uid:currentUser.uid,displayName:publicProfile?.displayName||currentUser.displayName||"Member",updatedAt:serverTimestamp()},{merge:true});}catch{}
-  clearTimeout(typingStopTimer); typingStopTimer=setTimeout(()=>{if(activeConversationId&&currentUser)deleteDoc(doc(db,"conversations",activeConversationId,"typing",currentUser.uid)).catch(()=>{});},4500);
+  const now = Date.now();
+  if (now - lastTypingPublishedAt < 1400) return;
+  lastTypingPublishedAt = now;
+  const conversationId = activeConversationId;
+  try{await setDoc(doc(db,"conversations",conversationId,"typing",currentUser.uid),{uid:currentUser.uid,displayName:publicProfile?.displayName||currentUser.displayName||"Member",updatedAt:serverTimestamp()},{merge:true});}catch{}
+  clearTimeout(typingStopTimer); typingStopTimer=setTimeout(()=>{if(activeConversationId===conversationId&&currentUser)deleteDoc(doc(db,"conversations",conversationId,"typing",currentUser.uid)).catch(()=>{});},4500);
 }
 async function chatMediaRequest(payload) {
   if (!currentUser) throw new Error("Sign in to share chat media.");
@@ -1385,7 +1566,13 @@ async function hydrateChatAttachmentUrls(conversationId, messages) {
     const data=await chatMediaRequest({action:"create-downloads",conversationId,paths});
     if (activeConversationId!==conversationId) return;
     const byPath=new Map((data.urls||[]).map(item=>[item.path,item.signedUrl]));
-    currentMessages=messages.map(m=>m.attachment?.storagePath?{...m,attachment:{...m.attachment,url:byPath.get(m.attachment.storagePath)||""}}:m);
+    // Apply URLs to the latest live message state, not the possibly stale array
+    // captured before the network request. Preserve URLs outside the 40-path batch.
+    const latestMessages = activeConversationId === conversationId ? currentMessages : messages;
+    currentMessages=latestMessages.map(m=>{
+      const path=m.attachment?.storagePath, signedUrl=path ? byPath.get(path) : "";
+      return signedUrl ? {...m,attachment:{...m.attachment,url:signedUrl}} : m;
+    });
     renderMessages(currentMessages);
   } catch(error) { console.warn("Could not sign private media URLs",error); }
 }
@@ -1660,6 +1847,8 @@ async function reportMember(profile) {
 let openingDirectConversation = false;
 async function startDirectConversation(profile) {
   if (!requireAccount() || openingDirectConversation) return;
+  const originHash = location.hash || "#messages";
+  chatReturnHash = originHash === "#messages" ? null : originHash;
   const targetUid = profile?.uid || profile?.id;
   if (!targetUid || targetUid === currentUser.uid) { toast("You cannot start a chat with your own account."); return; }
   openingDirectConversation = true;
@@ -1961,8 +2150,21 @@ async function loadProjects() {
 function renderProjects(projects) {
   const grid = $("#myProjects");
   if (!projects.length) { grid.innerHTML = `<div class="empty-note">${currentUser ? "No projects added yet. Use Add project to publish your work." : "Sign in to create your project showcase."}</div>`; return; }
-  grid.innerHTML = projects.map(p => `<article class="project-card"><div class="project-card-top"><span class="project-mark">✳</span><span class="project-visibility">${p.visibility === "public" ? "PUBLIC" : "PRIVATE"}</span></div><h3>${esc(p.title || "Untitled project")}</h3><p>${esc(p.description || "")}</p><div class="skill-tags">${(p.techStack || []).map(t => `<span>${esc(t)}</span>`).join("")}</div><div class="member-links">${p.projectUrl ? `<a href="${esc(validUrl(p.projectUrl))}" target="_blank" rel="noopener">Live project ↗</a>` : ""}${p.githubUrl ? `<a href="${esc(validUrl(p.githubUrl))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}</div><button class="text-danger" data-delete-project="${esc(p.id)}">Delete project</button></article>`).join("");
+  grid.innerHTML = projects.map(p => `<article class="project-card"><div class="project-card-top"><span class="project-mark">✳</span><span class="project-visibility">${p.visibility === "public" ? "PUBLIC" : "PRIVATE"}</span></div><h3>${esc(p.title || "Untitled project")}</h3><p>${esc(p.description || "")}</p><div class="skill-tags">${(p.techStack || []).map(t => `<span>${esc(t)}</span>`).join("")}</div><div class="member-links">${p.projectUrl ? `<a href="${esc(validUrl(p.projectUrl))}" target="_blank" rel="noopener">Live project ↗</a>` : ""}${p.githubUrl ? `<a href="${esc(validUrl(p.githubUrl))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}</div><div class="project-card-actions"><button class="btn btn-outline btn-small" type="button" data-share-project="${esc(p.id)}">↗ Share</button><button class="text-danger" data-delete-project="${esc(p.id)}">Delete project</button></div></article>`).join("");
   grid.querySelectorAll("[data-delete-project]").forEach(b => b.onclick = () => deleteProject(b.dataset.deleteProject));
+  grid.querySelectorAll("[data-share-project]").forEach(b => b.onclick = () => shareProject(b.dataset.shareProject));
+}
+function shareProject(projectId) {
+  const card = $(`[data-share-project="${CSS.escape(projectId)}"]`)?.closest(".project-card");
+  const projectTitle = card?.querySelector("h3")?.textContent || "HackVerse project";
+  // Project records are loaded into the profile showcase. The DOM card supplies safe display text;
+  // links are re-read from its visible anchors rather than trusting arbitrary markup.
+  const links = [...(card?.querySelectorAll(".member-links a") || [])].map(a => validUrl(a.href)).filter(Boolean);
+  const profileUrl = publicProfile?.username ? `${location.origin}/@${encodeURIComponent(publicProfile.username)}` : `${location.origin}/#profile`;
+  const projectUrl = links[0] || profileUrl;
+  const description = card?.querySelector("p")?.textContent?.slice(0, 500) || "A project shared by a HackVerse builder.";
+  const visibility = card?.querySelector(".project-visibility")?.textContent?.trim().toLowerCase() || "private";
+  openShareMenu({ type: "project", title: projectTitle, description, url: projectUrl, visibility });
 }
 async function createProject(event) {
   event.preventDefault(); if (!requireAccount()) return;
@@ -2232,11 +2434,9 @@ async function toggleSaveBuilderPost(postId) {
   } catch (error) { toast(friendlyError(error)); }
 }
 async function shareBuilderPost(postId) {
-  const url = `${location.origin}${location.pathname}#feed`;
-  const post = builderPosts.find(row => row.id === postId);
-  const shareData = { title: post?.title || "HackVerse builder post", text: post?.tagline || "See what builders are shipping on HackVerse.", url };
-  try { if (navigator.share) await navigator.share(shareData); else { await navigator.clipboard.writeText(url); toast("Feed link copied."); } }
-  catch (error) { if (error?.name !== "AbortError") toast("Could not share this post from this browser."); }
+  const post = builderPosts.find(row => row.id === postId); if (!post) return;
+  const url = validUrl(post.demoUrl || post.repositoryUrl || post.otherUrl) || `${location.origin}/#feed`;
+  openShareMenu({ type: "project", title: post.title || "HackVerse builder post", description: post.tagline || post.body || "See what builders are shipping on HackVerse.", url, sourceId: postId, visibility: post.visibility || "public" });
 }
 async function deleteBuilderPost(postId) {
   if (!requireAccount()) return;
@@ -3481,7 +3681,7 @@ function initAdvancedUI(){
   });
   $$('[data-settings-tab]').forEach(b=>b.onclick=()=>showSettingsTab(b.dataset.settingsTab));
   $("#navTourBtn").onclick=()=>{ $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); startWebsiteTour(); };$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);
-  $("#newDirectChatBtn").onclick=()=>location.hash="#people";$("#chatMenuBtn").onclick=openChatActions;
+  $("#newDirectChatBtn").onclick=()=>{chatReturnHash="#people";location.hash="#people";setTimeout(()=>{const grid=$("#peopleGrid");if(grid){grid.hidden=false;$("#viewMembersBtn").textContent="Hide members";$("#viewMembersBtn").setAttribute("aria-expanded","true");searchPeople();}},0);};$("#chatMenuBtn").onclick=openChatActions;
   $$('[data-chat-filter]').forEach(b=>b.onclick=()=>{activeChatFilter=b.dataset.chatFilter;$$('[data-chat-filter]').forEach(x=>x.classList.toggle("active",x===b));renderConversationList(currentConversations);});
   $("#chatSearchToggle").onclick=()=>{$("#messageSearchWrap").hidden=!$("#messageSearchWrap").hidden;if(!$("#messageSearchWrap").hidden)$("#messageSearch").focus();};$("#chatDetailsBtn").onclick=openChatIdentity;
   $("#cancelReply").onclick=()=>{replyingToMessageId=null;updateReplyPreview();};
@@ -3499,11 +3699,6 @@ function handleRoute() {
   const profileMatch = location.pathname.match(/^\/@([A-Za-z0-9_]{3,24})\/?$/);
   const postMatch = location.pathname.match(/^\/post\/([0-9a-f-]{36})\/?$/i);
   let raw=(location.hash||"#home").slice(1);
-  if (!profileMatch && (!location.hash || raw === "home")) {
-    const preferred = localStorage.getItem("hackverse-home-feed-v13") || "overview";
-    const destinations = { public_posts:"posts", following_posts:"posts", builds:"feed", opportunities:"opportunities" };
-    if (destinations[preferred]) { history.replaceState({}, "", `/#${destinations[preferred]}`); raw = destinations[preferred]; }
-  }
   const aliases={top:"home",discover:"home",opportunities:"opportunities",feed:"feed",build:"feed",posts:"posts",saved:"saved",people:"people",messages:"messages",aiwish:"aiwish",profile:"profile",notifications:"notifications",settings:"settings",reports:"reports"};
   const view=profileMatch ? "public-profile" : postMatch ? "post-detail" : (aliases[raw]||"home");
   const aiPanel=$("#aiPanel"), wishMount=$("#aiWishMount"), aiAssistant=$("#aiAssistant");
@@ -3548,7 +3743,7 @@ function handleRoute() {
   if(blocked)return;
   if(view==="opportunities"){ updateEventAccessUI(); if(currentUser)renderEvents(); }
   if(view==="feed") void loadBuilderFeed();
-  if(view==="posts") { const preference=localStorage.getItem("hackverse-home-feed-v13"); if(preference==="following_posts")socialFeedType="following"; else if(preference==="public_posts")socialFeedType="explore"; void loadSocialFeed({reset:true}); }
+  if(view==="posts") void loadSocialFeed({reset:true});
   if(view==="public-profile" && profileMatch) void loadPublicProfilePage(profileMatch[1]);
   if(view==="reports"){updateReportFields();void loadMyReports();if(isAdminUser)void loadAdminReports();}
   if(view==="profile"){ if(currentUser){ void loadHackathonHistory(); if(!builderPosts.length) void loadBuilderFeed(); } }
@@ -3610,16 +3805,23 @@ function bindUI() {
   $("#messageSearch").addEventListener("input",()=>renderMessages(currentMessages));
   $("#groupForm").addEventListener("submit", createGroup);
   $("#messageForm").addEventListener("submit", sendMessage);
-  $("#chatMobileBackBtn").onclick=()=>{if(stopMessageListener)stopMessageListener();if(stopTypingListener)stopTypingListener();stopMessageListener=null;stopTypingListener=null;activeConversationId=null;activeConversation=null;currentMessages=[];$("#chatActive").hidden=true;$("#chatPlaceholder").hidden=false;$(".chat-workspace")?.classList.remove("has-active-chat");renderConversationList(currentConversations);};
+  const backToChatList = () => {
+    if(stopMessageListener)stopMessageListener(); if(stopTypingListener)stopTypingListener();
+    stopMessageListener=null; stopTypingListener=null; activeConversationId=null; activeConversation=null; currentMessages=[]; replyingToMessageId=null;
+    $("#chatActive").hidden=true; $("#chatPlaceholder").hidden=false; $(".chat-workspace")?.classList.remove("has-active-chat");
+    const returnHash = chatReturnHash; chatReturnHash = null;
+    if (returnHash) { location.hash = returnHash; return; }
+    renderConversationList(currentConversations);
+  };
+  $("#chatMobileBackBtn").onclick=backToChatList;
   $("#socialPostForm").addEventListener("submit",createSocialPost);
-  $("#focusPostComposer").onclick=()=>$("#socialPostContent").focus();
+  $("#focusPostComposer").onclick=()=>{if(!requireAccount())return;const form=$("#socialPostForm");form.hidden=false;$("#focusPostComposer").setAttribute("aria-expanded","true");form.scrollIntoView({behavior:"smooth",block:"nearest"});$("#socialPostContent").focus({preventScroll:true});};
+  $("#cancelSocialPost").onclick=()=>{$("#socialPostForm").hidden=true;$("#focusPostComposer").setAttribute("aria-expanded","false");};
   $("#refreshSocialFeed").onclick=()=>loadSocialFeed({reset:true});
   $("#socialLoadMore").onclick=()=>loadSocialFeed();
   $$('[data-social-feed]').forEach(button=>button.addEventListener("click",()=>{socialFeedType=button.dataset.socialFeed;$$('[data-social-feed]').forEach(x=>x.classList.toggle("active",x===button));loadSocialFeed({reset:true});}));
   $("#communityReportForm").addEventListener("submit",submitCommunityReport);
   $("#reportTargetType").addEventListener("change",updateReportFields);
-  $("#saveHomeFeedPreference").onclick=saveHomeFeedPreference;
-  $("#homeFeedPreference").value=localStorage.getItem("hackverse-home-feed-v13")||"overview";
   $("#createBuilderPostBtn").onclick = openBuilderPostComposer;
   $("#createBuilderPostSideBtn").onclick = openBuilderPostComposer;
   $("#builderPostForm").addEventListener("submit", createBuilderPost);

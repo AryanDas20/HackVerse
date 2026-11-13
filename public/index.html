@@ -21,6 +21,7 @@
   <link rel="stylesheet" href="theme-professional-v11.css">
   <link rel="stylesheet" href="community-v12.css">
   <link rel="stylesheet" href="social-v13.css">
+  <link rel="stylesheet" href="sharing-performance-v14.css">
 </head>
 <body>
   <div class="hv-boot-splash" id="hvBootSplash" role="status" aria-label="Loading HackVerse">
@@ -90,10 +91,7 @@
     </section>
 
 
-    <section class="home-feed-preferences wrap" data-view="home" aria-label="Home feed preferences">
-      <div><span class="eyebrow">YOUR HACKVERSE HOME</span><b>Choose what opens when you tap Home</b><small>Keep the opportunity overview or jump straight into the feed that matters to you.</small></div>
-      <div class="home-feed-preference-controls"><select id="homeFeedPreference" aria-label="Choose your default home feed"><option value="overview">Overview</option><option value="public_posts">Public posts</option><option value="following_posts">Following posts</option><option value="builds">Builds</option><option value="opportunities">Opportunities</option></select><button class="btn btn-outline btn-small" id="saveHomeFeedPreference" type="button">Save home feed</button></div>
-    </section>
+
 
     <section class="section wrap" id="discover" data-view="home">
       <div id="homeEventsContent" hidden>
@@ -166,10 +164,11 @@
     </section>
 
     <section class="section wrap social-posts-page" id="postsPage" data-view="posts" hidden>
-      <div class="section-heading"><div><div class="eyebrow">THE SOCIAL LAYER</div><h2>What builders <span class="gradient-text">are thinking.</span></h2><p class="muted">Share ideas, questions, lessons, progress, wins and thoughtful feedback. Project showcases live separately in Builds.</p></div><button class="btn btn-primary" id="focusPostComposer" type="button">＋ Create post</button></div>
-      <form class="social-composer" id="socialPostForm">
-        <label class="sr-only" for="socialPostContent">Write a post</label><textarea id="socialPostContent" rows="3" maxlength="3000" required placeholder="What are you building, learning, asking or celebrating? Use #hashtags and @mentions…"></textarea>
-        <div class="social-composer-extra"><input id="socialPostMediaUrl" type="url" placeholder="Optional image or video URL (https://…)"><label class="social-file-label">Or upload image<input id="socialPostMediaFile" type="file" accept="image/jpeg,image/png,image/webp"></label><select id="socialPostMediaType" aria-label="Media type"><option value="">No media</option><option value="image">Image</option><option value="video">Video</option></select><select id="socialPostVisibility" aria-label="Post visibility"><option value="public">Public</option><option value="followers">Followers</option><option value="private">Only me</option></select><button class="btn btn-primary" id="publishSocialPost" type="submit">Publish post</button></div>
+      <div class="section-heading"><div><div class="eyebrow">THE SOCIAL LAYER</div><h2>What builders <span class="gradient-text">are thinking.</span></h2><p class="muted">Share ideas, questions, lessons, progress, wins and thoughtful feedback. Project showcases live separately in Builds.</p></div><button class="btn btn-primary" id="focusPostComposer" type="button" aria-expanded="false" aria-controls="socialPostForm">＋ Create post</button></div>
+      <form class="social-composer" id="socialPostForm" hidden>
+        <div class="social-composer-heading"><div><b>Create a thoughtful update</b><small>Share progress, ask the community or celebrate a milestone.</small></div><button class="chat-tool" id="cancelSocialPost" type="button" aria-label="Close post composer">×</button></div>
+        <label class="sr-only" for="socialPostContent">Write a post</label><textarea id="socialPostContent" rows="4" maxlength="3000" required placeholder="What are you building, learning, asking or celebrating? Use #hashtags and @mentions…"></textarea>
+        <div class="social-composer-extra"><input id="socialPostMediaUrl" type="url" placeholder="Optional image or video URL (https://…)"><label class="social-file-label">Add an image<input id="socialPostMediaFile" type="file" accept="image/jpeg,image/png,image/webp"></label><select id="socialPostMediaType" aria-label="Media type"><option value="">No media</option><option value="image">Image</option><option value="video">Video</option></select><select id="socialPostVisibility" aria-label="Post visibility"><option value="public">Public</option><option value="followers">Followers</option><option value="private">Only me</option></select><div class="social-composer-submit"><button class="btn btn-primary" id="publishSocialPost" type="submit">Publish post</button></div></div>
         <p class="form-message" id="socialPostMessage" role="status"></p>
       </form>
       <div class="social-feed-toolbar"><div class="builder-feed-tabs" role="group" aria-label="Social feed filter"><button class="active" data-social-feed="explore" type="button">Public</button><button data-social-feed="home" type="button">Home</button><button data-social-feed="following" type="button">Following</button></div><button class="btn btn-outline btn-small" id="refreshSocialFeed" type="button">↻ Refresh</button></div>
@@ -202,7 +201,7 @@
     <section class="section wrap" id="messages" data-view="messages" hidden>
       <div class="section-heading"><div><div class="eyebrow">COLLABORATION SPACE</div><h2>Keep your team <span class="gradient-text">in sync.</span></h2><p class="muted">Start one-to-one chats or create a group room for your project team.</p></div><button class="btn btn-primary" id="newGroupBtn">＋ New group</button></div>
       <div class="chat-workspace whatsapp-shell">
-        <aside class="chat-sidebar"><div class="chat-sidebar-head"><div><b>Chats</b><small>Private conversations</small></div><span id="conversationCount" class="conversation-count">0</span><div class="chat-sidebar-tools"><button class="chat-tool" id="newDirectChatBtn" type="button" title="Find a person">＋</button><button class="chat-tool" id="chatMenuBtn" type="button" title="Chat options">•••</button></div></div>
+        <aside class="chat-sidebar"><div class="chat-sidebar-head"><div><b>Chats</b><small>Private conversations</small></div><span id="conversationCount" class="conversation-count">0</span><div class="chat-sidebar-tools"><button class="chat-tool" id="newDirectChatBtn" type="button" title="Browse all builders" aria-label="Browse all builders">＋</button><button class="chat-tool" id="chatMenuBtn" type="button" title="Chat options">•••</button></div></div>
           <div class="chat-filter-tabs" role="tablist"><button class="active" data-chat-filter="all" type="button">All</button><button data-chat-filter="unread" type="button">Unread</button><button data-chat-filter="groups" type="button">Groups</button><button data-chat-filter="archived" type="button">Archived</button></div>
           <label class="chat-search-wrap"><span>⌕</span><input class="chat-search" id="conversationSearch" type="search" placeholder="Search chats..."></label><div id="conversationList" class="conversation-list"><div class="empty-note">Sign in to see your conversations.</div></div>
           <div class="chat-sidebar-foot"><span class="online-pulse"></span><span>Members-only chat</span></div>
