@@ -1717,9 +1717,16 @@ async function clearAiHistoryForMode() {
 async function startAiConversation(mode = aiMode) {
   if (!requireAccount()) return null;
   try {
+    const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+    const sessionUser = sessionData?.session?.user;
+
+    if (sessionError || !sessionUser?.id) {
+      throw new Error("Your sign-in session has expired. Please sign in again.");
+    }
+
     const conversationRef = doc(collection(db, "aiConversations"));
     await setDoc(conversationRef, {
-      ownerUid: currentUser.uid,
+      ownerUid: sessionUser.id,
       title: mode === "wish" ? "New AI Wish" : "New website help chat",
       preview: "",
       mode,
