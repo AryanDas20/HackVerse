@@ -1,1 +1,1 @@
-HackVerse v14 — streamlined home and performance pass
+HackVerse v14.1 — opportunity directory pagination fix
