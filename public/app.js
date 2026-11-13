@@ -15,7 +15,7 @@ let privateProfile = null, publicProfile = null, events = [], savedIds = new Set
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
 let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
-let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [];
+let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [], isSendingChatMessage = false;
 let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false, pendingAiUserMessage = "", aiAvailableBuilderUids = [];
 let emailVerificationGuard = false;
 let dialogResolver = null;
@@ -1098,29 +1098,106 @@ async function hydrateChatAttachmentUrls(conversationId, messages) {
   } catch(error) { console.warn("Could not sign private media URLs",error); }
 }
 async function sendMessage(event) {
-  event.preventDefault(); if (!requireAccount() || !activeConversationId) { toast("Choose a conversation first."); return; }
-  const text = $("#messageText").value.trim(); if (!text) return;
+  event.preventDefault();
+  if (!requireAccount()) return;
+  if (!activeConversationId) { toast("Choose a conversation first."); return; }
+  const text = $("#messageText").value.trim();
+  if (!text) return;
   if (text.length > 2000) { toast("Messages must be 2,000 characters or fewer."); return; }
-  await submitChatMessage({text,kind:"text"});
+  await submitChatMessage({ text, kind: "text" });
 }
 async function submitChatMessage(payload) {
-  const sendButton = $("#messageForm button"); if(sendButton)sendButton.disabled=true;
+  if (isSendingChatMessage) return false;
+  if (!requireAccount() || !activeConversationId) { toast("Choose a conversation first."); return false; }
+
+  const conversationId = activeConversationId;
+  const messageText = String(payload.text || "").trim().slice(0, 2000);
+  if (!messageText && !payload.attachment) return false;
+  const sendButton = $("#messageForm button");
+  const input = $("#messageText");
+  const draftAtSend = input?.value ?? "";
+  const previousLabel = sendButton?.textContent || "➤";
+  const reply = replyingToMessageId ? currentMessages.find(m => m.id === replyingToMessageId) : null;
+  const replyTo = reply ? {
+    messageId: reply.id,
+    authorName: reply.authorName || "Member",
+    text: (reply.text || reply.attachment?.name || "Attachment").slice(0, 160)
+  } : null;
+  const conversationRef = doc(db, "conversations", conversationId);
+  const body = {
+    authorUid: currentUser.uid,
+    authorName: publicProfile?.displayName || currentUser.displayName || "Member",
+    text: messageText,
+    kind: payload.kind || "text",
+    createdAt: serverTimestamp(),
+    ...(replyTo ? { replyTo } : {}),
+    ...(payload.attachment ? { attachment: payload.attachment } : {})
+  };
+
+  isSendingChatMessage = true;
+  if (sendButton) {
+    sendButton.disabled = true;
+    sendButton.setAttribute("aria-busy", "true");
+    sendButton.textContent = "…";
+  }
+  if (input) input.disabled = true;
+
+  let saved = false;
   try {
-    const conversationRef = doc(db, "conversations", activeConversationId);
-    const reply=replyingToMessageId?currentMessages.find(m=>m.id===replyingToMessageId):null;
-    const replyTo=reply?{messageId:reply.id,authorName:reply.authorName||"Member",text:(reply.text||reply.attachment?.name||"Attachment").slice(0,160)}:null;
-    const body={authorUid:currentUser.uid,authorName:publicProfile?.displayName||currentUser.displayName||"Member",text:String(payload.text||"").slice(0,2000),kind:payload.kind||"text",createdAt:serverTimestamp(),...(replyTo?{replyTo}:{}),...(payload.attachment?{attachment:payload.attachment}:{})};
-    await addDoc(collection(conversationRef,"messages"),body);
-    await updateDoc(conversationRef,{lastMessage:(payload.text||payload.attachment?.name||"Attachment").slice(0,180),lastMessageSender:currentUser.uid,lastMessageAt:serverTimestamp(),updatedAt:serverTimestamp()});
-    $("#messageText").value=""; replyingToMessageId=null;updateReplyPreview();
-    if(typingStopTimer)clearTimeout(typingStopTimer);deleteDoc(doc(db,"conversations",activeConversationId,"typing",currentUser.uid)).catch(()=>{});
-  } catch(error) { console.error(error);toast(friendlyError(error)); }
-  finally { if(sendButton)sendButton.disabled=false; }
+    // The nested collection path is conversations/{id}/messages. The data-layer
+    // now preserves the parent document path for this Firestore-style call.
+    const savedMessageRef = await addDoc(collection(conversationRef, "messages"), body);
+    saved = true;
+    // Show the confirmed write immediately. The realtime/polling listener will
+    // reconcile this optimistic row with the canonical database snapshot.
+    if (activeConversationId === conversationId && savedMessageRef?.id) {
+      currentMessages = [...currentMessages, { ...body, id: savedMessageRef.id, createdAt: Date.now() }];
+      renderMessages(currentMessages);
+      const messageList = $("#messageList");
+      if (messageList) messageList.scrollTop = messageList.scrollHeight;
+    }
+
+    // A message is already safely stored at this point. A preview update failure
+    // must not invite a retry that would create a duplicate message.
+    try {
+      await updateDoc(conversationRef, {
+        lastMessage: (messageText || payload.attachment?.name || "Attachment").slice(0, 180),
+        lastMessageSender: currentUser.uid,
+        lastMessageAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    } catch (metadataError) {
+      console.warn("Message sent, but conversation preview update failed", metadataError);
+      toast("Message sent. The chat preview may take a moment to refresh.");
+    }
+
+    if (activeConversationId === conversationId) {
+      if (payload.kind === "text" && input && input.value === draftAtSend) input.value = "";
+      replyingToMessageId = null;
+      updateReplyPreview();
+    }
+    if (typingStopTimer) clearTimeout(typingStopTimer);
+    deleteDoc(doc(db, "conversations", conversationId, "typing", currentUser.uid)).catch(() => {});
+    return true;
+  } catch (error) {
+    console.error("Could not send chat message", error);
+    toast(saved ? "Message sent, but the chat is still refreshing." : `Message not sent: ${friendlyError(error)}`);
+    return saved;
+  } finally {
+    isSendingChatMessage = false;
+    if (input) input.disabled = false;
+    if (sendButton) {
+      sendButton.disabled = false;
+      sendButton.removeAttribute("aria-busy");
+      sendButton.textContent = previousLabel;
+    }
+    if (activeConversationId === conversationId && input && document.activeElement === input) input.focus();
+  }
 }
 async function handleChatFile(file) {
   if(!file||!requireAccount()||!activeConversationId)return;
   toast("Uploading attachment…");
-  try{const attachment=await uploadChatFile(file);await submitChatMessage({text:"",kind:file.type.startsWith("image/")?"image":file.type.startsWith("video/")?"video":file.type.startsWith("audio/")?"audio":"file",attachment});toast("Attachment sent.");}
+  try{const attachment=await uploadChatFile(file);const sent=await submitChatMessage({text:"",kind:file.type.startsWith("image/")?"image":file.type.startsWith("video/")?"video":file.type.startsWith("audio/")?"audio":"file",attachment});if(sent)toast("Attachment sent.");}
   catch(error){toast(error.message||friendlyError(error));}
   finally{$("#chatFileInput").value="";}
 }
@@ -2713,6 +2790,9 @@ function initAdvancedUI(){
   $("#emojiToggle").onclick=()=>$("#emojiTray").hidden=!$("#emojiTray").hidden;
   $$("#emojiTray button").forEach(b=>b.onclick=()=>{const input=$("#messageText"),start=input.selectionStart,end=input.selectionEnd;input.value=input.value.slice(0,start)+b.textContent+input.value.slice(end);input.focus();input.selectionStart=input.selectionEnd=start+b.textContent.length;$("#emojiTray").hidden=true;});
   $("#messageText").addEventListener("input",()=>{if($("#messageText").value.trim())publishTyping();});
+  $("#messageText").addEventListener("keydown",event=>{
+    if(event.key==="Enter"&&!event.shiftKey&&!event.isComposing){event.preventDefault();$("#messageForm").requestSubmit();}
+  });
 }
 
 function handleRoute() {

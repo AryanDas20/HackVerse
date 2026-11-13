@@ -1,0 +1,90 @@
+/* v10 hotfix: stable nested messaging writes + a floating AI panel that fits
+   touch devices, narrow widths, mobile keyboards, and landscape screens. */
+.ai-assistant { z-index: 420; right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); }
+.ai-panel:not(.ai-panel-page) {
+  position: fixed;
+  inset: auto max(14px, env(safe-area-inset-right)) calc(82px + env(safe-area-inset-bottom)) auto;
+  width: min(480px, calc(100vw - 28px));
+  height: min(680px, calc(100dvh - 104px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+  min-width: 0;
+  min-height: 0;
+  max-height: calc(100dvh - 104px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.ai-panel:not(.ai-panel-page) .ai-workspace { min-width: 0; min-height: 0; grid-template-columns: 142px minmax(0,1fr); }
+.ai-panel:not(.ai-panel-page) .ai-history,
+.ai-panel:not(.ai-panel-page) .ai-chat-area,
+.ai-panel:not(.ai-panel-page) .ai-messages { min-width: 0; min-height: 0; }
+.ai-panel:not(.ai-panel-page) .ai-chat-area { overflow: hidden; }
+.ai-panel:not(.ai-panel-page) .ai-messages { flex: 1 1 auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.ai-panel:not(.ai-panel-page) .ai-composer { flex: 0 0 auto; }
+.ai-panel:not(.ai-panel-page) .ai-composer textarea { min-width: 0; max-height: 96px; resize: vertical; }
+.ai-panel:not(.ai-panel-page) .ai-message-bubble { max-width: 100%; overflow-wrap: anywhere; }
+.ai-panel:not(.ai-panel-page) .ai-action-review { max-height: 26%; overflow: auto; overscroll-behavior: contain; }
+.ai-launcher { touch-action: manipulation; }
+.ai-send-button, .ai-icon-button { min-width: 40px; min-height: 40px; touch-action: manipulation; }
+
+@media (max-width: 640px) {
+  .ai-assistant { right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); }
+  .ai-panel:not(.ai-panel-page) {
+    inset: auto 8px calc(72px + env(safe-area-inset-bottom)) 8px;
+    width: auto;
+    height: min(700px, calc(100dvh - 88px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+    max-height: calc(100dvh - 88px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    min-height: 0;
+    border-radius: 18px;
+  }
+  .ai-panel:not(.ai-panel-page) .ai-workspace { grid-template-columns: minmax(0,1fr); grid-template-rows: auto minmax(0,1fr); }
+  .ai-panel:not(.ai-panel-page) .ai-history { max-height: 92px; padding: 7px 9px; overflow: hidden; border-right: 0; border-bottom: 1px solid var(--line); }
+  .ai-panel:not(.ai-panel-page) .ai-history-head { margin-bottom: 4px; font-size: 9px; }
+  .ai-panel:not(.ai-panel-page) .ai-history-list { display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 3px; }
+  .ai-panel:not(.ai-panel-page) .ai-history-entry { flex: 0 0 min(220px, 72vw); min-width: 0; }
+  .ai-panel:not(.ai-panel-page) .ai-history-item { padding: 7px 8px; }
+  .ai-panel:not(.ai-panel-page) .ai-history-item b { font-size: 11px; }
+  .ai-panel:not(.ai-panel-page) .ai-history-item small { font-size: 10px; }
+  .ai-panel:not(.ai-panel-page) .ai-mode-intro { padding: 8px 11px; }
+  .ai-panel:not(.ai-panel-page) .ai-mode-intro b { font-size: 13px; }
+  .ai-panel:not(.ai-panel-page) .ai-mode-intro span { font-size: 11px; }
+  .ai-panel:not(.ai-panel-page) .ai-messages { padding: 10px; gap: 9px; }
+  .ai-panel:not(.ai-panel-page) .ai-message { max-width: 100%; }
+  .ai-panel:not(.ai-panel-page) .ai-message-bubble { font-size: 13px; }
+  .ai-panel:not(.ai-panel-page) .ai-composer { margin: 0 8px; padding: 7px 8px; }
+  .ai-panel:not(.ai-panel-page) .ai-composer textarea { font-size: 14px; min-height: 42px; }
+  .ai-panel:not(.ai-panel-page) .ai-disclaimer { padding: 5px 8px 7px; font-size: 9px; }
+}
+
+/* Short-height phones and landscape: never force a 360px minimum panel. */
+@media (max-height: 520px) and (max-width: 900px) {
+  .ai-panel:not(.ai-panel-page) {
+    inset: 8px 8px calc(8px + env(safe-area-inset-bottom)) 8px;
+    width: auto;
+    height: auto;
+    max-height: none;
+    min-height: 0;
+  }
+  .ai-panel:not(.ai-panel-page) .ai-panel-header { flex-basis: 52px; height: 52px; }
+  .ai-panel:not(.ai-panel-page) .ai-history { max-height: 62px; }
+  .ai-panel:not(.ai-panel-page) .ai-mode-intro { display: none; }
+  .ai-panel:not(.ai-panel-page) .ai-disclaimer { display: none; }
+  .ai-assistant:has(.ai-panel:not([hidden])) .ai-launcher { display: none; }
+}
+
+/* Message composer: visible status, thumb-sized actions, and safe text wrapping. */
+.message-composer { min-width: 0; }
+.message-composer textarea { min-width: 0; width: 100%; max-height: 132px; resize: none; overflow-y: auto; }
+.message-composer button { min-width: 44px; min-height: 44px; flex: 0 0 44px; touch-action: manipulation; }
+.message-composer button[aria-busy="true"] { opacity: .72; cursor: wait; }
+.message-list { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.message-bubble { min-width: 0; overflow-wrap: anywhere; }
+.message-bubble p { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .chat-sidebar { width: 100%; }
+  .chat-heading { align-items: center; }
+  .chat-contact { flex: 1 1 150px; min-width: 0; }
+  .chat-head-actions { flex: 0 0 auto; flex-direction: row; align-items: center; }
+  .message-composer { padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; }
+  .composer-tools { gap: 12px; padding-inline: 12px; }
+  .composer-tools button { min-width: 36px; min-height: 36px; }
+}

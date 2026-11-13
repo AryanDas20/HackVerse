@@ -27,13 +27,29 @@ const collectionPathOf = path => splitPath(path).length % 2 === 0 ? splitPath(pa
 const docIdOf = path => splitPath(path).at(-1) || "";
 const collectionNameOf = path => splitPath(path).at(-1) || "";
 
-export function collection(_db, ...parts) { return { __kind: "collection", path: pathJoin(parts) }; }
+export function collection(parent, ...parts) {
+  // Support both root collections (collection(db, "conversations", id, "messages"))
+  // and nested collections (collection(conversationRef, "messages")).
+  const basePath = parent?.__kind === "doc" || parent?.__kind === "collection"
+    ? parent.path
+    : "";
+  const path = pathJoin([basePath, ...parts]);
+  if (!path) throw new Error("A collection path is required.");
+  return { __kind: "collection", path };
+}
 export function doc(parent, ...parts) {
-  if (parent?.__kind === "collection" && parts.length === 0) { const id = uuid(); return { __kind: "doc", path: `${parent.path}/${id}`, id }; }
-  if (parent?.__kind === "collection") {
-    const id = String(parts[0]); return { __kind: "doc", path: `${parent.path}/${id}`, id };
+  if (parent?.__kind === "collection" && parts.length === 0) {
+    const id = uuid();
+    return { __kind: "doc", path: `${parent.path}/${id}`, id };
   }
-  const path = pathJoin(parts);
+  if (parent?.__kind === "collection") {
+    const id = String(parts[0] || uuid());
+    return { __kind: "doc", path: `${parent.path}/${id}`, id };
+  }
+  // Firestore-style nested references must retain the parent document path.
+  const basePath = parent?.__kind === "doc" ? parent.path : "";
+  const path = pathJoin([basePath, ...parts]);
+  if (!path) throw new Error("A document path is required.");
   return { __kind: "doc", path, id: docIdOf(path) };
 }
 
