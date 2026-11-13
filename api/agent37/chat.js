@@ -135,18 +135,20 @@ function parseWorkResult(outputText) {
 async function incrementDailyUsage(db, uid) {
   const date = new Date().toISOString().slice(0, 10);
   const ref = db.collection("aiUsageDaily").doc(`${uid}_${date}`);
-  return db.runTransaction(async transaction => {
-    const snapshot = await transaction.get(ref);
-    const count = snapshot.exists ? Number(snapshot.data().count || 0) : 0;
-    if (count >= DAILY_LIMIT) return false;
-    transaction.set(ref, {
-      uid,
-      date,
-      count: count + 1,
-      updatedAt: FieldValue.serverTimestamp()
-    }, { merge: true });
-    return true;
-  });
+  const snapshot = await ref.get();
+  const current = snapshot.exists ? snapshot.data() : {};
+  const count = Number(current?.count || 0);
+
+  if (count >= DAILY_LIMIT) return false;
+
+  await ref.set({
+    uid,
+    date,
+    count: count + 1,
+    updatedAt: FieldValue.serverTimestamp()
+  }, { merge: true });
+
+  return true;
 }
 
 
