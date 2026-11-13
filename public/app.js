@@ -16,7 +16,7 @@ let activeConversationId = null, activeConversation = null, stopConversationList
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
 let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
 let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [];
-let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false;
+let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false, pendingAiUserMessage = "", aiAvailableBuilderUids = [];
 let emailVerificationGuard = false;
 let dialogResolver = null;
 
@@ -1380,6 +1380,44 @@ async function searchManageGroupMembers() {
     $("#manageGroupSearchResults").querySelectorAll("[data-add-group-member]").forEach(b=>b.onclick=()=>addGroupMember(b.dataset.addGroupMember));
   }catch(error){$("#manageGroupSearchResults").textContent=friendlyError(error);}
 }
+function renderMatchedTeamResults(groups, needed, strategy) {
+  if (!groups.length) return '<div class="team-match-empty"><span class="team-empty-icon">⌕</span><b>No matching builders yet</b><p>Try broader skills or invite more people to complete their profiles. Team suggestions improve as more builders add their skills and availability.</p></div>';
+  const builderCount = groups.reduce((count, group) => count + group.length, 0);
+  const strategyTitle = strategy === "balanced" ? "Balanced team allocation complete" : "Best-fit candidates ranked";
+  const teamCards = groups.map((group, index) => {
+    const covered = [...new Set(group.flatMap(person => person.matchedSkills || []))];
+    const missing = needed.filter(skill => !covered.includes(skill));
+    const coverage = needed.length ? Math.round(covered.length / needed.length * 100) : 0;
+    const averageFit = Math.round(group.reduce((total, person) => total + person.matchScore, 0) / Math.max(1, group.length) * 100);
+    const members = group.map(person => {
+      const displayName = person.displayName || "Builder";
+      const education = [person.collegeShort || person.college || "College not listed", person.collegeYear || person.studyYear ? `Year ${person.collegeYear || person.studyYear}` : ""].filter(Boolean).join(" · ");
+      const skills = (person.skills || []).slice(0, 6);
+      const matched = (person.matchedSkills || []).join(", ") || "Related skills";
+      const related = person.relatedSkills?.length ? ` · Related: ${person.relatedSkills.join(", ")}` : "";
+      return `<label class="team-match-option">
+        <input type="checkbox" data-team-match="${esc(person.uid)}" data-team-index="${index}" checked aria-label="Select ${esc(displayName)} for team ${index + 1}">
+        <span class="team-member-avatar" aria-hidden="true">${esc(initials(displayName))}</span>
+        <span class="team-member-copy">
+          <span class="team-member-heading"><b>${esc(displayName)}</b><strong class="team-fit-pill">${Math.round(person.matchScore * 100)}% fit</strong></span>
+          <span class="team-member-meta">@${esc(person.username || "member")} <i>·</i> ${esc(education)}</span>
+          ${skills.length ? `<span class="team-member-skills">${skills.map(skill => `<i>${esc(skill)}</i>`).join("")}</span>` : ""}
+          <span class="team-member-match"><b>Matched:</b> ${esc(matched)}${esc(related)}</span>
+        </span>
+      </label>`;
+    }).join("");
+    return `<section class="generated-team" aria-label="Suggested team ${index + 1}">
+      <div class="generated-team-head">
+        <div class="team-heading-copy"><span class="team-card-kicker">TEAM ${String(index + 1).padStart(2, "0")}</span><h3>Suggested team ${index + 1}</h3><p>${group.length + 1} members including you <i>·</i> ${averageFit}% average fit</p></div>
+        <div class="team-balance-score"><b>${covered.length}/${needed.length}</b><span>roles covered</span></div>
+      </div>
+      <div class="team-coverage"><div class="team-coverage-bar" role="progressbar" aria-label="Role coverage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${coverage}"><span style="width:${coverage}%"></span></div><small>${covered.length ? covered.map(esc).join(" · ") : "No required roles covered"}${missing.length ? `<em>Still needed: ${missing.map(esc).join(", ")}</em>` : ""}</small></div>
+      <div class="team-match-options">${members}</div>
+    </section>`;
+  }).join("");
+  return `<div class="team-match-summary"><div class="team-summary-copy"><span class="team-summary-kicker">MATCHING COMPLETE</span><b>${strategyTitle}</b><small>Suggestions are profile-based estimates, not guarantees. Review availability and confirm consent before creating a chat.</small></div><div class="team-summary-stats"><div><strong>${groups.length}</strong><span>Team${groups.length === 1 ? "" : "s"}</span></div><div><strong>${builderCount}</strong><span>Builder matches</span></div></div></div>${teamCards}`;
+}
+
 async function runSmartTeamMatch(event) {
   event.preventDefault(); if(!requireAccount())return;
   if(!publicProfile){toast("Complete your profile first so team matching has your skills.");return;}
@@ -1437,7 +1475,7 @@ async function runSmartTeamMatch(event) {
       groups=groups.filter(g=>g.length);
     }
     const actual=groups.length;
-    $("#teamMatchResults").innerHTML=groups.length?`<div class="team-match-summary"><b>${strategy==="balanced"?"Balanced team allocation complete":"Best-fit candidates ranked"}</b><span>${groups.length} team suggestion(s) · ${groups.reduce((n,g)=>n+g.length,0)} builder matches</span><small>Scores are profile-based estimates, not guarantees. Review availability and ask people before adding them to a chat.</small></div>`+groups.map((group,i)=>{const covered=[...new Set(group.flatMap(p=>p.matchedSkills))];const missing=needed.filter(x=>!covered.includes(x));return `<section class="generated-team"><div class="generated-team-head"><div><h3>Suggested team ${i+1}</h3><p class="muted">${group.length+1} members including you · ${Math.round(group.reduce((n,p)=>n+p.matchScore,0)/Math.max(1,group.length)*100)}% average fit</p></div><span class="team-balance-score">${covered.length}/${needed.length} roles covered</span></div><div class="team-coverage"><div class="team-coverage-bar"><span style="width:${Math.round(covered.length/needed.length*100)}%"></span></div><small>${covered.map(esc).join(" · ")}${missing.length?` <em>Missing: ${missing.map(esc).join(", ")}</em>`:""}</small></div>${group.map(p=>`<label class="team-match-option"><input type="checkbox" data-team-match="${esc(p.uid)}" data-team-index="${i}" checked><span><b>${esc(p.displayName||"Builder")}</b><small>@${esc(p.username||"member")} · ${esc(p.collegeShort||p.college||"College not listed")}${p.collegeYear||p.studyYear ? ` · Year ${esc(p.collegeYear||p.studyYear)}` : ""}</small><span class="skill-tags">${(p.skills||[]).slice(0,6).map(x=>`<i>${esc(x)}</i>`).join("")}</span><small>Matched: ${esc(p.matchedSkills.join(", ")||"Related skills")} · ${Math.round(p.matchScore*100)}% fit${p.relatedSkills?.length ? ` · Related: ${esc(p.relatedSkills.join(", "))}` : ""}</small></span></label>`).join("")}</section>`;}).join(""):'<p class="muted">No matching builders are available yet. Try broader roles or invite more people to complete their skills profiles.</p>';
+    $("#teamMatchResults").innerHTML = renderMatchedTeamResults(groups, needed, strategy);
     $("#teamMatchResults").classList.remove("is-matching");
     $("#teamMatchResults").dataset.teamName=name;
     $("#teamMatchResults").dataset.teamCount=String(actual);
@@ -1571,16 +1609,62 @@ function setAiMode(mode) {
   renderAiActionReview();
 }
 
+function formatAiContent(content) {
+  const lines = esc(String(content || "")).replace(/\r\n?/g, "\n").split("\n");
+  const output = [];
+  let listType = null;
+  let codeLines = null;
+  const closeList = () => { if (listType) { output.push(`</${listType}>`); listType = null; } };
+  const inline = value => value
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
+
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      closeList();
+      if (codeLines) {
+        output.push(`<pre><code>${codeLines.join("\n")}</code></pre>`);
+        codeLines = null;
+      } else codeLines = [];
+      continue;
+    }
+    if (codeLines) { codeLines.push(line); continue; }
+    if (!line.trim()) { closeList(); continue; }
+    const heading = line.match(/^#{1,3}\s+(.+)$/);
+    const bullet = line.match(/^\s*[-*•]\s+(.+)$/);
+    const ordered = line.match(/^\s*(\d{1,2})[.)]\s+(.+)$/);
+    const quote = line.match(/^\s*&gt;\s?(.+)$/);
+    if (heading) { closeList(); output.push(`<h4>${inline(heading[1])}</h4>`); }
+    else if (bullet || ordered) {
+      const type = ordered ? "ol" : "ul";
+      if (listType !== type) { closeList(); output.push(`<${type}>`); listType = type; }
+      output.push(`<li>${inline((bullet || ordered)[ordered ? 2 : 1])}</li>`);
+    } else if (quote) { closeList(); output.push(`<blockquote>${inline(quote[1])}</blockquote>`); }
+    else { closeList(); output.push(`<p>${inline(line)}</p>`); }
+  }
+  if (codeLines) output.push(`<pre><code>${codeLines.join("\n")}</code></pre>`);
+  closeList();
+  return output.join("");
+}
+
 function renderAiMessages() {
   const box = $("#aiMessages");
   if (!box) return;
   const messages = currentAiMessages.length ? currentAiMessages : [{ role: "assistant", content: aiMode === "wish"
-    ? "Tell me what you want to accomplish in HackVerse. I’ll show you a clear action plan and wait for your approval before applying it."
+    ? "Tell me what you want to accomplish in HackVerse. I’ll analyse the request, prepare a clear action plan and wait for your approval before applying changes."
     : "Hi! I’m your HackVerse assistant. I can explain the platform, help you discover opportunities and guide you through your workspace." }];
-  box.innerHTML = messages.map(message => {
+  const rendered = messages.map(message => {
     const isUser = message.role === "user";
-    return `<div class="ai-message ${isUser ? "ai-message-user" : "ai-message-agent"}"><span class="ai-message-avatar">${isUser ? "You" : "✦"}</span><div class="ai-message-bubble">${esc(message.content || "")}</div></div>`;
+    const stamp = message.createdAt ? tsMillis(message.createdAt) : 0;
+    const time = stamp ? new Date(stamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+    const contentHtml = isUser ? esc(message.content || "") : formatAiContent(message.content || "");
+    return `<div class="ai-message ${isUser ? "ai-message-user" : "ai-message-agent"}"><span class="ai-message-avatar" aria-hidden="true">${isUser ? "You" : "✦"}</span><div class="ai-message-body"><div class="ai-message-bubble">${contentHtml}</div>${time ? `<time class="ai-message-time">${esc(time)}</time>` : ""}</div></div>`;
   }).join("");
+  const pendingUser = pendingAiUserMessage ? `<div class="ai-message ai-message-user ai-message-pending"><span class="ai-message-avatar" aria-hidden="true">You</span><div class="ai-message-body"><div class="ai-message-bubble">${esc(pendingAiUserMessage)}</div><time class="ai-message-time">Sending…</time></div></div>` : "";
+  const thinking = isAiSending ? `<div class="ai-message ai-message-agent ai-thinking" role="status" aria-live="polite"><span class="ai-message-avatar" aria-hidden="true">✦</span><div class="ai-message-body"><div class="ai-message-bubble"><b>${aiMode === "wish" ? "AI Wish is thinking" : "HackVerse AI is thinking"}</b><span class="ai-thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span><small>${aiMode === "wish" ? "Reviewing your request and preparing a safe action plan…" : "Preparing a helpful response…"}</small></div></div></div>` : "";
+  box.innerHTML = rendered + pendingUser + thinking;
+  box.setAttribute("aria-busy", String(isAiSending));
   box.scrollTop = box.scrollHeight;
 }
 
@@ -1590,12 +1674,18 @@ function renderAiHistoryRows(rows) {
     list.innerHTML = '<p class="ai-history-empty">Your conversations will appear here. Start a new chat whenever you need one.</p>';
     return;
   }
-  list.innerHTML = rows.map(item => `<div class="ai-history-entry ${item.id === activeAiConversationId ? "active" : ""}">
-    <button type="button" class="ai-history-item ${item.id === activeAiConversationId ? "active" : ""}" data-ai-conversation="${esc(item.id)}">
-      <b>${esc(item.title || "New conversation")}</b><small>${item.mode === "wish" ? "AI Wish" : "Website help"} · ${esc(item.preview || "Open conversation")}</small>
-    </button>
-    <button type="button" class="ai-history-delete" data-delete-ai-conversation="${esc(item.id)}" aria-label="Delete ${esc(item.title || "conversation")}" title="Delete conversation">×</button>
-  </div>`).join("");
+  list.innerHTML = rows.map(item => {
+    const stamp = tsMillis(item.updatedAt || item.createdAt);
+    const dateLabel = stamp ? new Date(stamp).toLocaleDateString([], { month: "short", day: "numeric" }) : "Saved chat";
+    const modeLabel = item.mode === "wish" ? "AI Wish" : "AI Chat";
+    return `<div class="ai-history-entry ${item.id === activeAiConversationId ? "active" : ""}">
+      <button type="button" class="ai-history-item ${item.id === activeAiConversationId ? "active" : ""}" data-ai-conversation="${esc(item.id)}">
+        <span class="ai-history-item-top"><b>${esc(item.title || "New conversation")}</b><time>${esc(dateLabel)}</time></span>
+        <small><i>${modeLabel}</i><span>${esc(item.preview || "Start this conversation")}</span></small>
+      </button>
+      <button type="button" class="ai-history-delete" data-delete-ai-conversation="${esc(item.id)}" aria-label="Delete ${esc(item.title || "conversation")}" title="Delete conversation">×</button>
+    </div>`;
+  }).join("");
   list.querySelectorAll("[data-ai-conversation]").forEach(button => button.addEventListener("click", () => openAiConversation(button.dataset.aiConversation)));
   list.querySelectorAll("[data-delete-ai-conversation]").forEach(button => button.addEventListener("click", () => deleteAiConversation(button.dataset.deleteAiConversation)));
 }
@@ -1740,7 +1830,7 @@ async function startAiConversation(mode = aiMode) {
     pendingAiActions = [];
     renderAiMessages();
     renderAiActionReview();
-    await loadAiHistory();
+    void loadAiHistory();
     return conversationRef.id;
   } catch (error) {
     toast(`Could not start AI conversation: ${friendlyError(error)}`);
@@ -1798,9 +1888,10 @@ function validateAiActions(actions) {
   const messageMap = new Map(
     currentMessages.map(m => [String(m.id), m])
   );
-  const builders = new Set(
-    aiAvailableBuilders.map(p => String(p.uid))
-  );
+  const builders = new Set([
+    ...aiAvailableBuilderUids.map(String),
+    ...aiAvailableBuilders.map(p => String(p.uid))
+  ]);
 
   return actions.slice(0, 8).map(action => {
     if (!action || typeof action !== 'object') return null;
@@ -2054,66 +2145,77 @@ async function sendAiMessage(event) {
   event.preventDefault();
   if (!requireAccount() || isAiSending) return;
 
-  const input = $('#aiInput');
+  const input = $("#aiInput");
   const message = input.value.trim();
   if (!message) return;
   if (message.length > 4000) {
-    toast('Keep each AI request under 4,000 characters.');
+    toast("Keep each AI request under 4,000 characters.");
     return;
   }
 
-  if (!activeAiConversationId || activeAiConversationMode !== aiMode) {
-    const created = await startAiConversation(aiMode);
-    if (!created) return;
-  }
-
   isAiSending = true;
-  $('#aiSendBtn').disabled = true;
-  $('#aiSendBtn').textContent = '…';
-  input.value = '';
+  pendingAiUserMessage = message;
+  $("#aiSendBtn").disabled = true;
+  $("#aiSendBtn").setAttribute("aria-label", "AI is thinking");
+  $("#aiSendBtn").textContent = "…";
+  input.value = "";
   pendingAiActions = [];
+  renderAiMessages();
   renderAiActionReview();
 
+  let timeoutId = null;
   try {
-    await persistAiMessage('user', message);
-    const conversationRef = doc(db, 'aiConversations', activeAiConversationId);
+    if (!activeAiConversationId || activeAiConversationMode !== aiMode) {
+      const created = await startAiConversation(aiMode);
+      if (!created) throw new Error("Could not start a new AI conversation. Please try again.");
+    }
+
+    await persistAiMessage("user", message);
+    pendingAiUserMessage = "";
+    renderAiMessages();
+
+    const conversationRef = doc(db, "aiConversations", activeAiConversationId);
     await updateDoc(conversationRef, {
-      title: currentAiMessages.filter(item => item.role === 'user').length <= 1
+      title: currentAiMessages.filter(item => item.role === "user").length <= 1
         ? message.slice(0, 48)
-        : (activeAiConversationMode === 'wish' ? 'AI Wish · ' : 'Help · ') + message.slice(0, 34),
+        : (aiMode === "wish" ? "AI Wish · " : "Help · ") + message.slice(0, 34),
       preview: message.slice(0, 120),
       mode: aiMode,
       updatedAt: serverTimestamp()
     });
 
-    if (aiMode === 'wish') {
-      try { aiAvailableBuilders = await searchPublicProfiles('', 200); }
-      catch { aiAvailableBuilders = []; }
-    }
-
     const token = await currentUser.getIdToken();
-    const response = await fetch('/api/agent37/chat', {
-      method: 'POST',
+    const controller = new AbortController();
+    timeoutId = window.setTimeout(() => controller.abort(), 240000);
+    // The server already loads a bounded public builder context for AI Wish.
+    // Return its IDs with the answer so we avoid a second full-directory query in the browser.
+    const response = await fetch("/api/agent37/chat", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + token
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token
       },
       body: JSON.stringify({
         conversationId: activeAiConversationId,
         mode: aiMode,
         message,
-        page: (location.hash || '#home').slice(1),
-        activeConversationId: activeConversationId || ''
-      })
+        page: (location.hash || "#home").slice(1),
+        activeConversationId: activeConversationId || ""
+      }),
+      signal: controller.signal
     });
 
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'AI service returned ' + response.status + '.');
+    if (!response.ok) throw new Error(data.error || "AI service returned " + response.status + ".");
+    if (aiMode === "wish") {
+      aiAvailableBuilderUids = Array.isArray(data.builderUids) ? [...new Set(data.builderUids.map(String))] : [];
+      aiAvailableBuilders = aiAvailableBuilders.filter(profile => aiAvailableBuilderUids.includes(String(profile.uid)));
+    }
 
-    const reply = String(data.reply || 'I could not prepare a response. Please try again.').slice(0, 12000);
-    await persistAiMessage('assistant', reply);
+    const reply = String(data.reply || "I could not prepare a response. Please try again.").slice(0, 12000);
+    await persistAiMessage("assistant", reply);
 
-    if (aiMode === 'wish') {
+    if (aiMode === "wish") {
       pendingAiActions = validateAiActions(data.actions);
       renderAiActionReview();
     }
@@ -2122,20 +2224,44 @@ async function sendAiMessage(event) {
       preview: reply.slice(0, 120),
       updatedAt: serverTimestamp()
     });
-    await loadAiHistory();
-
+    // Refresh the sidebar without making the user wait for another history query.
+    void loadAiHistory();
   } catch (error) {
-    console.error('Agent37 assistant request failed', error);
-    await persistAiMessage(
-      'assistant',
-      'I could not complete that request. ' + (error?.message || 'The AI service failed.')
-    ).catch(() => {});
+    console.error("Agent37 assistant request failed", error);
+    const messageText = error?.name === "AbortError"
+      ? "The AI service is taking longer than expected. Please try again in a moment."
+      : "I could not complete that request. " + (error?.message || "The AI service failed.");
+    await persistAiMessage("assistant", messageText).catch(() => {});
+    if (!activeAiConversationId) input.value = message;
   } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
+    pendingAiUserMessage = "";
     isAiSending = false;
-    $('#aiSendBtn').disabled = false;
-    $('#aiSendBtn').textContent = '↑';
-    input.focus();
+    $("#aiSendBtn").disabled = false;
+    $("#aiSendBtn").textContent = "↑";
+    $("#aiSendBtn").setAttribute("aria-label", "Send message");
+    renderAiMessages();
+    if (!input.disabled && !$("#aiForm").hidden) input.focus();
   }
+}
+async function loadAiBuilderProfiles(uids) {
+  const allowed = new Set(aiAvailableBuilderUids.map(String));
+  const requested = [...new Set((uids || []).map(String))].filter(uid => allowed.has(uid));
+  const cached = new Map(aiAvailableBuilders.map(profile => [String(profile.uid), profile]));
+  const profiles = await Promise.all(requested.map(async uid => {
+    if (cached.has(uid)) return cached.get(uid);
+    const snapshot = await getDoc(doc(db, "publicProfiles", uid));
+    if (!snapshot.exists()) return null;
+    const profile = snapshot.data() || {};
+    // Only use profiles that the server included in its public builder context.
+    if (profile.profileVisibility !== "public") return null;
+    return { ...profile, uid };
+  }));
+  const resolved = profiles.filter(Boolean);
+  const merged = new Map(aiAvailableBuilders.map(profile => [String(profile.uid), profile]));
+  resolved.forEach(profile => merged.set(String(profile.uid), profile));
+  aiAvailableBuilders = [...merged.values()];
+  return requested.map(uid => resolved.find(profile => String(profile.uid) === uid) || cached.get(uid)).filter(Boolean);
 }
 
 async function applyAiActions() {
@@ -2219,13 +2345,13 @@ async function applyAiActions() {
           completed.push(`Found ${people.length} builder${people.length === 1 ? "" : "s"} in the community`);
 
         } else if (action.type === "start_direct_conversation") {
-          const profile = aiAvailableBuilders.find(p => p.uid === action.uid);
+          const [profile] = await loadAiBuilderProfiles([action.uid]);
           if (!profile) throw new Error("That builder is no longer available in the public directory.");
           await startDirectConversation(profile);
           completed.push(`Started a conversation with ${profile.displayName || "the builder"}`);
 
         } else if (action.type === "create_group") {
-          const selected = aiAvailableBuilders.filter(p => (action.memberUids || []).includes(p.uid));
+          const selected = await loadAiBuilderProfiles(action.memberUids || []);
           if (selected.length !== (action.memberUids || []).length) {
             throw new Error("One or more selected builders are no longer available.");
           }
@@ -2609,6 +2735,15 @@ function handleRoute() {
   $$('[data-view]').forEach(el=>{
     if(el.id==="discoveryAdminPanel"){el.hidden=blocked||!(view==="home"&&isAdminUser);return;}
     el.hidden=blocked || el.dataset.view!==view;
+    if (!el.hidden) {
+      el.classList.remove("hv-route-enter");
+      requestAnimationFrame(() => {
+        if (!el.hidden) {
+          el.classList.add("hv-route-enter");
+          el.addEventListener("animationend", () => el.classList.remove("hv-route-enter"), { once: true });
+        }
+      });
+    }
   });
   if(blocked){aiPanel.hidden=true;aiAssistant.classList.remove("ai-on-wish-page");}
   $$("[data-route]").forEach(a=>a.classList.toggle("active",a.dataset.route===view));
@@ -2623,6 +2758,21 @@ function handleRoute() {
 }
 
 function bindUI() {
+  const bootSplash = $("#hvBootSplash");
+  if (bootSplash) {
+    let pageReady = document.readyState === "complete";
+    let minimumElapsed = false;
+    let dismissed = false;
+    const dismissSplash = () => {
+      if (!pageReady || !minimumElapsed || dismissed) return;
+      dismissed = true;
+      bootSplash.classList.add("is-hidden");
+      window.setTimeout(() => bootSplash.remove(), 520);
+    };
+    if (!pageReady) window.addEventListener("load", () => { pageReady = true; dismissSplash(); }, { once: true });
+    window.setTimeout(() => { minimumElapsed = true; dismissSplash(); }, 720);
+    window.setTimeout(() => { pageReady = true; minimumElapsed = true; dismissSplash(); }, 2200);
+  }
   document.addEventListener("visibilitychange",()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);});
   window.setInterval(()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);},10*60*1000);
   $("#year").textContent = new Date().getFullYear();
@@ -2663,7 +2813,7 @@ function bindUI() {
   $("#projectForm").addEventListener("submit", createProject);
   $$("[data-close]").forEach(button => button.addEventListener("click", () => { const id = button.dataset.close; if (id === "profileModal") closeProfileModal(); else hideModal(id); }));
   $$(".modal-backdrop").forEach(modal => modal.addEventListener("click", e => { if (e.target === modal) { if (modal.id === "profileModal") closeProfileModal(); else hideModal(modal.id); } }));
-  document.addEventListener("keydown", e => { if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(location.hash==="#aiwish") location.hash="#home"; else { $("#aiPanel").hidden = true; $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") { closeMainNav(); } if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(location.hash==="#aiwish") location.hash="#home"; else { $("#aiPanel").hidden = true; $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
@@ -2691,9 +2841,29 @@ function bindUI() {
   $("#backToExploreBtn").onclick = () => { location.hash = "#opportunities"; };
   $("#themeToggle").onclick = () => { document.body.classList.toggle("light"); const prefs=readAppPrefs();prefs.theme=document.body.classList.contains("light")?"light":"dark";localStorage.setItem("hackverse-app-preferences",JSON.stringify(prefs));localStorage.setItem("hackverse-theme",prefs.theme); };
   if (localStorage.getItem("hackverse-theme") === "light") document.body.classList.add("light");
-  $("#menuToggle").onclick = () => { const nav=document.querySelector(".desktop-nav"); const open=nav.classList.toggle("mobile-open"); $("#menuToggle").setAttribute("aria-expanded",String(open)); };
-  $("#navMoreBtn").onclick = () => { const menu=$("#navMoreMenu"); menu.hidden=!menu.hidden; $("#navMoreBtn").setAttribute("aria-expanded",String(!menu.hidden)); };
-  $$(".desktop-nav a").forEach(a => a.addEventListener("click", () => { document.querySelector(".desktop-nav").classList.remove("mobile-open"); $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); $("#menuToggle").setAttribute("aria-expanded","false"); }));
+  const mainNav = document.querySelector(".desktop-nav");
+  const closeMainNav = () => {
+    mainNav?.classList.remove("mobile-open");
+    $("#menuToggle").setAttribute("aria-expanded", "false");
+    $("#menuToggle").setAttribute("aria-label", "Open navigation");
+    $("#navMoreMenu").hidden = true;
+    $("#navMoreBtn").setAttribute("aria-expanded", "false");
+  };
+  $("#menuToggle").onclick = () => {
+    const open = mainNav.classList.toggle("mobile-open");
+    $("#menuToggle").setAttribute("aria-expanded", String(open));
+    $("#menuToggle").setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+  };
+  $("#navMoreBtn").onclick = () => {
+    const menu = $("#navMoreMenu");
+    menu.hidden = !menu.hidden;
+    $("#navMoreBtn").setAttribute("aria-expanded", String(!menu.hidden));
+  };
+  $$(".desktop-nav a").forEach(a => a.addEventListener("click", closeMainNav));
+  document.addEventListener("click", event => {
+    if (!mainNav?.classList.contains("mobile-open") && $("#navMoreMenu").hidden) return;
+    if (!event.target.closest(".topbar")) closeMainNav();
+  });
   window.addEventListener("hashchange",handleRoute); handleRoute();
 }
 function runHeroSearch() { if (!requireAccount()) return; $("#eventSearch").value = $("#heroSearch").value; renderEvents(); location.hash = "#opportunities"; }

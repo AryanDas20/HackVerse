@@ -204,8 +204,16 @@ OUTPUT:
 
 Return ONLY one valid JSON object.
 
+For a non-trivial task, make the reply a useful, structured analysis with these elements where relevant:
+- Goal understood: restate the requested outcome in plain language.
+- Analysis: explain the relevant HackVerse features, dependencies, and assumptions.
+- Proposed plan: describe the actions in a clear, ordered sequence.
+- Safety and permissions: call out consent, privacy, ownership, and any confirmation needed.
+- Expected result: explain what the user should see after approving the actions.
+Keep simple requests concise. Do not invent capabilities, data, people, identifiers, or completed work. If the task is ambiguous or needs missing information, ask a focused question and return no unsafe actions.
+
 Example:
-{"reply":"I prepared the requested actions for your review.","actions":[...]}
+{"reply":"**Goal understood**\n...\n\n**Plan**\n1. ...\n\n**Before applying**\n...","actions":[...]}
 
 If required information is missing:
 {"reply":"I need the exact conversation/member/message to safely prepare that action.","actions":[]}
@@ -456,7 +464,7 @@ module.exports = async function handler(req, res) {
       mode: "chat",
       reasoning_effort: ["ultra", "max", "xhigh", "high", "medium", "low"].includes(process.env.AGENT37_REASONING_EFFORT)
         ? process.env.AGENT37_REASONING_EFFORT
-        : "ultra"
+        : "high"
     };
 
     if (conversation.agentSessionId) agentBody.session_id = conversation.agentSessionId;
@@ -504,6 +512,7 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({
       reply: result.reply,
       actions: result.actions,
+      builderUids: mode === "wish" ? builderContext.map(builder => builder.uid) : [],
       sessionId: agentResponse.session_id || conversation.agentSessionId || null,
       mode,
       usage: agentResponse.usage
