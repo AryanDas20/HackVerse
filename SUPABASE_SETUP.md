@@ -60,3 +60,7 @@ Run:
 GitHub → Actions → HackVerse Automatic Opportunity Discovery → Run workflow
 
 The job is scheduled once daily and can also be run manually.
+
+## 9. Admin access
+
+Admin privileges must be assigned server-side in Supabase `app_metadata` only. Use `functions/scripts/set-admin.js` with the user's Supabase Auth UUID and the server-only `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`. Never grant admin access through editable `user_metadata`.

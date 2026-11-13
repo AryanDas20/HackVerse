@@ -102,22 +102,22 @@ AVAILABLE WEBSITE ACTIONS:
 {"type":"search_builders","query":"text"}
 
 6. Start direct conversation
-{"type":"start_direct_conversation","userUid":"exact discoverable builder UID"}
+{"type":"start_direct_conversation","uid":"exact discoverable builder UID"}
 
 7. Create group
 {"type":"create_group","groupName":"text","memberUids":["exact discoverable UID values"],"groupDescription":"optional text"}
 
 8. Add member to group
-{"type":"add_group_member","conversationId":"exact conversation ID","userUid":"exact discoverable UID"}
+{"type":"add_group_member","conversationId":"exact conversation ID","uid":"exact discoverable UID"}
 
 9. Remove member from group
-{"type":"remove_group_member","conversationId":"exact conversation ID","userUid":"exact member UID"}
+{"type":"remove_group_member","conversationId":"exact conversation ID","uid":"exact member UID"}
 
 10. Update group
 {"type":"update_group","conversationId":"exact conversation ID","groupName":"optional text","groupDescription":"optional text","groupPhotoUrl":"optional valid URL"}
 
 11. Change group administrator
-{"type":"toggle_group_admin","conversationId":"exact conversation ID","userUid":"exact member UID","makeAdmin":true}
+{"type":"toggle_group_admin","conversationId":"exact conversation ID","uid":"exact member UID","makeAdmin":true}
 
 12. Delete group
 {"type":"delete_group","conversationId":"exact conversation ID","reason":"clear reason"}
@@ -238,23 +238,13 @@ function parseWorkResult(outputText) {
   };
 }
 
-async function incrementDailyUsage(db, uid) {
-  const date = new Date().toISOString().slice(0, 10);
-  const ref = db.collection("aiUsageDaily").doc(`${uid}_${date}`);
-  const snapshot = await ref.get();
-  const current = snapshot.exists ? snapshot.data() : {};
-  const count = Number(current?.count || 0);
-
-  if (count >= DAILY_LIMIT) return false;
-
-  await ref.set({
-    uid,
-    date,
-    count: count + 1,
-    updatedAt: FieldValue.serverTimestamp()
-  }, { merge: true });
-
-  return true;
+async function consumeDailyUsage(client, uid) {
+  const { data, error } = await client.rpc("consume_ai_daily_limit", {
+    p_user_id: uid,
+    p_daily_limit: DAILY_LIMIT
+  });
+  if (error) throw error;
+  return data === true;
 }
 
 function buildBuilderContext(snapshot) {
@@ -370,7 +360,7 @@ module.exports = async function handler(req, res) {
       return res.status(404).json({ error: "That AI conversation does not belong to your account." });
     }
     const conversation = conversationSnapshot.data();
-    const allowed = await incrementDailyUsage(db, uid);
+    const allowed = await consumeDailyUsage(client, uid);
     if (!allowed) return res.status(429).json({ error: `You've reached the ${DAILY_LIMIT}-request daily AI limit. Try again tomorrow.` });
 
     const [profileSnapshot, eventSnapshot, builderSnapshot, memberConversationSnapshot] = await Promise.all([

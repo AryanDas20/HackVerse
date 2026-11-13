@@ -200,7 +200,9 @@ export async function getDoc(ref) {
 
 function rowFor(ref, data) {
   const collectionPath = collectionPathOf(ref.path);
-  const ownerUid = data?.ownerUid || data?.createdBy || data?.uid || (collectionPath.startsWith("users/") ? splitPath(collectionPath)[1] : null) || null;
+  const ownerUid = data?.ownerUid || data?.createdBy || data?.uid ||
+    (collectionPath === "users" ? ref.id : null) ||
+    (collectionPath.startsWith("users/") ? splitPath(collectionPath)[1] : null) || null;
   const participants = Array.isArray(data?.participants) ? data.participants : null;
   return { path: ref.path, collection_path: collectionPath, doc_id: ref.id, data: clone(data || {}), owner_uid: ownerUid, participants, updated_at: new Date().toISOString() };
 }

@@ -77,7 +77,7 @@ function initSupabase() {
   onAuthStateChanged(auth, async user => {
     currentUser = user;
     handleRoute();
-    isAdminUser = Boolean(user?.app_metadata?.admin === true || user?.user_metadata?.admin === true);
+    isAdminUser = Boolean(user?.app_metadata?.admin === true);
     $("#discoveryAdminPanel").hidden = !isAdminUser;
     if (isAdminUser) loadDiscoverySources();
     $("#authButton").textContent = user ? "Sign out" : "Sign in";
@@ -1827,7 +1827,7 @@ function validateAiActions(actions) {
       return { type, query: String(action.query || '').trim().slice(0, 100) };
 
     if (type === 'start_direct_conversation') {
-      const uid = String(action.uid || '');
+      const uid = String(action.uid || action.userUid || '');
       if (!uid || uid === currentUser?.uid || !builders.has(uid)) return null;
       return { type, uid };
     }
@@ -1839,12 +1839,17 @@ function validateAiActions(actions) {
         .filter(uid => uid && uid !== currentUser?.uid && builders.has(uid))
         .slice(0, 10);
       if (!memberUids.length) return null;
-      return { type, groupName: name.slice(0, 60), memberUids };
+      return {
+        type,
+        groupName: name.slice(0, 60),
+        memberUids,
+        groupDescription: String(action.groupDescription || '').trim().slice(0, 300)
+      };
     }
 
     if (type === 'add_group_member') {
       const conversationId = String(action.conversationId || '');
-      const uid = String(action.uid || '');
+      const uid = String(action.uid || action.userUid || '');
       const c = conversationMap.get(conversationId);
       if (!c?.isGroup || !uid || !builders.has(uid)) return null;
       const manager = c.createdBy === currentUser?.uid ||
@@ -1855,7 +1860,7 @@ function validateAiActions(actions) {
 
     if (type === 'remove_group_member') {
       const conversationId = String(action.conversationId || '');
-      const uid = String(action.uid || '');
+      const uid = String(action.uid || action.userUid || '');
       const c = conversationMap.get(conversationId);
       if (!c?.isGroup || !uid || uid === c.createdBy) return null;
       const manager = c.createdBy === currentUser?.uid ||
@@ -1888,7 +1893,7 @@ function validateAiActions(actions) {
 
     if (type === 'toggle_group_admin') {
       const conversationId = String(action.conversationId || '');
-      const uid = String(action.uid || '');
+      const uid = String(action.uid || action.userUid || '');
       const c = conversationMap.get(conversationId);
       if (!c?.isGroup || c.createdBy !== currentUser?.uid) return null;
       if (!uid || uid === c.createdBy || !(c.participants || []).includes(uid)) return null;
@@ -1933,14 +1938,20 @@ function validateAiActions(actions) {
       const created = tsMillis(m.createdAt);
       if (!created || Date.now() - created > 60 * 60 * 1000) return null;
       if (m.authorUid !== currentUser?.uid && !admin) return null;
-      return { type, messageId, scope: action.scope === 'everyone' ? 'everyone' : 'self' };
+      const conversationId = String(m.conversationId || activeConversationId || '');
+      if (!c || !conversationId || !(c.participants || []).includes(currentUser?.uid)) return null;
+      const scope = action.scope === 'everyone' ? 'everyone' : 'self';
+      return { type, conversationId, messageId, scope, forEveryone: scope === 'everyone' };
     }
 
     if (type === 'react_message') {
       const messageId = String(action.messageId || '');
       const emoji = String(action.emoji || '').trim();
-      if (!messageMap.has(messageId) || !emoji || emoji.length > 16) return null;
-      return { type, messageId, emoji };
+      const m = messageMap.get(messageId);
+      const conversationId = String(m?.conversationId || activeConversationId || '');
+      const c = conversationMap.get(conversationId);
+      if (!m || !c || !(c.participants || []).includes(currentUser?.uid) || !emoji || emoji.length > 16) return null;
+      return { type, conversationId, messageId, emoji };
     }
 
     if (type === 'forward_message') {
@@ -1948,9 +1959,12 @@ function validateAiActions(actions) {
       const targetConversationId = String(action.targetConversationId || '');
       const m = messageMap.get(messageId);
       const c = conversationMap.get(targetConversationId);
-      if (!m || !c || m.deleted || m.attachment) return null;
-      if (!(c.participants || []).includes(currentUser?.uid)) return null;
-      return { type, messageId, targetConversationId };
+      const conversationId = String(m?.conversationId || activeConversationId || '');
+      const sourceConversation = conversationMap.get(conversationId);
+      if (!m || !sourceConversation || !c || m.deleted || m.attachment) return null;
+      if (!(sourceConversation.participants || []).includes(currentUser?.uid) ||
+          !(c.participants || []).includes(currentUser?.uid)) return null;
+      return { type, conversationId, messageId, targetConversationId };
     }
 
     if (type === 'hide_conversation' || type === 'clear_conversation') {
@@ -2274,13 +2288,13 @@ async function applyAiActions() {
           if (action.uid === c.createdBy) throw new Error("The group creator is always an admin.");
           const admins = new Set(c.admins || [c.createdBy]);
           if (!c.participants?.includes(action.uid)) throw new Error("That member is not in the group.");
-          if (admins.has(action.uid)) admins.delete(action.uid);
-          else admins.add(action.uid);
+          if (action.makeAdmin === true) admins.add(action.uid);
+          else admins.delete(action.uid);
           admins.add(c.createdBy);
           const nextAdmins = [...admins];
           await updateDoc(doc(db, "conversations", c.id), { admins: nextAdmins, updatedAt: serverTimestamp() });
           activeConversation = { ...c, admins: nextAdmins };
-          completed.push(admins.has(action.uid) ? "Promoted group member to admin" : "Removed group admin role");
+          completed.push(action.makeAdmin === true ? "Promoted group member to admin" : "Removed group admin role");
 
         } else if (action.type === "delete_group") {
           if (!activeConversation?.isGroup || activeConversation.id !== action.conversationId) {
