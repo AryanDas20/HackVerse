@@ -211,14 +211,21 @@ module.exports = async function handler(req, res) {
       mode === "wish" ? db.collection("publicProfiles").where("profileVisibility", "==", "public").limit(MAX_CONTEXT_BUILDERS).get() : Promise.resolve({docs:[]}),
       mode === "wish" ? db.collection("conversations").where("participants", "array-contains", uid).limit(MAX_CONTEXT_CONVERSATIONS).get() : Promise.resolve({docs:[]})
     ]);
-    const profileData = profileSnapshot.exists ? profileSnapshot.data() : {};
+    const profileData = (profileSnapshot && profileSnapshot.exists)
+      ? (profileSnapshot.data() || {})
+      : {};
+
     const profile = {
-      displayName: clean(profileData.displayName, 80),
-      username: clean(profileData.username, 40),
-      college: clean(profileData.college, 100),
-      course: clean(profileData.course, 80),
-      skills: Array.isArray(profileData.skills) ? profileData.skills.map(value => clean(value, 35)).slice(0, 15) : [],
-      interests: Array.isArray(profileData.interests) ? profileData.interests.map(value => clean(value, 35)).slice(0, 10) : []
+      displayName: clean(profileData?.displayName, 80),
+      username: clean(profileData?.username, 40),
+      college: clean(profileData?.college, 100),
+      course: clean(profileData?.course, 80),
+      skills: Array.isArray(profileData?.skills)
+        ? profileData.skills.map(value => clean(value, 35)).slice(0, 15)
+        : [],
+      interests: Array.isArray(profileData?.interests)
+        ? profileData.interests.map(value => clean(value, 35)).slice(0, 10)
+        : []
     };
     const eventContext = buildEventContext(eventSnapshot);
     const builderContext = buildBuilderContext(builderSnapshot);
