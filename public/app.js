@@ -17,7 +17,7 @@ let stopInboxListener = null, profileIsMandatory = false, selectedMember = null,
 let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
 let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [], isSendingChatMessage = false;
 let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false, pendingAiUserMessage = "", aiAvailableBuilderUids = [];
-let emailVerificationGuard = false;
+let emailVerificationGuard = false, pendingChatFile = null;
 let dialogResolver = null;
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -83,12 +83,15 @@ function initSupabase() {
     $("#authButton").textContent = user ? "Sign out" : "Sign in";
     $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
     if (!user) {
-      privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[]; renderNotificationCenter(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
+      privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[]; pendingChatFile = null; renderPendingChatAttachment(); renderNotificationCenter(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
       $("#eventModalContent").innerHTML = ""; detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
       $("#chatPlaceholder").hidden = false; $("#chatActive").hidden = true; activeAiConversationId = null; currentAiMessages = []; pendingAiActions = []; updateAiAccessUI(); renderAiMessages();
       setSystemNotice(""); updateEventAccessUI(); renderEvents(); searchPeople(); handleRoute(); return;
     }
-    updateEventAccessUI(); await loadEvents(); await loadAccountWorkspace(); handleRoute(); await loadAiHistory();
+    updateEventAccessUI();
+    handleRoute();
+    void loadEvents();
+    void loadAccountWorkspace();
   });
 }
 
@@ -170,18 +173,21 @@ async function resetPassword() {
 
 async function loadAccountWorkspace() {
   try {
-    const snap = await getDoc(doc(db, "users", currentUser.uid));
+    const [snap, pubSnap] = await Promise.all([
+      getDoc(doc(db, "users", currentUser.uid)),
+      getDoc(doc(db, "publicProfiles", currentUser.uid))
+    ]);
     privateProfile = snap.exists() ? snap.data() : null;
-    const pubSnap = await getDoc(doc(db, "publicProfiles", currentUser.uid));
     publicProfile = pubSnap.exists() ? pubSnap.data() : (privateProfile?.profileVisibility === "private" ? (privateProfile?.profileData || null) : null);
-    await loadSaved();
     renderMyProfile(); loadSettingsUI(); renderNotificationCenter();
+    // Saved items and projects are not required to render the first screen.
+    void loadSaved();
     if (!privateProfile?.profileComplete || !publicProfile) {
       openProfileEditor(true);
     } else {
       hideModal("profileModal");
       beginInboxListener();
-      loadProjects();
+      void loadProjects();
     }
   } catch (error) {
     console.error("Could not load account", error); toast(friendlyError(error));
@@ -451,7 +457,9 @@ async function loadEvents({ forceRefresh = false } = {}) {
     // Read public listings in bounded pages rather than silently stopping at 500.
     const loadedDocs = [];
     let cursor = null;
-    for (let page = 0; page < 100; page++) {
+    // Three bounded pages are enough for a useful first load without letting a
+    // very large directory trigger dozens of sequential network round-trips.
+    for (let page = 0; page < 3; page++) {
       const constraints = [where("visibility", "==", "public"), limit(500)];
       if (cursor) constraints.push(startAfter(cursor));
       const snapshot = await getDocs(query(collection(db, "hackathons"), ...constraints));
@@ -947,6 +955,10 @@ function renderChatHeading() {
 }
 function selectConversation(conversation) {
   if (!conversation || !currentUser) return;
+  if (activeConversationId && activeConversationId !== conversation.id && pendingChatFile) {
+    pendingChatFile = null;
+    renderPendingChatAttachment();
+  }
   activeConversation = conversation; activeConversationId = conversation.id; replyingToMessageId = null;
   $("#chatPlaceholder").hidden = true; $("#chatActive").hidden = false; renderChatHeading(); updateReplyPreview();
   if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
@@ -1074,13 +1086,13 @@ async function chatMediaRequest(payload) {
   if (!response.ok) throw new Error(data.error || `Media service returned ${response.status}.`);
   return data;
 }
-async function uploadChatFile(file, kindOverride="file") {
+async function uploadChatFile(file, kindOverride="file", conversationId=activeConversationId) {
   if (!supabaseClient) throw new Error("Chat media storage is not configured yet. Complete the Supabase setup in docs/AGENT37_AI_SETUP.md.");
-  if (!activeConversationId || !currentUser) throw new Error("Choose a conversation before uploading.");
+  if (!conversationId || !currentUser) throw new Error("Choose a conversation before uploading.");
   const allowed = file.type.startsWith("image/") || file.type.startsWith("video/") || file.type.startsWith("audio/") || ["application/pdf","text/plain","application/zip","application/msword","application/vnd.ms-excel","application/vnd.ms-powerpoint","application/vnd.openxmlformats-officedocument.wordprocessingml.document","application/vnd.openxmlformats-officedocument.presentationml.presentation","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"].includes(file.type);
   if (!allowed) throw new Error("That file type is not supported.");
   if (file.size > 15 * 1024 * 1024) throw new Error("Attachments must be 15 MB or smaller.");
-  const data = await chatMediaRequest({action:"create-upload",conversationId:activeConversationId,fileName:file.name,contentType:file.type,size:file.size});
+  const data = await chatMediaRequest({action:"create-upload",conversationId,fileName:file.name,contentType:file.type,size:file.size});
   const { error } = await supabaseClient.storage.from(supabaseConfig.bucket || "chat-media").uploadToSignedUrl(data.path,data.token,file,{contentType:file.type,upsert:false});
   if (error) throw new Error(error.message || "Supabase upload failed.");
   return {name:String(file.name||`${kindOverride}.bin`).slice(0,120),type:file.type,size:file.size,storagePath:data.path};
@@ -1102,9 +1114,11 @@ async function sendMessage(event) {
   if (!requireAccount()) return;
   if (!activeConversationId) { toast("Choose a conversation first."); return; }
   const text = $("#messageText").value.trim();
-  if (!text) return;
+  if (!text && !pendingChatFile) return;
   if (text.length > 2000) { toast("Messages must be 2,000 characters or fewer."); return; }
-  await submitChatMessage({ text, kind: "text" });
+  const file = pendingChatFile;
+  const kind = file ? (file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : "file") : "text";
+  await submitChatMessage({ text, kind, ...(file ? { file } : {}) });
 }
 async function submitChatMessage(payload) {
   if (isSendingChatMessage) return false;
@@ -1112,7 +1126,7 @@ async function submitChatMessage(payload) {
 
   const conversationId = activeConversationId;
   const messageText = String(payload.text || "").trim().slice(0, 2000);
-  if (!messageText && !payload.attachment) return false;
+  if (!messageText && !payload.attachment && !payload.file) return false;
   const sendButton = $("#messageForm button");
   const input = $("#messageText");
   const draftAtSend = input?.value ?? "";
@@ -1144,8 +1158,14 @@ async function submitChatMessage(payload) {
 
   let saved = false;
   try {
+    if (payload.file) {
+      if (sendButton) sendButton.textContent = "Uploading…";
+      const attachment = await uploadChatFile(payload.file, "file", conversationId);
+      body.attachment = attachment;
+    }
     // The nested collection path is conversations/{id}/messages. The data-layer
     // now preserves the parent document path for this Firestore-style call.
+    if (sendButton && payload.file) sendButton.textContent = "Sending…";
     const savedMessageRef = await addDoc(collection(conversationRef, "messages"), body);
     saved = true;
     // Show the confirmed write immediately. The realtime/polling listener will
@@ -1161,7 +1181,7 @@ async function submitChatMessage(payload) {
     // must not invite a retry that would create a duplicate message.
     try {
       await updateDoc(conversationRef, {
-        lastMessage: (messageText || payload.attachment?.name || "Attachment").slice(0, 180),
+        lastMessage: (messageText || body.attachment?.name || "Attachment").slice(0, 180),
         lastMessageSender: currentUser.uid,
         lastMessageAt: serverTimestamp(),
         updatedAt: serverTimestamp()
@@ -1172,7 +1192,11 @@ async function submitChatMessage(payload) {
     }
 
     if (activeConversationId === conversationId) {
-      if (payload.kind === "text" && input && input.value === draftAtSend) input.value = "";
+      if (input && input.value === draftAtSend) input.value = "";
+      if (payload.file && pendingChatFile === payload.file) {
+        pendingChatFile = null;
+        renderPendingChatAttachment();
+      }
       replyingToMessageId = null;
       updateReplyPreview();
     }
@@ -1194,12 +1218,26 @@ async function submitChatMessage(payload) {
     if (activeConversationId === conversationId && input && document.activeElement === input) input.focus();
   }
 }
-async function handleChatFile(file) {
-  if(!file||!requireAccount()||!activeConversationId)return;
-  toast("Uploading attachment…");
-  try{const attachment=await uploadChatFile(file);const sent=await submitChatMessage({text:"",kind:file.type.startsWith("image/")?"image":file.type.startsWith("video/")?"video":file.type.startsWith("audio/")?"audio":"file",attachment});if(sent)toast("Attachment sent.");}
-  catch(error){toast(error.message||friendlyError(error));}
-  finally{$("#chatFileInput").value="";}
+function renderPendingChatAttachment() {
+  const preview = $("#chatAttachmentPreview");
+  if (!preview) return;
+  const file = pendingChatFile;
+  preview.hidden = !file;
+  if (!file) { preview.replaceChildren(); return; }
+  const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  const label = isPdf ? "PDF document" : file.type.startsWith("image/") ? "Image" : file.type.startsWith("video/") ? "Video" : file.type.startsWith("audio/") ? "Audio" : "File attachment";
+  preview.innerHTML = `<div class="chat-attachment-preview-icon" aria-hidden="true">${isPdf ? "PDF" : file.type.startsWith("image/") ? "IMG" : file.type.startsWith("video/") ? "VID" : file.type.startsWith("audio/") ? "AUD" : "FILE"}</div><div class="chat-attachment-preview-details"><b>${esc(file.name)}</b><span>${esc(label)} · ${esc(formatFileSize(file.size))}</span><small>Ready to send · This file has not been uploaded yet</small></div><button type="button" id="removePendingChatFile" class="chat-attachment-remove" aria-label="Remove attachment" title="Remove attachment">×</button>`;
+  $("#removePendingChatFile").onclick = () => { pendingChatFile = null; $("#chatFileInput").value = ""; renderPendingChatAttachment(); };
+}
+function handleChatFile(file) {
+  if (!file || !requireAccount() || !activeConversationId) return;
+  const allowed = file.type.startsWith("image/") || file.type.startsWith("video/") || file.type.startsWith("audio/") || ["application/pdf","text/plain","application/zip","application/x-zip-compressed","application/msword","application/vnd.ms-excel","application/vnd.ms-powerpoint","application/vnd.openxmlformats-officedocument.wordprocessingml.document","application/vnd.openxmlformats-officedocument.presentationml.presentation","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"].includes(file.type);
+  if (!allowed) { toast("That file type is not supported."); $("#chatFileInput").value = ""; return; }
+  if (file.size > 15 * 1024 * 1024) { toast("Attachments must be 15 MB or smaller."); $("#chatFileInput").value = ""; return; }
+  pendingChatFile = file;
+  renderPendingChatAttachment();
+  $("#chatFileInput").value = "";
+  toast("Attachment added to your draft. Press Send when you are ready.");
 }
 async function toggleVoiceRecording() {
   if(voiceRecorder?.state==="recording"){voiceRecorder.stop();$("#voiceRecordBtn").classList.remove("recording");$("#voiceRecordBtn").innerHTML="◉<span>Voice</span>";return;}
@@ -1767,10 +1805,21 @@ function renderAiHistoryRows(rows) {
   list.querySelectorAll("[data-delete-ai-conversation]").forEach(button => button.addEventListener("click", () => deleteAiConversation(button.dataset.deleteAiConversation)));
 }
 
+function setAiHistoryOpen(open) {
+  const drawer = $("#aiHistoryDrawer");
+  const button = $("#aiHistoryToggle");
+  if (!drawer || !button) return;
+  drawer.hidden = !open;
+  button.setAttribute("aria-expanded", String(Boolean(open)));
+  button.setAttribute("aria-label", open ? "Hide conversation history" : "Show conversation history");
+  button.title = open ? "Hide conversation history" : "Show conversation history";
+  if (open) void loadAiHistory();
+}
+
 async function loadAiHistory() {
   updateAiAccessUI();
   const list = $("#aiHistoryList");
-  if (!currentUser || !db) return;
+  if (!currentUser || !db || $("#aiHistoryDrawer")?.hidden) return;
   list.innerHTML = '<p class="ai-history-empty">Loading your history…</p>';
   try {
     const snapshot = await getDocs(query(
@@ -1917,6 +1966,7 @@ async function startAiConversation(mode = aiMode) {
 
 async function openAiConversation(conversationId) {
   if (!requireAccount()) return;
+  setAiHistoryOpen(false);
   try {
     const parent = await getDoc(doc(db, "aiConversations", conversationId));
     if (!parent.exists() || parent.data().ownerUid !== currentUser.uid) throw new Error("This conversation is not available to your account.");
@@ -2730,9 +2780,9 @@ async function applyAiActions() {
 }
 
 function readAppPrefs(){try{return JSON.parse(localStorage.getItem("hackverse-app-preferences")||"{}");}catch{return {};}}
-function applyAppPrefs(){const p=readAppPrefs();document.body.classList.toggle("light",p.theme==="light");document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");document.body.dataset.fontFamily=p.fontFamily||"dm";}
-function saveAppPrefs(){const p={theme:$("#settingTheme").value,motion:$("#settingMotion").value,fontFamily:$("#settingFontFamily").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked};localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));applyAppPrefs();renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
-function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme|| (document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";}
+function applyAppPrefs(){const p=readAppPrefs();const theme=p.theme||localStorage.getItem("hackverse-theme")||"dark";document.body.classList.toggle("light",theme==="light");document.documentElement.style.colorScheme=theme==="light"?"light":"dark";const themeMeta=document.querySelector('meta[name="theme-color"]');if(themeMeta)themeMeta.content=theme==="light"?"#FFFFFF":"#222222";const toggle=$("#themeToggle");if(toggle){toggle.setAttribute("aria-label",theme==="light"?"Switch to dark mode":"Switch to light mode");toggle.title=theme==="light"?"Switch to dark mode":"Switch to light mode";}document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");document.body.dataset.fontFamily=p.fontFamily||"dm";}
+function saveAppPrefs(){const p={theme:$("#settingTheme").value,motion:$("#settingMotion").value,fontFamily:$("#settingFontFamily").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked};localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
+function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme||localStorage.getItem("hackverse-theme")||(document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";}
 function upcomingSavedDeadlines(){if(!currentUser||readAppPrefs().opportunity===false)return [];const now=Date.now();return events.filter(e=>savedIds.has(e.id)).map(e=>({...e,deadlineMs:tsMillis(e.registrationDeadline)})).filter(e=>e.deadlineMs>now&&e.deadlineMs<=now+14*86400000).sort((a,b)=>a.deadlineMs-b.deadlineMs);}
 function notifyUpcomingDeadlines(){const prefs=readAppPrefs();if(!currentUser||!prefs.desktop||!("Notification" in window)||Notification.permission!=="granted")return;for(const e of upcomingSavedDeadlines()){const key=`hv-deadline-notified-${currentUser.uid}-${e.id}`;const stamp=String(e.deadlineMs);if(localStorage.getItem(key)===stamp)continue;localStorage.setItem(key,stamp);try{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));const n=new Notification("Saved opportunity deadline",{body:`${e.title||"A saved opportunity"} closes in ${days} day${days===1?"":"s"}.`,tag:`deadline-${e.id}`});n.onclick=()=>{window.focus();location.hash="#opportunities";viewEvent(e.id);};}catch{}}}
 function renderNotificationCenter(){
@@ -2775,7 +2825,7 @@ function initAdvancedUI(){
   $("#notificationSettingsBtn").onclick=()=>{location.hash="#settings";setTimeout(()=>showSettingsTab("notifications"),100);};
   $("#openNotificationPreferences").onclick=$("#notificationSettingsBtn").onclick;
   $("#markAllReadBtn").onclick=async()=>{if(!requireAccount())return;await Promise.all(currentConversations.map(c=>markConversationRead(c.id)));toast("Your conversation activity is marked as read.");};
-  $("#saveSettingsBtn").onclick=saveAppPrefs;["#settingTheme","#settingMotion","#settingFontFamily","#settingTextSize","#prefReduceMotion"].forEach(sel=>$(sel).addEventListener("change",()=>{const p=readAppPrefs();p.theme=$("#settingTheme").value;p.motion=$("#settingMotion").value;p.textSize=$("#settingTextSize").value;p.fontFamily=$("#settingFontFamily").value;p.reduceMotion=$("#prefReduceMotion").checked;localStorage.setItem("hackverse-app-preferences",JSON.stringify({...p}));applyAppPrefs();}));
+  $("#saveSettingsBtn").onclick=saveAppPrefs;["#settingTheme","#settingMotion","#settingFontFamily","#settingTextSize","#prefReduceMotion"].forEach(sel=>$(sel).addEventListener("change",()=>{const p=readAppPrefs();p.theme=$("#settingTheme").value;p.motion=$("#settingMotion").value;p.textSize=$("#settingTextSize").value;p.fontFamily=$("#settingFontFamily").value;p.reduceMotion=$("#prefReduceMotion").checked;localStorage.setItem("hackverse-app-preferences",JSON.stringify({...p}));if(p.theme)localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();}));
   $("#privacyEditProfile").onclick=$("#settingsEditProfile").onclick=()=>currentUser?openProfileEditor(false):openAuth();
   $("#settingsSignOut").onclick=()=>currentUser&&signOut(auth).then(()=>toast("Signed out.")).catch(e=>toast(friendlyError(e)));
   $("#settingProfileVisibility").addEventListener("change",async e=>{if(!requireAccount())return;if(!publicProfile){toast("Complete your profile first.");return;}try{await updateDoc(doc(db,"publicProfiles",currentUser.uid),{profileVisibility:e.target.value,updatedAt:serverTimestamp()});publicProfile.profileVisibility=e.target.value;toast("Profile visibility updated.");}catch(error){toast(friendlyError(error));}});
@@ -2803,11 +2853,11 @@ function handleRoute() {
   if(view==="aiwish"){
     if(aiPanel.parentElement!==wishMount) wishMount.append(aiPanel);
     aiPanel.classList.add("ai-panel-page"); aiPanel.hidden=false; aiAssistant.classList.add("ai-on-wish-page");
-    setAiMode("wish"); updateAiAccessUI(); if(currentUser) loadAiHistory();
+    setAiMode("wish"); updateAiAccessUI(); setAiHistoryOpen(false);
   }else{
     if(aiPanel.parentElement!==aiAssistant) aiAssistant.append(aiPanel);
     aiPanel.classList.remove("ai-panel-page"); aiPanel.hidden=true; aiAssistant.classList.remove("ai-on-wish-page");
-    setAiMode("chat");
+    setAiHistoryOpen(false); setAiMode("chat");
   }
   const requiresMember = view !== "home";
   const blocked = requiresMember && !currentUser;
@@ -2850,8 +2900,8 @@ function bindUI() {
       window.setTimeout(() => bootSplash.remove(), 520);
     };
     if (!pageReady) window.addEventListener("load", () => { pageReady = true; dismissSplash(); }, { once: true });
-    window.setTimeout(() => { minimumElapsed = true; dismissSplash(); }, 720);
-    window.setTimeout(() => { pageReady = true; minimumElapsed = true; dismissSplash(); }, 2200);
+    window.setTimeout(() => { minimumElapsed = true; dismissSplash(); }, 180);
+    window.setTimeout(() => { pageReady = true; minimumElapsed = true; dismissSplash(); }, 1100);
   }
   document.addEventListener("visibilitychange",()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);});
   window.setInterval(()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);},10*60*1000);
@@ -2893,7 +2943,7 @@ function bindUI() {
   $("#projectForm").addEventListener("submit", createProject);
   $$("[data-close]").forEach(button => button.addEventListener("click", () => { const id = button.dataset.close; if (id === "profileModal") closeProfileModal(); else hideModal(id); }));
   $$(".modal-backdrop").forEach(modal => modal.addEventListener("click", e => { if (e.target === modal) { if (modal.id === "profileModal") closeProfileModal(); else hideModal(modal.id); } }));
-  document.addEventListener("keydown", e => { if (e.key === "Escape") { closeMainNav(); } if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(location.hash==="#aiwish") location.hash="#home"; else { $("#aiPanel").hidden = true; $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") { closeMainNav(); } if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(location.hash==="#aiwish") location.hash="#home"; else { $("#aiPanel").hidden = true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
@@ -2911,16 +2961,16 @@ function bindUI() {
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
-  $("#aiLaunchBtn").onclick = () => { if(location.hash==="#aiwish") location.hash="#home"; const panel=$("#aiPanel"),assistant=$("#aiAssistant"); if(panel.parentElement!==assistant) assistant.append(panel); panel.classList.remove("ai-panel-page"); setAiMode("chat"); panel.hidden=!panel.hidden; $("#aiLaunchBtn").setAttribute("aria-expanded",String(!panel.hidden)); if(!panel.hidden&&currentUser)loadAiHistory(); };
-  $("#aiCloseBtn").onclick = () => { if(location.hash==="#aiwish"){location.hash="#home";return;} $("#aiPanel").hidden=true; $("#aiLaunchBtn").setAttribute("aria-expanded","false"); };
+  $("#aiLaunchBtn").onclick = () => { if(location.hash==="#aiwish") location.hash="#home"; const panel=$("#aiPanel"),assistant=$("#aiAssistant"); if(panel.parentElement!==assistant) assistant.append(panel); panel.classList.remove("ai-panel-page"); setAiMode("chat"); panel.hidden=!panel.hidden; $("#aiLaunchBtn").setAttribute("aria-expanded",String(!panel.hidden)); if(!panel.hidden) setAiHistoryOpen(false); };
+  $("#aiHistoryToggle").onclick = () => setAiHistoryOpen($("#aiHistoryDrawer").hidden);
+  $("#aiCloseBtn").onclick = () => { if(location.hash==="#aiwish"){location.hash="#home";return;} $("#aiPanel").hidden=true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded","false"); };
   $("#aiNewChatBtn").onclick = () => currentUser ? startAiConversation(aiMode) : (openAuth(), toast("Sign in to keep a private AI history."));
   $("#aiClearHistoryBtn").onclick = clearAiHistoryForMode;
   $("#aiForm").addEventListener("submit", sendAiMessage);
   $("#aiInput").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#aiForm").requestSubmit(); } });
   $("#peopleSearch").addEventListener("input", searchPeople); $("#peopleRole").onchange = searchPeople; $("#lookingForTeamOnly").onchange = searchPeople;
   $("#backToExploreBtn").onclick = () => { location.hash = "#opportunities"; };
-  $("#themeToggle").onclick = () => { document.body.classList.toggle("light"); const prefs=readAppPrefs();prefs.theme=document.body.classList.contains("light")?"light":"dark";localStorage.setItem("hackverse-app-preferences",JSON.stringify(prefs));localStorage.setItem("hackverse-theme",prefs.theme); };
-  if (localStorage.getItem("hackverse-theme") === "light") document.body.classList.add("light");
+  $("#themeToggle").onclick = () => { const prefs=readAppPrefs();prefs.theme=document.body.classList.contains("light")?"dark":"light";localStorage.setItem("hackverse-app-preferences",JSON.stringify(prefs));localStorage.setItem("hackverse-theme",prefs.theme);applyAppPrefs();if($("#settingTheme"))$("#settingTheme").value=prefs.theme; };
   const mainNav = document.querySelector(".desktop-nav");
   const closeMainNav = () => {
     mainNav?.classList.remove("mobile-open");

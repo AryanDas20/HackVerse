@@ -3,12 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#8f102b">
+  <meta name="theme-color" content="#FFFFFF">
   <meta name="description" content="Discover hackathons, meet collaborators, message your team, and showcase what you build with HackVerse.">
   <title>HackVerse — Discover. Team up. Build.</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://esm.sh" crossorigin>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="workspace.css">
   <link rel="stylesheet" href="redesign.css">
@@ -16,6 +17,7 @@
   <link rel="stylesheet" href="opportunity-chat-v5.8.css">
   <link rel="stylesheet" href="responsive-performance-v9.css">
   <link rel="stylesheet" href="messaging-ai-hotfix-v10.css">
+  <link rel="stylesheet" href="theme-professional-v11.css">
 </head>
 <body>
   <div class="hv-boot-splash" id="hvBootSplash" role="status" aria-label="Loading HackVerse">
@@ -157,7 +159,8 @@
             <div class="message-search-row" id="messageSearchWrap" hidden><input id="messageSearch" type="search" placeholder="Search messages in this chat..."><span id="messageSearchCount"></span></div><div id="messageList" class="message-list"></div>
             <div id="replyPreview" class="reply-preview" hidden><div><b>Replying to <span id="replyAuthor"></span></b><small id="replyText"></small></div><button type="button" id="cancelReply" aria-label="Cancel reply">×</button></div>
             <div class="composer-tools"><button type="button" id="emojiToggle" title="Emoji">☺</button><button type="button" id="attachFileBtn" title="Attach file">＋</button><input type="file" id="chatFileInput" hidden accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.zip"><button type="button" id="voiceRecordBtn" title="Record voice message">◉<span>Voice</span></button><span class="composer-security">Private room</span></div>
-            <form id="messageForm" class="message-composer"><textarea id="messageText" rows="1" maxlength="2000" placeholder="Type a message" required></textarea><button class="btn btn-primary" type="submit" aria-label="Send message">➤</button></form><div class="emoji-tray" id="emojiTray" hidden><button type="button">😀</button><button type="button">😂</button><button type="button">😍</button><button type="button">🔥</button><button type="button">👍</button><button type="button">🎉</button><button type="button">❤️</button><button type="button">🤝</button><button type="button">🚀</button><button type="button">✨</button></div>
+            <div class="chat-attachment-preview" id="chatAttachmentPreview" hidden aria-live="polite"></div>
+            <form id="messageForm" class="message-composer"><textarea id="messageText" rows="1" maxlength="2000" placeholder="Type a message"></textarea><button class="btn btn-primary" type="submit" aria-label="Send message">➤</button></form><div class="emoji-tray" id="emojiTray" hidden><button type="button">😀</button><button type="button">😂</button><button type="button">😍</button><button type="button">🔥</button><button type="button">👍</button><button type="button">🎉</button><button type="button">❤️</button><button type="button">🤝</button><button type="button">🚀</button><button type="button">✨</button></div>
           </div>
         </section>
       </div>
@@ -208,9 +211,9 @@
   <div class="ai-assistant" id="aiAssistant">
     <button class="ai-launcher" id="aiLaunchBtn" type="button" aria-expanded="false" aria-controls="aiPanel"><span class="ai-launcher-mark">✦</span><span><b>HackVerse AI</b><small>Website help · Chat</small></span><span class="ai-launcher-spark">●</span></button>
     <section class="ai-panel" id="aiPanel" aria-label="HackVerse AI assistant" hidden>
-      <header class="ai-panel-header"><div class="ai-brand-lockup"><span class="ai-brand-icon">✦</span><div><b>HackVerse AI</b><small><span class="ai-status-dot"></span> Powered by Agent37</small></div></div><div class="ai-header-actions"><button type="button" class="ai-icon-button" id="aiNewChatBtn" title="Start a new chat" aria-label="Start a new chat">＋</button><button type="button" class="ai-icon-button" id="aiCloseBtn" title="Close assistant" aria-label="Close assistant">×</button></div></header>
+      <header class="ai-panel-header"><div class="ai-brand-lockup"><span class="ai-brand-icon">✦</span><div><b>HackVerse AI</b><small><span class="ai-status-dot"></span> Powered by Agent37</small></div></div><div class="ai-header-actions"><button type="button" class="ai-icon-button" id="aiHistoryToggle" title="Show conversation history" aria-label="Show conversation history" aria-expanded="false" aria-controls="aiHistoryDrawer">☷</button><button type="button" class="ai-icon-button" id="aiNewChatBtn" title="Start a new chat" aria-label="Start a new chat">＋</button><button type="button" class="ai-icon-button" id="aiCloseBtn" title="Close assistant" aria-label="Close assistant">×</button></div></header>
 <div class="ai-workspace">
-        <aside class="ai-history"><div class="ai-history-head"><span>YOUR HISTORY</span><button type="button" id="aiClearHistoryBtn" class="ai-history-clear" title="Delete all history for this AI">Clear history</button></div><div id="aiHistoryList" class="ai-history-list"><p class="ai-history-empty">Sign in to keep your conversations.</p></div></aside>
+        <aside class="ai-history" id="aiHistoryDrawer" hidden aria-label="AI conversation history"><div class="ai-history-head"><span>YOUR HISTORY</span><button type="button" id="aiClearHistoryBtn" class="ai-history-clear" title="Delete all history for this AI">Clear history</button></div><div id="aiHistoryList" class="ai-history-list"><p class="ai-history-empty">Sign in to keep your conversations.</p></div></aside>
         <div class="ai-chat-area">
           <div class="ai-mode-intro" id="aiModeIntro"><b>What can I help you with?</b><span>Ask how HackVerse works, find a feature or get help with your account.</span></div>
           <div class="ai-login-gate" id="aiLoginGate"><div class="gate-icon">✦</div><b>Sign in to use your AI workspace.</b><p>Your chats and AI history are saved privately to your account.</p><button class="btn btn-primary" type="button" data-open-auth>Sign in to continue →</button></div>
