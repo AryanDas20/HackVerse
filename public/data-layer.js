@@ -1,9 +1,23 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { supabaseConfig } from "./supabase-config.js";
 
-export const supabaseClient = createClient(supabaseConfig.url, supabaseConfig.anonKey, {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-});
+export const supabaseClient = createClient(
+  supabaseConfig.url,
+  supabaseConfig.anonKey,
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      flowType: "pkce"
+    },
+    global: {
+      headers: {
+        "x-client-info": "hackverse-web"
+      }
+    }
+  }
+);
 
 const uuid = () => (globalThis.crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
@@ -70,11 +84,31 @@ function matches(row, constraint) {
   }
 }
 
-async function fetchRows(collectionRef) {
-  let query = supabaseClient.from("documents").select("path,collection_path,doc_id,data,owner_uid,participants,created_at,updated_at").eq("collection_path", collectionRef.path);
-  const { data, error } = await query.range(0, 49999);
+async function requireSession() {
+  const { data, error } = await supabaseClient.auth.getSession();
   if (error) throw error;
-  return (data || []).map(row => ({ ...row, data: row.data || {} }));
+  const session = data?.session;
+  if (!session?.access_token) {
+    throw new Error("You must be signed in to access HackVerse data.");
+  }
+  return session;
+}
+
+async function fetchRows(collectionRef) {
+  await requireSession();
+
+  const { data, error } = await supabaseClient
+    .from("documents")
+    .select("path,collection_path,doc_id,data,owner_uid,participants,created_at,updated_at")
+    .eq("collection_path", collectionRef.path)
+    .range(0, 49999);
+
+  if (error) throw error;
+
+  return (data || []).map(row => ({
+    ...row,
+    data: row.data || {}
+  }));
 }
 
 export function query(collectionRef, ...constraints) { return { __kind: "query", collectionRef, constraints }; }
@@ -128,10 +162,31 @@ export async function getDocs(target) {
 }
 
 export async function getDoc(ref) {
-  const { data, error } = await supabaseClient.from("documents").select("path,collection_path,doc_id,data,owner_uid,participants,created_at,updated_at").eq("path", ref.path).maybeSingle();
+  await requireSession();
+
+  const { data, error } = await supabaseClient
+    .from("documents")
+    .select("path,collection_path,doc_id,data,owner_uid,participants,created_at,updated_at")
+    .eq("path", ref.path)
+    .maybeSingle();
+
   if (error) throw error;
-  if (!data) return { id: ref.id, exists: () => false, data: () => undefined, ref };
-  return { id: data.doc_id, exists: () => true, data: () => clone(data.data || {}), ref: { ...ref, id: data.doc_id } };
+
+  if (!data) {
+    return {
+      id: ref.id,
+      exists: () => false,
+      data: () => undefined,
+      ref
+    };
+  }
+
+  return {
+    id: data.doc_id,
+    exists: () => true,
+    data: () => clone(data.data || {}),
+    ref: { ...ref, id: data.doc_id }
+  };
 }
 
 function rowFor(ref, data) {
@@ -155,7 +210,7 @@ export async function updateDoc(ref, value) {
   await setDoc(ref, next);
 }
 export async function addDoc(collectionRef, value) { const ref = doc(collectionRef, uuid()); await setDoc(ref, value); return ref; }
-export async function deleteDoc(ref) { const { error } = await supabaseClient.from("documents").delete().eq("path", ref.path); if (error) throw error; }
+export async function deleteDoc(ref) { await requireSession(); const { error } = await supabaseClient.from("documents").delete().eq("path", ref.path); if (error) throw error; }
 
 export function writeBatch(_db) {
   const ops = [];
@@ -211,31 +266,71 @@ export const auth = {
   async reload(user) { const { data, error } = await supabaseClient.auth.getUser(); if (error) throw error; Object.assign(user, adaptUser(data.user)); },
   async updateProfile(user, profile) { const { data, error } = await supabaseClient.auth.updateUser({ data: { full_name: profile.displayName ?? user.displayName, avatar_url: profile.photoURL ?? user.photoURL } }); if (error) throw error; Object.assign(user, adaptUser(data.user)); }
 };
+
 function adaptUser(user) {
   if (!user) return null;
-  return { uid: user.id, id: user.id, email: user.email || "", emailVerified: Boolean(user.email_confirmed_at), displayName: user.user_metadata?.full_name || user.user_metadata?.name || "", photoURL: user.user_metadata?.avatar_url || "", providerData: (user.identities || []).map(i => ({ providerId: i.provider })), user_metadata: user.user_metadata || {}, app_metadata: user.app_metadata || {}, getIdToken: async () => (await supabaseClient.auth.getSession()).data.session?.access_token || "", getIdTokenResult: async () => ({ claims: user.app_metadata || {} }) };
+  return {
+    uid: user.id,
+    id: user.id,
+    email: user.email || "",
+    emailVerified: Boolean(user.email_confirmed_at),
+    displayName: user.user_metadata?.full_name || user.user_metadata?.name || "",
+    photoURL: user.user_metadata?.avatar_url || "",
+    providerData: (user.identities || []).map(i => ({ providerId: i.provider })),
+    user_metadata: user.user_metadata || {},
+    app_metadata: user.app_metadata || {},
+    getIdToken: async () => (await supabaseClient.auth.getSession()).data.session?.access_token || "",
+    getIdTokenResult: async () => ({ claims: user.app_metadata || {} })
+  };
 }
+
 export const GoogleAuthProvider = class { constructor() { this.provider = "google"; } };
-export async function signInWithPopup(_auth, provider) { const { data, error } = await supabaseClient.auth.signInWithOAuth({ provider: provider.provider || "google", options: { redirectTo: location.href } }); if (error) throw error; return data; }
+
+export async function signInWithPopup(_auth, provider) {
+  const { data, error } = await supabaseClient.auth.signInWithOAuth({
+    provider: provider.provider || "google",
+    options: { redirectTo: location.href }
+  });
+  if (error) throw error;
+  return data;
+}
+
 export async function createUserWithEmailAndPassword(_auth, email, password) { return auth.createUserWithEmailAndPassword(email, password); }
 export async function signInWithEmailAndPassword(_auth, email, password) { return auth.signInWithEmailAndPassword(email, password); }
 export async function sendPasswordResetEmail(_auth, email) { return auth.sendPasswordResetEmail(email); }
 export async function signOut(_auth) { return auth.signOut(); }
+
 export async function onAuthStateChanged(_auth, callback) {
-  const { data } = await supabaseClient.auth.getUser(); auth.currentUser = adaptUser(data.user); queueMicrotask(() => callback(auth.currentUser));
-  const subscription = supabaseClient.auth.onAuthStateChange((_event, user) => { auth.currentUser = adaptUser(user); queueMicrotask(() => callback(auth.currentUser)); });
+  const { data } = await supabaseClient.auth.getUser();
+  auth.currentUser = adaptUser(data.user);
+  queueMicrotask(() => callback(auth.currentUser));
+
+  const subscription = supabaseClient.auth.onAuthStateChange((_event, user) => {
+    auth.currentUser = adaptUser(user);
+    queueMicrotask(() => callback(auth.currentUser));
+  });
+
   return subscription.data.subscription.unsubscribe;
 }
+
 export async function sendEmailVerification(user) { return auth.sendEmailVerification(user); }
 export async function reload(user) { return auth.reload(user); }
 export async function updateProfile(user, profile) { return auth.updateProfile(user, profile); }
 
 export const db = {};
 export const functions = {};
+
 export async function httpsCallable(_functions, name) {
   return async payload => {
     const token = (await supabaseClient.auth.getSession()).data.session?.access_token || "";
-    const response = await fetch(`/api/${name}`, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(payload || {}) });
+    const response = await fetch(`/api/${name}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(payload || {})
+    });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `${name} failed`);
     return { data };
