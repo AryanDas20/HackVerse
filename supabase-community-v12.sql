@@ -1,6 +1,44 @@
 -- HackVerse v12 add-on migration. Run after the existing v11 supabase-schema.sql.
 -- This is additive and safe to run more than once.
 -- HackVerse v12 community feed and hackathon portfolio visibility.
+-- Compatibility helpers: some existing v11 databases do not yet contain these
+-- functions (or were created from an earlier schema revision). Define both
+-- dependencies here before any RLS policy references them.
+create or replace function public.document_has_participant(parent_path text, member_uid uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.documents d
+    where d.path = parent_path
+      and member_uid::text = any(coalesce(d.participants, '{}'::text[]))
+  );
+$$;
+
+create or replace function public.document_owned_by(parent_path text, member_uid uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.documents d
+    where d.path = parent_path
+      and d.owner_uid = member_uid
+  );
+$$;
+
+revoke all on function public.document_has_participant(text, uuid) from public, anon;
+revoke all on function public.document_owned_by(text, uuid) from public, anon;
+grant execute on function public.document_has_participant(text, uuid) to authenticated;
+grant execute on function public.document_owned_by(text, uuid) to authenticated;
+
 -- The helper uses SECURITY DEFINER to inspect the parent post without causing
 -- recursive row-level-security evaluation on public.documents.
 create or replace function public.builder_post_is_public(p_post_id text)

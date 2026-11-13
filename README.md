@@ -1,4 +1,4 @@
-# HackVerse v12.0.0
+# HackVerse v12.0.1
 
 HackVerse is an automated opportunity discovery platform for hackathons, coding contests, scholarships, internships, fellowships, courses, certifications, research opportunities and related student opportunities.
 
@@ -17,7 +17,7 @@ HackVerse is an automated opportunity discovery platform for hackathons, coding 
 ## Setup
 
 1. Create a Supabase project.
-2. For a fresh project, run `supabase-schema.sql`; for an existing v11 project, run `supabase-community-v12.sql` instead.
+2. For a fresh project, run `supabase-schema.sql`; for an existing v11 project, run the corrected `supabase-community-v12.sql` instead. The add-on migration also creates the conversation helper functions required by the existing RLS policies if they are missing.
 3. Enable the authentication providers you want.
 4. Create `chat-media` and `profile-avatars` buckets; run the v12 migration to create the public `community-media` image bucket.
 5. Put the browser-safe Supabase URL and publishable key in `public/supabase-config.js`.

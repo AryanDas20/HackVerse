@@ -63,7 +63,7 @@ Add:
 Optional `SUPABASE_COMMUNITY_BUCKET=community-media` and `SUPABASE_PROFILE_BUCKET=profile-avatars` can be added; these are the defaults. Optional Agent37 settings can also be added.
 
 ## 8. Upgrade to HackVerse v12 community features
-For an existing v11 project, open **Supabase → SQL Editor** and run `supabase-community-v12.sql`. This adds public/private policies for posts and hackathon participation records and creates the `community-media` bucket. Do not skip this migration; without it, the Builder feed will show a database permission message.
+For an existing v11 project, open **Supabase → SQL Editor** and run the corrected `supabase-community-v12.sql` included with this release. It defines the conversation helper functions used by the existing message policies (`document_has_participant(text, uuid)` and `document_owned_by(text, uuid)`) before creating the community policies, then adds public/private policies for posts and hackathon participation records and creates the `community-media` bucket. This also supports v11 databases where those helper functions were missing. Do not skip this migration; without it, the Builder feed will show a database permission message.
 
 Add the optional Vercel variable `SUPABASE_COMMUNITY_BUCKET=community-media`. Keep `SUPABASE_SERVICE_ROLE_KEY` server-only.
 

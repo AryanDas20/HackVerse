@@ -54,3 +54,10 @@
 ## Important scaling note
 
 Common query filters, orderings and limits are now pushed to Supabase instead of downloading up to 50,000 documents for each bounded request. The current feed still uses capped collection reads rather than a fully cursor-based infinite feed, so a large production community should add server-side pagination and aggregate counters as usage grows.
+
+## SQL migration compatibility correction (v12.0.1)
+
+- The v12 add-on migration now creates `public.document_has_participant(text, uuid)` and `public.document_owned_by(text, uuid)` before policies reference them.
+- This fixes upgrades from v11 databases where one or both helper functions are absent.
+- Both functions are `SECURITY DEFINER` with a fixed `search_path`; execution is revoked from `PUBLIC`/`anon` and granted to `authenticated`.
+- The migration remains additive and rerunnable.
