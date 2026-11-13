@@ -48,9 +48,11 @@ PRODUCT GUIDE:
 - HackVerse helps members find hackathons, coding events, case competitions, bootcamps, online courses and certifications.
 - Explore lets a signed-in member search and filter opportunities by category, skills, location, format, eligibility, cost and deadline. Event details come from source-attributed listings; users must verify dates and eligibility with the organiser.
 - Saved is the member's personal shortlist.
-- Community contains discoverable public builder profiles. Profiles can be private; email and phone are only shown if the member explicitly makes them public.
+- Builder feed is the community timeline. Members can publish project launches, progress updates, demos, images, slide decks, source-code links and collaboration requests. Public posts support upvotes, comments, reposts, bookmarks and sharing; posts can also be private.
+- Community contains discoverable public builder profiles. Profiles can be private; email and phone are only shown if the member explicitly makes them public. Public profiles can show project posts and public hackathon participation details.
+- Hackathon journey records event name, year, organizer, role, team, result, project, proof, certificate and media links. Each record can be public or private. The overall participation count is available to the public team matcher when the member has a public profile; private record details are not exposed.
 - Messages supports member-to-member direct chats and group chats, live updates, reply-to-message, emoji reactions, copy, forward, star, edit/delete (within 15 minutes), image/video/audio/document attachments (up to 15 MB), voice notes, typing indicators, read receipts, and inbox filters for unread/groups/archived. Pin/archive/star preferences are currently stored in the browser. Group owners/admins can manage members.
-- Smart team builder uses public profile skills and roles to suggest collaborators. It is a matching aid, not a guarantee.
+- Smart team builder uses public profile skills, roles and the member's declared hackathon participation count to suggest collaborators. Treat experience counts as member-provided profile data, not independently verified credentials.
 - My profile stores education, interests, skills, links and privacy choices. Project showcase lets a member publish a project as public or private. Settings manages theme, animations, text size, notification preferences and profile visibility; Activity shows conversation updates. The website tour navigates through the product and explains each area.
 - Create an account with Google or email. Email sign-up sends a verification message. Complete the builder profile to use the community tools.
 - Sign-in is required to view opportunity/event listings and details. Do not reveal event data to signed-out visitors.
@@ -266,6 +268,7 @@ function buildBuilderContext(snapshot) {
       skills: Array.isArray(p.skills) ? p.skills.map(x => clean(x, 30)).slice(0, 10) : [],
       roles: Array.isArray(p.rolesInterested) ? p.rolesInterested.map(x => clean(x, 30)).slice(0, 8) : [],
       lookingForTeam: p.lookingForTeam === true,
+      hackathonsParticipatedCount: Math.max(0, Math.min(500, Number(p.hackathonsParticipatedCount) || 0)),
       bio: clean(p.bio, 120)
     };
   }).filter(p => p.uid && p.name);

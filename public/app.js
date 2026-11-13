@@ -2,7 +2,7 @@ import {
   auth, db, functions, supabaseClient, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword,
   signInWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged,
   sendEmailVerification, reload, updateProfile as updateAuthProfile,
-  getDoc, getDocs, collection, doc, query, where, orderBy, startAt, endAt, startAfter, limit,
+  getDoc, getDocs, getCurrentUser, collection, doc, query, where, orderBy, startAt, endAt, startAfter, limit,
   serverTimestamp, addDoc, setDoc, deleteDoc, onSnapshot, updateDoc, runTransaction, writeBatch, httpsCallable
 } from './data-layer.js';
 import { supabaseConfig } from './supabase-config.js';
@@ -18,6 +18,8 @@ let allEventsVisible = 24, currentConversations = [], currentMessages = [], sele
 let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [], isSendingChatMessage = false;
 let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false, pendingAiUserMessage = "", aiAvailableBuilderUids = [];
 let emailVerificationGuard = false, pendingChatFile = null;
+let builderPosts = [], builderPostVotes = [], builderPostReposts = [], builderPostComments = [], builderPostSaves = [], builderFollows = [], hackathonHistory = [];
+let builderFeedFilter = "latest", feedLoadInProgress = false;
 let dialogResolver = null;
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -61,7 +63,11 @@ const friendlyError = error => {
     "auth/invalid-email": "Enter a valid email address.",
     "auth/too-many-requests": "Too many attempts. Wait a while and try again.",
     "auth/popup-closed-by-user": "The Google sign-in window was closed.",
-    "auth/unauthorized-domain": "Add this domain in Supabase Authentication → Settings → Authorized domains.",
+    "auth/unauthorized-domain": "Add this domain in Supabase Authentication → URL Configuration → Redirect URLs and Google Cloud OAuth authorized redirect URIs.",
+    "invalid_credentials": "Email or password is incorrect. For Google, use Continue with Google.",
+    "email_not_confirmed": "Verify your email address before signing in. Check your inbox and Spam folder.",
+    "user_already_exists": "An account already exists with this email. Try signing in instead.",
+    "otp_expired": "That sign-in link has expired. Request a fresh link and try again.",
     "permission-denied": "Supabase denied this action. Check that the latest Supabase database rules are deployed.",
     "USERNAME_TAKEN": "That username is already taken. Choose another one."
   };
@@ -80,10 +86,11 @@ function initSupabase() {
     isAdminUser = Boolean(user?.app_metadata?.admin === true);
     $("#discoveryAdminPanel").hidden = !isAdminUser;
     if (isAdminUser) loadDiscoverySources();
+    updateAiAccessUI();
     $("#authButton").textContent = user ? "Sign out" : "Sign in";
     $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
     if (!user) {
-      privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[]; pendingChatFile = null; renderPendingChatAttachment(); renderNotificationCenter(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
+      privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[]; pendingChatFile = null; builderPosts=[]; builderPostVotes=[]; builderPostReposts=[]; builderPostComments=[]; builderPostSaves=[]; builderFollows=[]; hackathonHistory=[]; renderPendingChatAttachment(); renderNotificationCenter(); renderBuilderFeed(); renderHackathonHistory(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
       $("#eventModalContent").innerHTML = ""; detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
       $("#chatPlaceholder").hidden = false; $("#chatActive").hidden = true; activeAiConversationId = null; currentAiMessages = []; pendingAiActions = []; updateAiAccessUI(); renderAiMessages();
       setSystemNotice(""); updateEventAccessUI(); renderEvents(); searchPeople(); handleRoute(); return;
@@ -159,7 +166,11 @@ async function googleSignIn() {
   if (!auth || !db) return;
   const button=$("#googleSignIn"); if(button.disabled)return;
   button.disabled=true; button.setAttribute("aria-busy","true"); button.textContent="Connecting to Google…";
-  try { await signInWithPopup(auth, new GoogleAuthProvider()); hideModal("authModal"); toast("Signed in with Google."); }
+  try {
+    await signInWithPopup(auth, new GoogleAuthProvider());
+    // Supabase normally redirects to Google and returns to the same page.
+    // Keep the modal open until onAuthStateChanged confirms the session.
+  }
   catch (error) { $("#authMessage").textContent = friendlyError(error); }
   finally { button.disabled=false; button.removeAttribute("aria-busy"); button.innerHTML='<span class="google-g">G</span> Continue with Google'; }
 }
@@ -188,6 +199,8 @@ async function loadAccountWorkspace() {
       hideModal("profileModal");
       beginInboxListener();
       void loadProjects();
+      void loadHackathonHistory();
+      if ((location.hash || "#home") === "#feed") void loadBuilderFeed();
     }
   } catch (error) {
     console.error("Could not load account", error); toast(friendlyError(error));
@@ -272,6 +285,7 @@ async function saveProfile(event) {
     publicPhone: $("#profilePhoneVisibility").value === "public" ? $("#profilePhone").value.trim() : "",
     publicPhoneDigits: $("#profilePhoneVisibility").value === "public" ? $("#profilePhone").value.replace(/\D/g, "") : "",
     profileVisibility: $("#profileVisibility").value,
+    hackathonsParticipatedCount: Number(publicProfile?.hackathonsParticipatedCount ?? privateProfile?.hackathonsParticipatedCount ?? 0),
     profileConsentAt: privateProfile?.profileConsentAt || serverTimestamp(), updatedAt: serverTimestamp()
   };
   const privateData = {
@@ -299,7 +313,7 @@ async function saveProfile(event) {
     await updateAuthProfile(currentUser, { displayName: name, photoURL: profile.avatarUrl || null }).catch(() => {});
     privateProfile = { ...(privateProfile || {}), ...privateData, profileComplete: true };
     publicProfile = profile; profileIsMandatory = false; hideModal("profileModal");
-    renderMyProfile(); beginInboxListener(); loadProjects(); searchPeople(); toast("Your builder profile is saved.");
+    renderMyProfile(); beginInboxListener(); loadProjects(); loadHackathonHistory(); searchPeople(); toast("Your builder profile is saved.");
   } catch (error) { console.error(error); message.textContent = friendlyError(error); }
 }
 
@@ -823,14 +837,14 @@ function overlapScore(profile) {
   if (!publicProfile) return 0;
   const mine = new Set([...(publicProfile.skillsLower || []), ...(publicProfile.interests || []).map(x => x.toLowerCase())]);
   const theirs = [...(profile.skillsLower || []), ...(profile.interests || []).map(x => x.toLowerCase())];
-  return theirs.filter(x => mine.has(x)).length;
+  return theirs.filter(x => mine.has(x)).length + Math.min(4, Number(profile.hackathonsParticipatedCount || 0) * 0.35);
 }
 function renderPeople() {
   const grid = $("#peopleGrid"); const role = $("#peopleRole").value; const lookingOnly = $("#lookingForTeamOnly").checked;
   const sorted = [...people].sort((a,b) => overlapScore(b) - overlapScore(a));
   $("#peopleResultCount").textContent = `${sorted.length} builder${sorted.length === 1 ? "" : "s"} found`;
   if (!sorted.length) { grid.innerHTML = '<div class="loading-card">No public profiles match your search yet. Try another skill or keyword.</div>'; return; }
-  grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackVerse member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p><div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div class="person-actions"><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Chat</button><button class="save-btn" data-contact-member="${esc(p.uid)}" ${p.publicEmail || p.publicPhone ? "" : "disabled"}>Contact</button></div></div></article>`).join("");
+  grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackVerse member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p>${Number(p.hackathonsParticipatedCount || 0) ? `<span class="builder-experience-chip">✦ ${Number(p.hackathonsParticipatedCount)} hackathons</span>` : ""}<div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div class="person-actions"><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Chat</button><button class="save-btn" data-contact-member="${esc(p.uid)}" ${p.publicEmail || p.publicPhone ? "" : "disabled"}>Contact</button></div></div></article>`).join("");
   grid.querySelectorAll("[data-view-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewMember));
   grid.querySelectorAll("[data-message-member]").forEach(b => b.onclick = () => { const p = people.find(x => x.uid === b.dataset.messageMember); if (p) startDirectConversation(p); });
   grid.querySelectorAll("[data-contact-member]").forEach(b => b.onclick = () => {
@@ -847,7 +861,20 @@ async function viewMember(uid) {
     const snap = await getDoc(doc(db, "publicProfiles", uid)); if (!snap.exists()) { toast("This profile is no longer available."); return; }
     selectedMember = { uid, ...snap.data() }; const p = selectedMember;
     $("#memberProfileContent").innerHTML = `<div class="member-profile-head"><div class="avatar avatar-large">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div><div class="eyebrow">HACKVERSE BUILDER</div><h2 id="memberModalTitle">${esc(p.displayName || "Builder")}</h2><p class="member-handle">@${esc(p.username || "member")}</p></div></div><p class="member-bio">${esc(p.statusText || "")}</p><p class="member-bio">${esc(p.bio || "No bio added yet.")}</p><div class="member-facts">${p.joinedAt ? `<span>Joined ${new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"short",year:"numeric"})}</span>` : ""}<span>${esc([p.course,p.college].filter(Boolean).join(" · ") || "Education not listed")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not listed")}</span><span>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not listed")}</span><span>${esc(p.availability || "Availability not listed")}</span><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span></div><h3>Skills</h3><div class="skill-tags">${(p.skills || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interested roles</h3><div class="skill-tags">${(p.rolesInterested || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interests</h3><div class="skill-tags">${(p.interests || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><div class="member-contact"><h3>Contact details</h3><p>${p.publicEmail ? `Email: <a href="mailto:${esc(p.publicEmail)}">${esc(p.publicEmail)}</a>` : "Email kept private by this member."}</p><p>${p.publicPhone ? `Phone: <a href="tel:${esc(p.publicPhone)}">${esc(p.publicPhone)}</a>` : "Phone kept private by this member."}</p></div><div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>`;
+    const [historySnapshot, postSnapshot] = await Promise.all([
+      getDocs(query(collection(db, "hackathonHistory"), where("ownerUid", "==", uid), limit(100))),
+      getDocs(query(collection(db, "builderPosts"), where("ownerUid", "==", uid), orderBy("createdAt", "desc"), limit(30)))
+    ]);
+    const visibleHistory = historySnapshot.docs.map(d => d.data()).filter(item => item.visibility === "public").sort((a,b) => Number(b.year || 0)-Number(a.year || 0));
+    const visiblePosts = postSnapshot.docs.map(d => ({ id:d.id, ...d.data() })).filter(item => item.visibility === "public");
+    const historySection = `<section class="member-portfolio-section"><div class="member-portfolio-head"><h3>Hackathon journey</h3><b>${Number(p.hackathonsParticipatedCount || 0)} participated</b></div>${visibleHistory.length ? visibleHistory.map(item => `<article class="member-history-row"><b>${esc(item.eventName || "Hackathon")}</b><span>${esc([item.year,item.organizer,item.role].filter(Boolean).join(" · "))}</span><small>${esc(item.outcome || "Participated")}</small><div class="member-links">${safeExternalLink(item.projectUrl,"Project")}${safeExternalLink(item.proofUrl,"Proof")}${safeExternalLink(item.certificateUrl,"Certificate")}${safeExternalLink(item.mediaUrl,"Media")}</div></article>`).join("") : '<p class="muted">No public participation details shared.</p>'}</section>`;
+    const postsSection = `<section class="member-portfolio-section"><div class="member-portfolio-head"><h3>Shipped projects & posts</h3><b>${visiblePosts.length} posts</b></div>${visiblePosts.length ? visiblePosts.map(item => `<article class="member-post-preview"><b>${esc(item.title || "Project")}</b><p>${esc(item.tagline || item.body || "")}</p><div class="builder-post-links">${safeExternalLink(item.demoUrl,"Live demo")}${safeExternalLink(item.repositoryUrl,"Source")}${safeExternalLink(item.deckUrl,"Pitch deck")}</div></article>`).join("") : '<p class="muted">No public project posts yet.</p>'}</section>`;
+    $("#memberProfileContent").insertAdjacentHTML("beforeend", historySection + postsSection);
     $("#memberMessageBtn").onclick = () => startDirectConversation(selectedMember);
+    const alreadyFollowing = builderFollows.some(row => row.followerUid === currentUser?.uid && row.followingUid === uid);
+    $("#memberFollowBtn").hidden = uid === currentUser?.uid;
+    $("#memberFollowBtn").textContent = alreadyFollowing ? "Following ✓" : "Follow builder";
+    $("#memberFollowBtn").onclick = () => toggleBuilderFollow(uid);
     $("#memberReportBtn").onclick = () => reportMember(selectedMember);
     showModal("memberModal");
   } catch (error) { toast(friendlyError(error)); }
@@ -1510,12 +1537,13 @@ function renderMatchedTeamResults(groups, needed, strategy) {
       const skills = (person.skills || []).slice(0, 6);
       const matched = (person.matchedSkills || []).join(", ") || "Related skills";
       const related = person.relatedSkills?.length ? ` · Related: ${person.relatedSkills.join(", ")}` : "";
+      const experience = Number(person.hackathonsParticipatedCount || 0);
       return `<label class="team-match-option">
         <input type="checkbox" data-team-match="${esc(person.uid)}" data-team-index="${index}" checked aria-label="Select ${esc(displayName)} for team ${index + 1}">
         <span class="team-member-avatar" aria-hidden="true">${esc(initials(displayName))}</span>
         <span class="team-member-copy">
           <span class="team-member-heading"><b>${esc(displayName)}</b><strong class="team-fit-pill">${Math.round(person.matchScore * 100)}% fit</strong></span>
-          <span class="team-member-meta">@${esc(person.username || "member")} <i>·</i> ${esc(education)}</span>
+          <span class="team-member-meta">@${esc(person.username || "member")} <i>·</i> ${esc(education)}${experience ? ` · ${experience} hackathons` : " · New builder"}</span>
           ${skills.length ? `<span class="team-member-skills">${skills.map(skill => `<i>${esc(skill)}</i>`).join("")}</span>` : ""}
           <span class="team-member-match"><b>Matched:</b> ${esc(matched)}${esc(related)}</span>
         </span>
@@ -1638,6 +1666,8 @@ function renderMyProfile() {
       <div class="profile-completion"><div><b>Profile completeness</b><strong>${completion}%</strong></div><span class="profile-completion-track"><i style="width:${completion}%"></i></span><small>A complete profile helps teammates understand your strengths before they contact you.</small></div>
       <div class="profile-detail-grid">
         <section class="profile-detail-card"><small>MEMBER SINCE</small><b>${p.joinedAt ? esc(new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"long",year:"numeric"})) : "HackVerse member"}</b><span>@${esc(p.username)}</span></section>
+        <section class="profile-detail-card"><small>HACKATHON EXPERIENCE</small><b>${Number(p.hackathonsParticipatedCount || 0)} participated</b><span>Private entries are included in your own count</span></section>
+        <section class="profile-detail-card"><small>BUILDER NETWORK</small><b>${builderFollows.filter(row => row.followingUid === currentUser?.uid).length} followers</b><span>Following ${builderFollows.filter(row => row.followerUid === currentUser?.uid).length} builders</span></section>
         <section class="profile-detail-card"><small>EDUCATION</small><b>${esc(p.college || "College not added")}</b><span>${esc([p.collegeShort,p.course].filter(Boolean).join(" · ") || "Course not added")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not added")}</span></section>
         <section class="profile-detail-card"><small>COLLABORATION</small><b>${esc(p.availability || "Availability not added")}</b><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span><span>${p.lookingForTeam ? "Open to teammate invitations" : "Not currently looking for a team"}</span></section>
         <section class="profile-detail-card"><small>LOCATION</small><b>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not added")}</b><span>Visible according to your profile privacy settings</span></section>
@@ -1682,8 +1712,332 @@ async function deleteProject(id) {
   catch (error) { toast(friendlyError(error)); }
 }
 
+const openPostCommentIds = new Set();
+const postCount = (rows, postId) => rows.filter(row => row.postId === postId).length;
+const safeExternalLink = (url, label) => {
+  const href = validUrl(url);
+  return href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(label)} ↗</a>` : "";
+};
+function builderPostLinks(post) {
+  return [
+    safeExternalLink(post.demoUrl, "Live demo"),
+    safeExternalLink(post.repositoryUrl, "Source code"),
+    safeExternalLink(post.deckUrl, "Pitch deck"),
+    safeExternalLink(post.videoUrl, "Video demo"),
+    safeExternalLink(post.docsUrl, "Documentation"),
+    safeExternalLink(post.otherUrl, "More links")
+  ].filter(Boolean).join("");
+}
+function renderBuilderPostCard(post, repost = null) {
+  const postId = post.id;
+  const privatePost = post.visibility === "private";
+  const votes = postCount(builderPostVotes, postId);
+  const comments = builderPostComments.filter(row => row.postId === postId);
+  const voted = builderPostVotes.some(row => row.postId === postId && row.userUid === currentUser?.uid);
+  const saved = builderPostSaves.some(row => row.postId === postId && row.userUid === currentUser?.uid);
+  const reposted = builderPostReposts.some(row => row.postId === postId && row.userUid === currentUser?.uid);
+  const isMine = post.ownerUid === currentUser?.uid;
+  const opened = openPostCommentIds.has(postId);
+  const imageUrl = validUrl(post.imageUrl);
+  const author = post.ownerName || "HackVerse builder";
+  const when = tsMillis(repost?.createdAt || post.createdAt);
+  const whenText = when ? new Date(when).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "Recently";
+  const commentMarkup = opened && !privatePost ? `<div class="builder-post-comments"><div class="builder-comment-list">${comments.length ? comments.map(comment => `<article class="builder-comment"><div class="builder-comment-avatar">${esc(initials(comment.authorName))}</div><div class="builder-comment-copy"><b>${esc(comment.authorName || "Builder")}</b><p>${esc(comment.body || "")}</p><small>${tsMillis(comment.createdAt) ? new Date(tsMillis(comment.createdAt)).toLocaleString() : "Just now"}</small></div>${comment.ownerUid === currentUser?.uid ? `<button type="button" class="builder-comment-delete" data-delete-post-comment="${esc(comment.id)}" aria-label="Delete comment">×</button>` : ""}</article>`).join("") : '<p class="builder-no-comments">Be the first to leave a thoughtful comment.</p>'}</div><form class="builder-comment-form" data-post-comment-form="${esc(postId)}"><textarea maxlength="1200" rows="2" required placeholder="Add a constructive comment…"></textarea><button class="btn btn-primary btn-small" type="submit">Comment</button></form></div>` : "";
+  return `<article class="builder-post-card" id="builder-post-${esc(postId)}">
+    ${repost ? `<div class="builder-repost-note">↻ ${esc(repost.userName || "A builder")} reposted this</div>` : ""}
+    <div class="builder-post-author"><div class="builder-post-avatar">${post.ownerAvatar ? `<img src="${esc(validUrl(post.ownerAvatar))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(author))}</div><div class="builder-post-author-copy"><b>${esc(author)}</b><small>@${esc(post.ownerUsername || "builder")} · ${esc(whenText)}</small></div><div class="builder-post-badges"><span>${esc(post.category || "Project")}</span>${post.lookingForTeam ? '<span class="builder-looking-badge">Open to collaborators</span>' : ""}${privatePost ? '<span>Private</span>' : ""}</div></div>
+    <div class="builder-post-content"><h3>${esc(post.title || "Untitled build")}</h3>${post.tagline ? `<p class="builder-post-tagline">${esc(post.tagline)}</p>` : ""}<p class="builder-post-body">${esc(post.body || "").replace(/\n/g, "<br>")}</p>${imageUrl ? `<a class="builder-post-cover-link" href="${esc(imageUrl)}" target="_blank" rel="noopener noreferrer"><img class="builder-post-cover" src="${esc(imageUrl)}" alt="${esc(post.title || "Project image")}" loading="lazy"></a>` : ""}<div class="builder-post-meta"><span>${esc(post.stage || "Building")}</span>${(post.techStack || []).slice(0, 10).map(tag => `<span>${esc(tag)}</span>`).join("")}</div><div class="builder-post-links">${builderPostLinks(post)}</div></div>
+    <div class="builder-post-stats"><span>▲ ${votes} upvote${votes === 1 ? "" : "s"}</span><span>${comments.length} comment${comments.length === 1 ? "" : "s"}</span><span>${postCount(builderPostReposts, postId)} repost${postCount(builderPostReposts, postId) === 1 ? "" : "s"}</span></div>
+    <div class="builder-post-actions"><button type="button" class="${voted ? "is-active" : ""}" data-post-upvote="${esc(postId)}" aria-pressed="${voted}" ${privatePost ? "disabled" : ""}>▲ Upvote</button><button type="button" class="${opened ? "is-active" : ""}" data-post-comments="${esc(postId)}" aria-expanded="${opened}" ${privatePost ? "disabled" : ""}>▤ Comment</button><button type="button" data-post-repost="${esc(postId)}" class="${reposted ? "is-active" : ""}" ${privatePost ? "disabled" : ""}>↻ Repost</button><button type="button" data-post-save="${esc(postId)}" class="${saved ? "is-active" : ""}" ${privatePost ? "disabled" : ""}>${saved ? "▣ Saved" : "▢ Save"}</button><button type="button" data-post-share="${esc(postId)}">↗ Share</button>${isMine ? `<button type="button" data-edit-builder-post="${esc(postId)}">Edit</button><button type="button" class="builder-post-delete" data-delete-builder-post="${esc(postId)}">Delete</button>` : ""}</div>
+    ${commentMarkup}
+  </article>`;
+}
+function renderBuilderFeed() {
+  const list = $("#builderFeedList");
+  if (!list) return;
+  const visiblePosts = builderPosts.filter(post => post.visibility !== "private" || post.ownerUid === currentUser?.uid);
+  const postById = new Map(visiblePosts.map(post => [post.id, post]));
+  let items = visiblePosts.map(post => ({ post, repost: null, time: tsMillis(post.createdAt) }));
+  for (const repost of builderPostReposts) {
+    const post = postById.get(repost.postId);
+    if (post && post.visibility !== "private") items.push({ post, repost, time: tsMillis(repost.createdAt) });
+  }
+  if (builderFeedFilter === "mine") items = items.filter(item => item.post.ownerUid === currentUser?.uid || item.repost?.userUid === currentUser?.uid);
+  if (builderFeedFilter === "saved") items = items.filter(item => builderPostSaves.some(row => row.postId === item.post.id && row.userUid === currentUser?.uid));
+  if (builderFeedFilter === "following") { const followed = new Set(builderFollows.filter(row => row.followerUid === currentUser?.uid).map(row => row.followingUid)); items = items.filter(item => followed.has(item.post.ownerUid)); }
+  if (builderFeedFilter === "top") items.sort((a,b) => postCount(builderPostVotes,b.post.id) - postCount(builderPostVotes,a.post.id) || b.time-a.time);
+  else items.sort((a,b) => b.time-a.time);
+  const unique = new Set();
+  items = items.filter(item => { const key = `${item.post.id}:${item.repost?.id || "original"}`; if (unique.has(key)) return false; unique.add(key); return true; });
+  list.innerHTML = items.length ? items.map(item => renderBuilderPostCard(item.post, item.repost)).join("") : `<div class="empty-note">${builderFeedFilter === "mine" ? "You haven't shared a build yet. Publish your first project update." : builderFeedFilter === "saved" ? "You haven't saved any public posts yet. Use Save on a project to keep it here." : builderFeedFilter === "following" ? "Your feed is quiet. Follow builders from the People directory to see their launches here." : "No builder posts yet. Be the first to ship something to the community."}</div>`;
+  const myList = $("#myBuilderPosts");
+  if (myList) {
+    const mine = builderPosts.filter(post => post.ownerUid === currentUser?.uid).sort((a,b) => tsMillis(b.createdAt)-tsMillis(a.createdAt));
+    myList.innerHTML = mine.length ? mine.map(post => renderBuilderPostCard(post)).join("") : '<div class="empty-note">Your published posts will appear here.</div>';
+  }
+  for (const root of [list, myList].filter(Boolean)) {
+    root.querySelectorAll("[data-post-upvote]").forEach(button => button.addEventListener("click", () => toggleBuilderPostVote(button.dataset.postUpvote)));
+    root.querySelectorAll("[data-post-comments]").forEach(button => button.addEventListener("click", () => toggleBuilderPostComments(button.dataset.postComments)));
+    root.querySelectorAll("[data-post-repost]").forEach(button => button.addEventListener("click", () => repostBuilderPost(button.dataset.postRepost)));
+    root.querySelectorAll("[data-post-save]").forEach(button => button.addEventListener("click", () => toggleSaveBuilderPost(button.dataset.postSave)));
+    root.querySelectorAll("[data-post-share]").forEach(button => button.addEventListener("click", () => shareBuilderPost(button.dataset.postShare)));
+    root.querySelectorAll("[data-edit-builder-post]").forEach(button => button.addEventListener("click", () => editBuilderPost(button.dataset.editBuilderPost)));
+    root.querySelectorAll("[data-delete-builder-post]").forEach(button => button.addEventListener("click", () => deleteBuilderPost(button.dataset.deleteBuilderPost)));
+    root.querySelectorAll("[data-post-comment-form]").forEach(form => form.addEventListener("submit", submitBuilderPostComment));
+    root.querySelectorAll("[data-delete-post-comment]").forEach(button => button.addEventListener("click", () => deleteBuilderPostComment(button.dataset.deletePostComment)));
+  }
+}
+async function loadBuilderFeed() {
+  if (!currentUser || !db || feedLoadInProgress) return;
+  feedLoadInProgress = true;
+  const list = $("#builderFeedList");
+  if (list && !builderPosts.length) list.innerHTML = '<div class="loading-card">Loading builder posts…</div>';
+  try {
+    const [postsSnap, votesSnap, repostsSnap, commentsSnap, savesSnap, followsSnap] = await Promise.all([
+      getDocs(query(collection(db, "builderPosts"), orderBy("createdAt", "desc"), limit(120))),
+      getDocs(query(collection(db, "builderPostVotes"), limit(5000))),
+      getDocs(query(collection(db, "builderReposts"), limit(2000))),
+      getDocs(query(collection(db, "builderPostComments"), orderBy("createdAt", "desc"), limit(3000))),
+      getDocs(query(collection(db, "builderPostSaves"), where("userUid", "==", currentUser.uid), limit(1000))),
+      getDocs(query(collection(db, "builderFollows"), limit(5000)))
+    ]);
+    builderPosts = postsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    builderPostVotes = votesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    builderPostReposts = repostsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    builderPostComments = commentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    builderPostSaves = savesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    builderFollows = followsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderBuilderFeed();
+  } catch (error) {
+    console.error("Builder feed failed to load", error);
+    if (list) list.innerHTML = `<div class="empty-note">The Builder feed could not load. ${esc(friendlyError(error))} Deploy the community policies from supabase-community-v12.sql and try again.</div>`;
+  } finally { feedLoadInProgress = false; }
+}
+function openBuilderPostComposer() {
+  if (!requireAccount()) return;
+  const form = $("#builderPostForm");
+  form.reset(); form.dataset.editPostId = "";
+  $("#builderPostTitle").textContent = "Share what you're building.";
+  $("#publishBuilderPostBtn").textContent = "Publish to Builder feed →";
+  $("#builderPostMessage").textContent = ""; $("#builderPostImagePreview").hidden = true;
+  showModal("builderPostModal");
+}
+function editBuilderPost(postId) {
+  if (!requireAccount()) return;
+  const post = builderPosts.find(row => row.id === postId && row.ownerUid === currentUser.uid);
+  if (!post) return;
+  const form = $("#builderPostForm"); form.reset(); form.dataset.editPostId = postId;
+  $("#builderPostName").value = post.title || "";
+  $("#builderPostTagline").value = post.tagline || "";
+  $("#builderPostBody").value = post.body || "";
+  $("#builderPostCategory").value = post.category || "Other";
+  $("#builderPostStage").value = post.stage || "In progress";
+  $("#builderPostTech").value = (post.techStack || []).join(", ");
+  $("#builderPostDemo").value = post.demoUrl || "";
+  $("#builderPostRepo").value = post.repositoryUrl || "";
+  $("#builderPostDeck").value = post.deckUrl || "";
+  $("#builderPostVideo").value = post.videoUrl || "";
+  $("#builderPostDocs").value = post.docsUrl || "";
+  $("#builderPostOther").value = post.otherUrl || "";
+  $("#builderPostImageUrl").value = post.imageUrl || "";
+  $("#builderPostLookingForTeam").checked = Boolean(post.lookingForTeam);
+  $("#builderPostVisibility").value = post.visibility || "public";
+  $("#builderPostTitle").textContent = "Update your project post.";
+  $("#publishBuilderPostBtn").textContent = "Save post changes →";
+  $("#builderPostMessage").textContent = "";
+  if (post.imageUrl) { $("#builderPostImagePreviewImg").src = validUrl(post.imageUrl); $("#builderPostImagePreview").hidden = false; }
+  else $("#builderPostImagePreview").hidden = true;
+  showModal("builderPostModal");
+}
+async function uploadBuilderPostImage(file) {
+  if (!file) return "";
+  const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+  if (!allowed.has(file.type)) throw new Error("Choose a JPG, PNG or WebP project image.");
+  if (file.size > 8 * 1024 * 1024) throw new Error("Project images must be 8 MB or smaller.");
+  const token = await currentUser.getIdToken();
+  const response = await fetch("/api/community-media", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ action: "create-upload", fileName: file.name, contentType: file.type, size: file.size }) });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `Image upload failed (${response.status}).`);
+  const { error } = await supabaseClient.storage.from(payload.bucket).uploadToSignedUrl(payload.path, payload.token, file, { contentType: file.type, upsert: false });
+  if (error) throw error;
+  return payload.publicUrl || supabaseClient.storage.from(payload.bucket).getPublicUrl(payload.path).data.publicUrl;
+}
+async function createBuilderPost(event) {
+  event.preventDefault(); if (!requireAccount()) return;
+  const message = $("#builderPostMessage"); const submit = $("#publishBuilderPostBtn");
+  const title = $("#builderPostName").value.trim(); const body = $("#builderPostBody").value.trim();
+  if (!title || !body) { message.textContent = "Add a project title and a description before publishing."; return; }
+  submit.disabled = true; submit.textContent = "Publishing…"; message.textContent = "Preparing your project post…";
+  try {
+    const form = $("#builderPostForm");
+    const editingId = form.dataset.editPostId || "";
+    const existingPost = editingId ? builderPosts.find(row => row.id === editingId && row.ownerUid === currentUser.uid) : null;
+    if (editingId && !existingPost) throw new Error("This post is no longer available to edit.");
+    const imageFile = $("#builderPostImageFile").files?.[0];
+    const imageUrl = imageFile ? await uploadBuilderPostImage(imageFile) : validUrl($("#builderPostImageUrl").value);
+    const post = {
+      ownerUid: currentUser.uid, authorUid: currentUser.uid,
+      ownerName: publicProfile?.displayName || currentUser.displayName || "Builder",
+      ownerUsername: publicProfile?.username || "builder", ownerAvatar: publicProfile?.avatarUrl || currentUser.photoURL || "",
+      title: title.slice(0, 110), tagline: $("#builderPostTagline").value.trim().slice(0, 180), body: body.slice(0, 5000),
+      category: $("#builderPostCategory").value, stage: $("#builderPostStage").value, techStack: listFrom($("#builderPostTech").value),
+      demoUrl: validUrl($("#builderPostDemo").value), repositoryUrl: validUrl($("#builderPostRepo").value), deckUrl: validUrl($("#builderPostDeck").value),
+      videoUrl: validUrl($("#builderPostVideo").value), docsUrl: validUrl($("#builderPostDocs").value), otherUrl: validUrl($("#builderPostOther").value), imageUrl,
+      lookingForTeam: $("#builderPostLookingForTeam").checked, visibility: $("#builderPostVisibility").value,
+      createdAt: existingPost?.createdAt || serverTimestamp(), updatedAt: serverTimestamp()
+    };
+    if (editingId) {
+      await updateDoc(doc(db, "builderPosts", editingId), post);
+      builderPosts = builderPosts.map(row => row.id === editingId ? { id: editingId, ...post } : row);
+    } else {
+      await addDoc(collection(db, "builderPosts"), post);
+    }
+    hideModal("builderPostModal"); form.reset(); form.dataset.editPostId = ""; $("#builderPostImagePreview").hidden = true;
+    $("#builderPostTitle").textContent = "Share what you're building.";
+    toast(editingId ? "Your project post was updated." : post.visibility === "public" ? "Your build is live in the Builder feed." : "Your private post was saved.");
+    if (editingId) renderBuilderFeed(); else await loadBuilderFeed();
+  } catch (error) { console.error("Publishing builder post failed", error); message.textContent = friendlyError(error); }
+  finally { submit.disabled = false; submit.textContent = $("#builderPostForm").dataset.editPostId ? "Save post changes →" : "Publish to Builder feed →"; }
+}
+async function toggleBuilderPostVote(postId) {
+  if (!requireAccount()) return;
+  const existing = builderPostVotes.find(row => row.postId === postId && row.userUid === currentUser.uid);
+  try {
+    if (existing) { await deleteDoc(doc(db, "builderPostVotes", existing.id)); builderPostVotes = builderPostVotes.filter(row => row.id !== existing.id); }
+    else { const ref = doc(db, "builderPostVotes", `${postId}_${currentUser.uid}`); await setDoc(ref, { ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: serverTimestamp() }); builderPostVotes.push({ id: ref.id, ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: Date.now() }); }
+    renderBuilderFeed();
+  } catch (error) { toast(friendlyError(error)); }
+}
+async function toggleBuilderPostComments(postId) {
+  if (openPostCommentIds.has(postId)) openPostCommentIds.delete(postId); else openPostCommentIds.add(postId);
+  renderBuilderFeed();
+  if (openPostCommentIds.has(postId)) document.querySelector(`[data-post-comment-form="${CSS.escape(postId)}"] textarea`)?.focus();
+}
+async function submitBuilderPostComment(event) {
+  event.preventDefault(); if (!requireAccount()) return;
+  const form = event.currentTarget; const postId = form.dataset.postCommentForm; const input = form.querySelector("textarea"); const body = input.value.trim();
+  if (!body) return;
+  try {
+    const ref = await addDoc(collection(db, "builderPostComments"), { ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Builder", authorUsername: publicProfile?.username || "builder", body: body.slice(0, 1200), createdAt: serverTimestamp() });
+    builderPostComments.unshift({ id: ref.id, ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Builder", body, createdAt: Date.now() });
+    openPostCommentIds.add(postId); renderBuilderFeed();
+  } catch (error) { toast(friendlyError(error)); }
+}
+async function deleteBuilderPostComment(id) {
+  if (!requireAccount()) return;
+  const comment = builderPostComments.find(row => row.id === id); if (!comment || comment.ownerUid !== currentUser.uid) return;
+  try { await deleteDoc(doc(db, "builderPostComments", id)); builderPostComments = builderPostComments.filter(row => row.id !== id); renderBuilderFeed(); }
+  catch (error) { toast(friendlyError(error)); }
+}
+async function repostBuilderPost(postId) {
+  if (!requireAccount()) return;
+  const post = builderPosts.find(row => row.id === postId); if (!post || post.visibility !== "public") return;
+  const existing = builderPostReposts.find(row => row.postId === postId && row.userUid === currentUser.uid);
+  try {
+    if (existing) { await deleteDoc(doc(db, "builderReposts", existing.id)); builderPostReposts = builderPostReposts.filter(row => row.id !== existing.id); }
+    else { const ref = doc(db, "builderReposts", `${postId}_${currentUser.uid}`); await setDoc(ref, { ownerUid: currentUser.uid, userUid: currentUser.uid, userName: publicProfile?.displayName || currentUser.displayName || "Builder", postId, createdAt: serverTimestamp() }); builderPostReposts.push({ id: ref.id, ownerUid: currentUser.uid, userUid: currentUser.uid, userName: publicProfile?.displayName || currentUser.displayName || "Builder", postId, createdAt: Date.now() }); }
+    renderBuilderFeed(); toast(existing ? "Repost removed." : "Reposted to your builder network.");
+  } catch (error) { toast(friendlyError(error)); }
+}
+async function toggleBuilderFollow(targetUid) {
+  if (!requireAccount() || !targetUid || targetUid === currentUser.uid) return;
+  const existing = builderFollows.find(row => row.followerUid === currentUser.uid && row.followingUid === targetUid);
+  try {
+    if (existing) { await deleteDoc(doc(db, "builderFollows", existing.id)); builderFollows = builderFollows.filter(row => row.id !== existing.id); }
+    else { const ref = doc(db, "builderFollows", `${currentUser.uid}_${targetUid}`); await setDoc(ref, { ownerUid: currentUser.uid, followerUid: currentUser.uid, followingUid: targetUid, createdAt: serverTimestamp() }); builderFollows.push({ id: ref.id, ownerUid: currentUser.uid, followerUid: currentUser.uid, followingUid: targetUid, createdAt: Date.now() }); }
+    const following = builderFollows.some(row => row.followerUid === currentUser.uid && row.followingUid === targetUid);
+    const button = $("#memberFollowBtn"); if (button && selectedMember?.uid === targetUid) button.textContent = following ? "Following ✓" : "Follow builder";
+    toast(existing ? "You unfollowed this builder." : "You are now following this builder.");
+  } catch (error) { toast(friendlyError(error)); }
+}
+async function toggleSaveBuilderPost(postId) {
+  if (!requireAccount()) return;
+  const existing = builderPostSaves.find(row => row.postId === postId && row.userUid === currentUser.uid);
+  try {
+    if (existing) { await deleteDoc(doc(db, "builderPostSaves", existing.id)); builderPostSaves = builderPostSaves.filter(row => row.id !== existing.id); }
+    else { const ref = doc(db, "builderPostSaves", `${postId}_${currentUser.uid}`); await setDoc(ref, { ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: serverTimestamp() }); builderPostSaves.push({ id: ref.id, ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: Date.now() }); }
+    renderBuilderFeed();
+  } catch (error) { toast(friendlyError(error)); }
+}
+async function shareBuilderPost(postId) {
+  const url = `${location.origin}${location.pathname}#feed`;
+  const post = builderPosts.find(row => row.id === postId);
+  const shareData = { title: post?.title || "HackVerse builder post", text: post?.tagline || "See what builders are shipping on HackVerse.", url };
+  try { if (navigator.share) await navigator.share(shareData); else { await navigator.clipboard.writeText(url); toast("Feed link copied."); } }
+  catch (error) { if (error?.name !== "AbortError") toast("Could not share this post from this browser."); }
+}
+async function deleteBuilderPost(postId) {
+  if (!requireAccount()) return;
+  const post = builderPosts.find(row => row.id === postId); if (!post || post.ownerUid !== currentUser.uid) return;
+  if (!(await confirmInApp("Delete this post? Its comments, votes and reposts may remain as orphaned records until cleaned up.", "Delete builder post"))) return;
+  try { await deleteDoc(doc(db, "builderPosts", postId)); builderPosts = builderPosts.filter(row => row.id !== postId); renderBuilderFeed(); toast("Post deleted."); }
+  catch (error) { toast(friendlyError(error)); }
+}
+
+async function syncHackathonParticipationCount() {
+  if (!currentUser) return;
+  const count = hackathonHistory.length;
+  try {
+    if (privateProfile) await updateDoc(doc(db, "users", currentUser.uid), { hackathonsParticipatedCount: count, "profileData.hackathonsParticipatedCount": count, updatedAt: serverTimestamp() });
+    if (publicProfile && publicProfile.profileVisibility !== "private") {
+      await updateDoc(doc(db, "publicProfiles", currentUser.uid), { hackathonsParticipatedCount: count, updatedAt: serverTimestamp() });
+      publicProfile = { ...publicProfile, hackathonsParticipatedCount: count };
+    } else if (publicProfile) publicProfile = { ...publicProfile, hackathonsParticipatedCount: count };
+    if (privateProfile) privateProfile = { ...privateProfile, hackathonsParticipatedCount: count, profileData: { ...(privateProfile.profileData || {}), hackathonsParticipatedCount: count } };
+    renderMyProfile();
+  } catch (error) { console.warn("Could not sync hackathon count to profile", error); }
+}
+async function loadHackathonHistory() {
+  const list = $("#hackathonHistoryList");
+  if (!currentUser || !db) { hackathonHistory = []; renderHackathonHistory(); return; }
+  if (list) list.innerHTML = '<div class="loading-card">Loading your hackathon journey…</div>';
+  try {
+    const snapshot = await getDocs(query(collection(db, "hackathonHistory"), where("ownerUid", "==", currentUser.uid), limit(200)));
+    hackathonHistory = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => Number(b.year || 0)-Number(a.year || 0) || tsMillis(b.createdAt)-tsMillis(a.createdAt));
+    renderHackathonHistory();
+    const existingCount = Number(publicProfile?.hackathonsParticipatedCount ?? privateProfile?.hackathonsParticipatedCount ?? 0);
+    if (existingCount !== hackathonHistory.length) await syncHackathonParticipationCount();
+  } catch (error) {
+    console.error("Hackathon history failed", error);
+    if (list) list.innerHTML = `<div class="empty-note">Could not load participation records. ${esc(friendlyError(error))}</div>`;
+  }
+}
+function renderHackathonHistory() {
+  const list = $("#hackathonHistoryList"); const count = $("#hackathonHistorySummary");
+  if (count) count.innerHTML = `<b>${hackathonHistory.length}</b><span>hackathons participated</span>`;
+  if (!list) return;
+  if (!currentUser) { list.innerHTML = '<div class="empty-note">Sign in to manage your hackathon journey.</div>'; return; }
+  if (!hackathonHistory.length) { list.innerHTML = '<div class="empty-note">Add your first hackathon to start your builder journey.</div>'; return; }
+  list.innerHTML = hackathonHistory.map(item => `<article class="hackathon-history-card"><div class="hackathon-history-top"><span>${esc(String(item.year || "Year not listed"))}</span><b>${item.visibility === "private" ? "PRIVATE DETAILS" : "PUBLIC"}</b></div><h4>${esc(item.eventName || "Hackathon")}</h4><p>${esc([item.organizer,item.role,item.teamName].filter(Boolean).join(" · ") || "Participation recorded")}</p><div class="hackathon-result">${esc(item.outcome || "Participated")}</div>${item.description ? `<p class="hackathon-history-description">${esc(item.description)}</p>` : ""}<div class="builder-post-links">${safeExternalLink(item.projectUrl,"Project / demo")}${safeExternalLink(item.proofUrl,"Proof")}${safeExternalLink(item.certificateUrl,"Certificate")}${safeExternalLink(item.mediaUrl,"Photos / recap")}</div><div class="hackathon-history-actions"><span>${item.visibility === "private" ? "Included in your count · details hidden from others" : "Visible on your public profile"}</span><button type="button" class="text-danger" data-delete-hackathon-history="${esc(item.id)}">Remove</button></div></article>`).join("");
+  list.querySelectorAll("[data-delete-hackathon-history]").forEach(button => button.addEventListener("click", () => deleteHackathonHistory(button.dataset.deleteHackathonHistory)));
+}
+async function saveHackathonHistory(event) {
+  event.preventDefault(); if (!requireAccount()) return;
+  const message = $("#hackathonHistoryMessage"); const submit = $("#saveHackathonHistoryBtn");
+  submit.disabled = true; submit.textContent = "Saving…"; message.textContent = "";
+  try {
+    const record = {
+      ownerUid: currentUser.uid, eventName: $("#historyEventName").value.trim().slice(0,140), organizer: $("#historyOrganizer").value.trim().slice(0,120),
+      year: Number($("#historyYear").value), role: $("#historyRole").value.trim().slice(0,80), teamName: $("#historyTeam").value.trim().slice(0,100),
+      outcome: $("#historyOutcome").value, description: $("#historyDescription").value.trim().slice(0,1200),
+      projectUrl: validUrl($("#historyProjectUrl").value), proofUrl: validUrl($("#historyProofUrl").value), certificateUrl: validUrl($("#historyCertificateUrl").value), mediaUrl: validUrl($("#historyMediaUrl").value),
+      visibility: $("#historyVisibility").value, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    };
+    await addDoc(collection(db, "hackathonHistory"), record);
+    $("#hackathonHistoryForm").reset(); hideModal("hackathonHistoryModal"); await loadHackathonHistory(); toast("Hackathon participation added to your profile.");
+  } catch (error) { message.textContent = friendlyError(error); }
+  finally { submit.disabled = false; submit.textContent = "Save participation →"; }
+}
+async function deleteHackathonHistory(id) {
+  if (!requireAccount()) return;
+  const record = hackathonHistory.find(item => item.id === id); if (!record || record.ownerUid !== currentUser.uid) return;
+  if (!(await confirmInApp("Remove this hackathon record from your profile?", "Remove participation"))) return;
+  try { await deleteDoc(doc(db, "hackathonHistory", id)); hackathonHistory = hackathonHistory.filter(item => item.id !== id); renderHackathonHistory(); await syncHackathonParticipationCount(); }
+  catch (error) { toast(friendlyError(error)); }
+}
+
 function updateAiAccessUI() {
-  const signedIn = Boolean(currentUser && db);
+  const signedIn = Boolean(currentUser?.uid && db);
   const gate = $("#aiLoginGate");
   const form = $("#aiForm");
   const messages = $("#aiMessages");
@@ -1997,7 +2351,7 @@ function validateAiActions(actions) {
   if (!Array.isArray(actions)) return [];
 
   const pages = new Set([
-    "home","opportunities","saved","people","messages",
+    "home","opportunities","feed","saved","people","messages",
     "aiwish","profile","notifications","settings"
   ]);
 
@@ -2270,6 +2624,17 @@ function renderAiActionReview() {
 
 async function sendAiMessage(event) {
   event.preventDefault();
+  // Re-check the persisted Supabase session at the chatbot boundary. This
+  // prevents a stale in-memory auth value from showing the signed-out gate.
+  try {
+    const refreshedUser = await getCurrentUser();
+    currentUser = refreshedUser || null;
+    updateAiAccessUI();
+  } catch (error) {
+    currentUser = null;
+    updateAiAccessUI();
+    console.warn("Could not refresh the AI session", error);
+  }
   if (!requireAccount() || isAiSending) return;
 
   const input = $("#aiInput");
@@ -2803,6 +3168,7 @@ function playAppNotificationTone(){try{const AudioContextClass=window.AudioConte
 function notifyIncomingActivity(rows){if(!currentUser)return;const prefs=readAppPrefs();for(const c of rows){if(c.lastMessageSender===currentUser.uid||!chatIsUnread(c))continue;const stamp=tsMillis(c.lastMessageAt);const key=`hv-notified-${currentUser.uid}-${c.id}`;if(!stamp||Number(localStorage.getItem(key)||0)>=stamp)continue;localStorage.setItem(key,String(stamp));if(prefs.sound)playAppNotificationTone();if(prefs.desktop&&"Notification" in window&&Notification.permission==="granted"){try{const n=new Notification(conversationLabel(c),{body:c.lastMessage||"New message",tag:c.id});n.onclick=()=>{window.focus();location.hash="#messages";selectConversation(c);};}catch{}}}}
 function showSettingsTab(tab){$$('[data-settings-panel]').forEach(p=>p.classList.toggle("active",p.dataset.settingsPanel===tab));$$('[data-settings-tab]').forEach(b=>b.classList.toggle("active",b.dataset.settingsTab===tab));}
 const tourSteps=[
+ {route:"feed",selector:"#builderFeedPage .section-heading",title:"Builder feed",text:"Ship project launches, demos and progress updates. Builders can upvote, comment, repost, save and share public posts. You can control post visibility when publishing."},
  {route:"home",selector:".hero-copy",title:"Welcome to HackVerse",text:"Your builder network starts here. Discover opportunities, build your profile, meet collaborators and turn your ideas into real projects. The top navigation opens dedicated sections rather than stacking every feature on one screen."},
  {route:"opportunities",selector:"#opportunitiesContent, #opportunitiesSignInGate",title:"Opportunity radar",text:"Explore hackathons, case competitions, coding events, bootcamps and courses. Filter by skill, country, format, eligibility, cost and deadline. Event listings and details require a signed-in member account."},
  {route:"people",selector:"#people .section-heading",title:"Community directory",text:"Search discoverable builders by their public profile, interests and skills. Open a profile to understand a builder's background, then start a direct conversation or invite them to a project group."},
@@ -2847,7 +3213,7 @@ function initAdvancedUI(){
 
 function handleRoute() {
   const raw=(location.hash||"#home").slice(1);
-  const aliases={top:"home",discover:"home",opportunities:"opportunities",saved:"saved",people:"people",messages:"messages",aiwish:"aiwish",profile:"profile",notifications:"notifications",settings:"settings"};
+  const aliases={top:"home",discover:"home",opportunities:"opportunities",feed:"feed",saved:"saved",people:"people",messages:"messages",aiwish:"aiwish",profile:"profile",notifications:"notifications",settings:"settings"};
   const view=aliases[raw]||"home";
   const aiPanel=$("#aiPanel"), wishMount=$("#aiWishMount"), aiAssistant=$("#aiAssistant");
   if(view==="aiwish"){
@@ -2881,6 +3247,8 @@ function handleRoute() {
   window.scrollTo({top:0,behavior:"auto"});
   if(blocked)return;
   if(view==="opportunities"){ updateEventAccessUI(); if(currentUser)renderEvents(); }
+  if(view==="feed") void loadBuilderFeed();
+  if(view==="profile"){ if(currentUser){ void loadHackathonHistory(); if(!builderPosts.length) void loadBuilderFeed(); } }
   if(view==="saved")renderSaved();
   if(view==="people"&&currentUser)searchPeople();
   if(view==="notifications")renderNotificationCenter();
@@ -2939,6 +3307,15 @@ function bindUI() {
   $("#messageSearch").addEventListener("input",()=>renderMessages(currentMessages));
   $("#groupForm").addEventListener("submit", createGroup);
   $("#messageForm").addEventListener("submit", sendMessage);
+  $("#createBuilderPostBtn").onclick = openBuilderPostComposer;
+  $("#createBuilderPostSideBtn").onclick = openBuilderPostComposer;
+  $("#builderPostForm").addEventListener("submit", createBuilderPost);
+  $("#builderPostImageFile").addEventListener("change", event => { const file = event.target.files?.[0]; if (!file) { $("#builderPostImagePreview").hidden = true; return; } if (file.size > 8*1024*1024) { toast("Project images must be 8 MB or smaller."); event.target.value = ""; return; } const url = URL.createObjectURL(file); $("#builderPostImagePreviewImg").src = url; $("#builderPostImagePreview").hidden = false; });
+  $$("[data-feed-filter]").forEach(button => button.addEventListener("click", () => { builderFeedFilter = button.dataset.feedFilter; $$("[data-feed-filter]").forEach(item => item.classList.toggle("active", item === button)); renderBuilderFeed(); }));
+  $("#refreshBuilderFeedBtn").onclick = () => loadBuilderFeed();
+  $("#createBuilderPostSideBtn").onclick = openBuilderPostComposer;
+  $("#addHackathonHistoryBtn").onclick = () => { if (requireAccount()) { $("#hackathonHistoryForm").reset(); $("#hackathonHistoryMessage").textContent = ""; showModal("hackathonHistoryModal"); } };
+  $("#hackathonHistoryForm").addEventListener("submit", saveHackathonHistory);
   $("#addProjectBtn").onclick = () => requireAccount() && showModal("projectModal");
   $("#projectForm").addEventListener("submit", createProject);
   $$("[data-close]").forEach(button => button.addEventListener("click", () => { const id = button.dataset.close; if (id === "profileModal") closeProfileModal(); else hideModal(id); }));

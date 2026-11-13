@@ -119,15 +119,62 @@ async function requireSession() {
   return session;
 }
 
-async function fetchRows(collectionRef) {
+async function fetchRows(collectionRef, constraints = []) {
   await requireSession();
 
-  const { data, error } = await supabaseClient
+  let request = supabaseClient
     .from("documents")
     .select("path,collection_path,doc_id,data,owner_uid,participants,created_at,updated_at")
-    .eq("collection_path", collectionRef.path)
-    .range(0, 49999);
+    .eq("collection_path", collectionRef.path);
 
+  // Push the common, bounded feed/profile filters into Postgres. The previous
+  // implementation fetched up to 50,000 rows for every query and only then
+  // applied limit/orderBy in JavaScript, which made the social feed expensive.
+  // Keep startAfter paging semantics client-side, but still push its filters
+  // and ordering down to Postgres.
+  const safeField = field => /^[A-Za-z][A-Za-z0-9_]*$/.test(String(field)) ? String(field) : null;
+  for (const constraint of constraints.filter(item => item.type === "where")) {
+    const field = safeField(constraint.field);
+    if (!field) continue;
+    const scalarColumn = `data->>${field}`;
+    const jsonColumn = `data->${field}`;
+    switch (constraint.op) {
+      case "==": request = request.eq(scalarColumn, String(constraint.value)); break;
+      case "!=": request = request.neq(scalarColumn, String(constraint.value)); break;
+      case ">": request = request.gt(scalarColumn, String(constraint.value)); break;
+      case ">=": request = request.gte(scalarColumn, String(constraint.value)); break;
+      case "<": request = request.lt(scalarColumn, String(constraint.value)); break;
+      case "<=": request = request.lte(scalarColumn, String(constraint.value)); break;
+      case "array-contains": request = request.contains(jsonColumn, [constraint.value]); break;
+    }
+  }
+  const orderConstraints = constraints.filter(item => item.type === "orderBy");
+  for (const constraint of orderConstraints) {
+    const field = safeField(constraint.field);
+    if (field) request = request.order(`data->>${field}`, { ascending: constraint.direction !== "desc", nullsFirst: false });
+  }
+  // Match the adapter's stable document-ID fallback order so a server-side
+  // limit does not pick an arbitrary subset when a query has no orderBy.
+  request = request.order("doc_id", { ascending: true });
+  for (const constraint of constraints.filter(item => item.type === "startAt" || item.type === "endAt")) {
+    const field = safeField(constraints.find(item => item.type === "orderBy")?.field);
+    if (!field) continue;
+    const value = typeof constraint.value === "object" && constraint.value !== null
+      ? constraint.value.data?.()?.[field] ?? constraint.value[field]
+      : constraint.value;
+    if (value == null) continue;
+    request = constraint.type === "startAt"
+      ? request.gte(`data->>${field}`, String(value))
+      : request.lte(`data->>${field}`, String(value));
+  }
+  if (!constraints.some(item => item.type === "startAfter")) {
+    const serverLimit = constraints.find(item => item.type === "limit");
+    request = serverLimit ? request.limit(serverLimit.value) : request.range(0, 49999);
+  } else {
+    request = request.range(0, 49999);
+  }
+
+  const { data, error } = await request;
   if (error) throw error;
 
   return (data || []).map(row => ({
@@ -183,7 +230,7 @@ function makeSnapshot(rows) {
 export async function getDocs(target) {
   const collectionRef = target?.__kind === "query" ? target.collectionRef : target;
   const constraints = target?.__kind === "query" ? target.constraints : [];
-  return makeSnapshot(applyQuery(await fetchRows(collectionRef), constraints));
+  return makeSnapshot(applyQuery(await fetchRows(collectionRef, constraints), constraints));
 }
 
 export async function getDoc(ref) {
@@ -306,7 +353,13 @@ function adaptUser(user) {
     providerData: (user.identities || []).map(i => ({ providerId: i.provider })),
     user_metadata: user.user_metadata || {},
     app_metadata: user.app_metadata || {},
-    getIdToken: async () => (await supabaseClient.auth.getSession()).data.session?.access_token || "",
+    getIdToken: async () => {
+      const { data, error } = await supabaseClient.auth.getSession();
+      if (error) throw error;
+      const token = data?.session?.access_token;
+      if (!token) throw new Error("Your sign-in session is missing or expired. Sign in again.");
+      return token;
+    },
     getIdTokenResult: async () => ({ claims: user.app_metadata || {} })
   };
 }
@@ -314,9 +367,16 @@ function adaptUser(user) {
 export const GoogleAuthProvider = class { constructor() { this.provider = "google"; } };
 
 export async function signInWithPopup(_auth, provider) {
+  // OAuth is a full-page redirect with PKCE. Explicitly ask Google to show its
+  // account chooser; redirecting to a hash route can otherwise restore a stale UI.
+  const returnTo = `${location.origin}${location.pathname}${location.search}`;
   const { data, error } = await supabaseClient.auth.signInWithOAuth({
     provider: provider.provider || "google",
-    options: { redirectTo: location.href }
+    options: {
+      redirectTo: returnTo,
+      queryParams: { prompt: "select_account" },
+      scopes: "openid email profile"
+    }
   });
   if (error) throw error;
   return data;
@@ -327,18 +387,41 @@ export async function signInWithEmailAndPassword(_auth, email, password) { retur
 export async function sendPasswordResetEmail(_auth, email) { return auth.sendPasswordResetEmail(email); }
 export async function signOut(_auth) { return auth.signOut(); }
 
-export async function onAuthStateChanged(_auth, callback) {
-  const { data, error } = await supabaseClient.auth.getSession();
-  if (error) throw error;
-  auth.currentUser = adaptUser(data?.session?.user || null);
-  queueMicrotask(() => callback(auth.currentUser));
-
+export function onAuthStateChanged(_auth, callback) {
+  // Subscribe before reading the initial session. The old getSession-first
+  // sequence could miss an OAuth/password event that happened during startup.
+  let disposed = false;
+  let authEventVersion = 0;
+  let lastDeliveredUid = undefined;
+  const deliver = user => {
+    if (disposed) return;
+    const nextUid = user?.uid || null;
+    if (nextUid === lastDeliveredUid) return;
+    lastDeliveredUid = nextUid;
+    auth.currentUser = user;
+    callback(user);
+  };
   const subscription = supabaseClient.auth.onAuthStateChange((_event, session) => {
-    auth.currentUser = adaptUser(session?.user || null);
-    queueMicrotask(() => callback(auth.currentUser));
+    authEventVersion += 1;
+    const user = adaptUser(session?.user || null);
+    queueMicrotask(() => deliver(user));
   });
+  const initialVersion = authEventVersion;
+  supabaseClient.auth.getSession().then(({ data, error }) => {
+    if (error) throw error;
+    if (authEventVersion === initialVersion) deliver(adaptUser(data?.session?.user || null));
+  }).catch(error => console.error("Could not restore the HackVerse sign-in session", error));
+  return () => {
+    disposed = true;
+    subscription.data.subscription.unsubscribe();
+  };
+}
 
-  return subscription.data.subscription.unsubscribe;
+export async function getCurrentUser() {
+  const { data, error } = await supabaseClient.auth.getUser();
+  if (error) throw error;
+  auth.currentUser = adaptUser(data?.user || null);
+  return auth.currentUser;
 }
 
 export async function sendEmailVerification(user) { return auth.sendEmailVerification(user); }
