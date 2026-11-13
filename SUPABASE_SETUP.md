@@ -36,10 +36,3 @@ Run seed data only in a disposable development project. See README for the requi
 ## Important limitations
 
 Successful SQL execution, OAuth, storage permissions, AI provider calls, chat delivery and mobile device behavior must be confirmed on the actual Supabase/Vercel deployment. This release is not represented as production-live tested.
-
-## Chat inbox: “Could not load conversations”
-
-If the Messages page displays “Could not load conversations. Check Supabase database rules.”, run `HackVerse-v13-chat-conversations-fix.sql` in the Supabase SQL Editor. It backfills the indexed `participants` metadata from existing conversation documents and adds a narrow authenticated SELECT policy that allows a user to read only conversations containing their own UID. It does not make chat data public. Then sign out/in and reload Messages. If it still fails, inspect the browser console for the underlying PostgREST error and verify that the signed-in user's UID is present in `documents.data->'participants'` for the affected conversation.
-
-## v14 deployment
-Replace the deployed project with the v14 ZIP and redeploy. No new database migration is required for the v14 frontend performance/home changes. If the conversation inbox still fails, run `HackVerse-v13-chat-conversations-fix.sql` once after the v13 schema migration. Do not rerun earlier migrations blindly; follow `SQL_MIGRATIONS_README.md` in the SQL bundle.

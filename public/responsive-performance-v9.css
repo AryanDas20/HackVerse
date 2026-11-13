@@ -307,11 +307,3 @@ button:disabled { cursor: not-allowed; }
 .ai-message-bubble code { padding: 2px 5px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .ai-message-bubble pre { max-width: 100%; margin: 8px 0; padding: 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
 .ai-message-bubble pre code { padding: 0; border: 0; background: transparent; white-space: pre; }
-
-/* v14: reduce first-paint and off-screen layout work on long pages. */
-@media (min-width: 720px) {
-  main > section:not(.hero) { content-visibility: auto; contain-intrinsic-size: auto 560px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
-}
