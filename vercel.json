@@ -4,5 +4,15 @@
     "api/agent37/chat.js": {
       "maxDuration": 300
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/@:username",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/post/:postId",
+      "destination": "/index.html"
+    }
+  ]
 }

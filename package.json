@@ -1,6 +1,15 @@
 {
   "name": "hackverse-web",
   "private": true,
-  "engines": { "node": "22.x" },
-  "dependencies": { "@supabase/supabase-js": "^2.57.0" }
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.0"
+  },
+  "scripts": {
+    "test": "node --test functions/test/*.test.cjs functions/test/*.test.js api/test/*.test.cjs",
+    "check": "node --check public/app.js && node --check public/data-layer.js && node --check api/social-v13.js",
+    "seed:social": "node scripts/seed-social-v13.mjs"
+  }
 }

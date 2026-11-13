@@ -20,6 +20,7 @@ let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "
 let emailVerificationGuard = false, pendingChatFile = null;
 let builderPosts = [], builderPostVotes = [], builderPostReposts = [], builderPostComments = [], builderPostSaves = [], builderFollows = [], hackathonHistory = [];
 let builderFeedFilter = "latest", feedLoadInProgress = false;
+let socialFeedType = "explore", socialFeedCursor = null, socialFeedLoading = false, publicProfilePageData = null, publicProfileTab = "posts", publicProfileTabCursor = null, publicProfileTabLoading = false;
 let dialogResolver = null;
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -75,6 +76,270 @@ const friendlyError = error => {
   return map[code] || error?.message || "Something went wrong. Check your Supabase setup and try again.";
 };
 
+async function socialRequest(action, payload = {}) {
+  if (!currentUser) throw new Error("Sign in to continue.");
+  const token = await currentUser.getIdToken();
+  const response = await fetch("/api/social-v13", {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action, ...payload })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Community request failed (${response.status}).`);
+  return data;
+}
+function navigateToProfile(username) {
+  const clean = String(username || "").replace(/^@/, "").trim();
+  if (!/^[A-Za-z0-9_]{3,24}$/.test(clean)) { toast("This builder does not have a valid public username yet."); return; }
+  history.pushState({}, "", `/@${encodeURIComponent(clean)}`);
+  handleRoute();
+}
+function socialTime(value) {
+  const date = value ? new Date(value) : new Date();
+  if (!Number.isFinite(date.getTime())) return "Recently";
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return "Just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+function socialAvatar(profile, size = "") {
+  const src = validUrl(profile?.avatar_url || profile?.avatarUrl || "");
+  return `<span class="social-avatar ${size}">${src ? `<img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(profile?.display_name || profile?.displayName || profile?.username))}</span>`;
+}
+function renderSocialPost(post) {
+  const author = post.author || {};
+  const own = post.author_id === currentUser?.uid;
+  const vote = post.viewer_vote || null;
+  const media = validUrl(post.media_url || "");
+  const mediaMarkup = media && post.media_type === "image" ? `<a class="social-post-media" href="${esc(media)}" target="_blank" rel="noopener noreferrer"><img src="${esc(media)}" alt="Post attachment" loading="lazy"></a>`
+    : media && post.media_type === "video" ? `<div class="social-post-media"><video src="${esc(media)}" controls preload="metadata" playsinline></video></div>` : "";
+  const hashtags = (post.hashtags || []).slice(0, 12).map(tag => `<span>#${esc(tag)}</span>`).join("");
+  const id = esc(post.id);
+  return `<article class="social-post-card" data-social-post="${id}">
+    <header class="social-post-author">${socialAvatar(author)}<div class="social-author-copy"><button type="button" data-social-profile="${esc(author.username || "")}">${esc(author.display_name || "HackVerse builder")}${author.is_verified ? " ✓" : ""}</button><small>@${esc(author.username || "builder")} · <span class="social-post-time">${esc(socialTime(post.created_at))}</span>${post.edited_at ? " · edited" : ""}</small></div><span class="social-post-visibility">${esc(post.visibility || "public")}</span></header>
+    <p class="social-post-text">${esc(post.content || "")}</p>${mediaMarkup}${hashtags ? `<div class="social-post-tags">${hashtags}</div>` : ""}
+    <div class="social-post-counts"><span>▲ ${Number(post.upvote_count || 0)} upvotes</span><span>▼ ${Number(post.downvote_count || 0)} downvotes</span><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span></div>
+    <div class="social-post-actions"><button type="button" data-social-vote="upvote" data-post-id="${id}" aria-pressed="${vote === "upvote"}">▲ Upvote</button><button type="button" data-social-vote="downvote" data-post-id="${id}" aria-pressed="${vote === "downvote"}">▼ Downvote</button><button type="button" data-social-detail="${id}">Open post</button><button type="button" data-social-comments="${id}">Comment</button><button type="button" data-social-repost="${id}">↻ Repost</button><button type="button" data-social-share="${id}">↗ Share</button>${own ? `<button type="button" data-social-edit="${id}">Edit</button><button type="button" data-social-delete="${id}">Delete</button>` : `<button type="button" data-social-report="${id}">Report</button>`}</div>
+    <div class="social-comment-panel" data-social-comment-panel="${id}" hidden></div>
+  </article>`;
+}
+function bindSocialPostActions(root) {
+  const bind = (selector, handler) => root.querySelectorAll(selector).forEach(button => {
+    if (button.dataset.bound === "1") return;
+    button.dataset.bound = "1";
+    button.addEventListener("click", () => handler(button));
+  });
+  bind("[data-social-profile]", button => navigateToProfile(button.dataset.socialProfile));
+  bind("[data-social-detail]", button => navigateToPost(button.dataset.socialDetail));
+  bind("[data-social-vote]", async button => {
+    try { button.disabled = true; await socialRequest("vote", { postId: button.dataset.postId, value: button.dataset.socialVote }); await loadSocialFeed({ reset: true }); }
+    catch (error) { toast(error.message); } finally { button.disabled = false; }
+  });
+  bind("[data-social-comments]", button => toggleSocialComments(button.dataset.socialComments));
+  bind("[data-social-repost]", async button => {
+    try { await socialRequest("repost", { postId: button.dataset.socialRepost }); toast("Reposted to your network."); await loadSocialFeed({ reset: true }); }
+    catch (error) { toast(error.message); }
+  });
+  bind("[data-social-share]", async button => {
+    const url = `${location.origin}/post/${encodeURIComponent(button.dataset.socialShare)}`;
+    try { if (navigator.share) await navigator.share({ title: "HackVerse post", text: "Explore this post on HackVerse", url }); else { await navigator.clipboard.writeText(url); toast("Posts link copied."); } }
+    catch (error) { if (error?.name !== "AbortError") toast("Could not share this link on this device."); }
+  });
+  bind("[data-social-report]", button => {
+    location.hash = "#reports"; setTimeout(() => { const type=$("#reportTargetType"); const target=$("#reportTargetId"); if(type&&target){type.value="post";target.value=button.dataset.socialReport;updateReportFields();} }, 0);
+  });
+  bind("[data-social-delete]", async button => {
+    if (!(await confirmInApp("Delete this post? It will be soft-deleted and removed from public feeds.", "Delete post"))) return;
+    try { await socialRequest("delete-post", { postId: button.dataset.socialDelete }); await loadSocialFeed({ reset: true }); toast("Post deleted."); }
+    catch (error) { toast(error.message); }
+  });
+  bind("[data-social-edit]", async button => {
+    const card = button.closest("[data-social-post]"); const current = card?.querySelector(".social-post-text")?.textContent || "";
+    const updated = await promptInApp("Edit your post", "Update the text of your post (up to 3,000 characters).", current, "Post text");
+    if (updated === null) return;
+    try { await socialRequest("edit-post", { postId: button.dataset.socialEdit, content: updated }); await loadSocialFeed({ reset: true }); toast("Post updated."); }
+    catch (error) { toast(error.message); }
+  });
+}
+
+function navigateToPost(postId) {
+  if (!postId) return;
+  history.pushState({}, "", `/post/${encodeURIComponent(postId)}`);
+  handleRoute();
+  void loadSocialPostDetail(postId);
+}
+async function loadSocialPostDetail(postId) {
+  const host = $("#socialPostDetail"); if (!host || !postId) return;
+  host.innerHTML = '<div class="loading-card">Loading post…</div>';
+  try {
+    const data = await socialRequest("post-detail", { postId });
+    host.innerHTML = data.post ? renderSocialPost(data.post) : '<div class="empty-note">This post is unavailable.</div>';
+    bindSocialPostActions(host);
+  } catch (error) { host.innerHTML = `<div class="empty-note">${esc(error.message)}</div>`; }
+}
+
+async function loadSocialFeed({ reset = false } = {}) {
+  const host = $("#socialPostList"); if (!host || socialFeedLoading) return;
+  if (!currentUser) { host.innerHTML = '<div class="empty-note">Sign in to explore community posts.</div>'; return; }
+  if (reset) { socialFeedCursor = null; host.innerHTML = '<div class="loading-card">Loading posts…</div>'; }
+  socialFeedLoading = true;
+  try {
+    const data = await socialRequest("feed", { type: socialFeedType, cursor: socialFeedCursor });
+    const markup = (data.posts || []).map(renderSocialPost).join("");
+    if (reset) host.innerHTML = markup || '<div class="empty-note">No posts yet. Share an idea, a question or a lesson learned.</div>';
+    else if (markup) host.insertAdjacentHTML("beforeend", markup);
+    socialFeedCursor = data.nextCursor || null;
+    $("#socialLoadMore").hidden = !socialFeedCursor;
+    bindSocialPostActions(host);
+  } catch (error) { if (reset) host.innerHTML = `<div class="empty-note">Could not load posts. ${esc(error.message)}</div>`; else toast(error.message); }
+  finally { socialFeedLoading = false; }
+}
+async function toggleSocialComments(postId) {
+  const panel = document.querySelector(`[data-social-comment-panel="${CSS.escape(postId)}"]`);
+  if (!panel) return;
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false; panel.innerHTML = '<div class="empty-note">Loading comments…</div>';
+  try {
+    const data = await socialRequest("comments", { postId });
+    const comments = data.comments || [];
+    panel.innerHTML = `${comments.map(comment => `<div class="social-comment-row">${socialAvatar(comment.author)}<div><b>${esc(comment.author?.display_name || "Builder")}</b><p>${esc(comment.content)}</p><small>${esc(socialTime(comment.created_at))}</small></div></div>`).join("") || '<div class="empty-note">No comments yet. Start a constructive conversation.</div>'}<form class="social-comment-form"><input maxlength="1200" required placeholder="Write a thoughtful comment…"><button class="btn btn-primary btn-small" type="submit">Send</button></form>`;
+    panel.querySelector("form").addEventListener("submit", async event => {
+      event.preventDefault(); const input = event.currentTarget.querySelector("input"); if (!input.value.trim()) return;
+      try { await socialRequest("comment", { postId, content: input.value }); await loadSocialFeed({ reset: true }); toast("Comment posted."); }
+      catch (error) { toast(error.message); }
+    });
+  } catch (error) { panel.innerHTML = `<div class="empty-note">${esc(error.message)}</div>`; }
+}
+async function syncSocialProfile(profile) {
+  if (!profile?.username || !currentUser) return;
+  try { await socialRequest("sync-profile", { username: profile.username, displayName: profile.displayName, bio: profile.bio, avatarUrl: profile.avatarUrl, website: profile.website || profile.portfolio, coverUrl: profile.coverUrl, location: [profile.city, profile.country].filter(Boolean).join(", "), pronouns: profile.pronouns, githubUrl: profile.github, linkedinUrl: profile.linkedin, portfolioUrl: profile.portfolio, visibility: profile.profileVisibility }); }
+  catch (error) { console.warn("Social profile sync deferred", error); }
+}
+async function createSocialPost(event) {
+  event.preventDefault(); if (!requireAccount()) return;
+  const content = $("#socialPostContent").value.trim(); const message = $("#socialPostMessage");
+  if (!content) { message.textContent = "Write something before publishing."; return; }
+  let mediaUrl = $("#socialPostMediaUrl").value.trim(); let mediaType = $("#socialPostMediaType").value;
+  const file = $("#socialPostMediaFile")?.files?.[0];
+  if (file && mediaUrl) { message.textContent = "Use either an uploaded image or a media URL, not both."; return; }
+  if (file && file.size > 8 * 1024 * 1024) { message.textContent = "Images must be 8 MB or smaller."; return; }
+  if (file && !["image/jpeg","image/png","image/webp"].includes(file.type)) { message.textContent = "Use a JPG, PNG or WebP image."; return; }
+  if (mediaUrl && !mediaType) { message.textContent = "Choose image or video for your attachment."; return; }
+  const button = $("#publishSocialPost"); button.disabled = true; message.textContent = file ? "Uploading image…" : "Publishing…";
+  try {
+    if (file) {
+      const token = await currentUser.getIdToken();
+      const preparedResponse = await fetch("/api/community-media", { method:"POST", headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`}, body:JSON.stringify({action:"create-upload",fileName:file.name,contentType:file.type,size:file.size}) });
+      const prepared = await preparedResponse.json().catch(()=>({}));
+      if (!preparedResponse.ok) throw new Error(prepared.error || "Could not prepare the image upload.");
+      const {error:uploadError}=await supabaseClient.storage.from(prepared.bucket).uploadToSignedUrl(prepared.path,prepared.token,file,{contentType:file.type,upsert:false});
+      if(uploadError)throw new Error(uploadError.message || "Image upload failed.");
+      mediaUrl=prepared.publicUrl; mediaType="image";
+    }
+    await socialRequest("create-post", { content, mediaUrl, mediaType, visibility: $("#socialPostVisibility").value });
+    $("#socialPostForm").reset(); message.textContent = "Post published."; await loadSocialFeed({ reset: true });
+  } catch (error) { message.textContent = error.message; }
+  finally { button.disabled = false; }
+}
+async function loadPublicProfilePage(username) {
+  const host = $("#publicProfileContent"); if (!host || !username) return;
+  host.innerHTML = '<div class="loading-card">Loading builder profile…</div>';
+  try {
+    const data = await socialRequest("profile", { username }); publicProfilePageData = data;
+    const p = data.profile;
+    if (data.profileRestricted) {
+      const cover = validUrl(p.cover_url) ? `style="background-image:url('${esc(validUrl(p.cover_url))}')"` : "";
+      const followLabel = data.followStatus === "active" ? "Following" : data.followStatus === "pending" ? "Requested" : "Request to follow";
+      host.innerHTML = `<div class="public-profile-shell"><div class="public-profile-cover" ${cover}></div><div class="public-profile-main"><div class="public-profile-identity">${socialAvatar(p,"public-profile-avatar")}<div class="public-profile-heading"><h1>${esc(p.display_name)}</h1><p>@${esc(p.username)}</p></div></div><p class="public-profile-bio">This is a ${p.profile_visibility === "private" ? "private" : "followers-only"} profile. Follow this builder to request access to their posts and shared profile details.</p><div class="public-profile-stats"><div class="public-profile-stat"><b>${Number(p.follower_count||0)}</b><span>Followers</span></div><div class="public-profile-stat"><b>${Number(p.post_count||0)}</b><span>Posts</span></div><div class="public-profile-stat"><b>${Number(p.upvote_count||0)}</b><span>Upvotes</span></div><div class="public-profile-stat"><b>${Number(data.hackathonCount||0)}</b><span>Hackathons</span></div></div><div class="public-profile-actions"><button class="btn btn-primary" id="publicProfileFollow">${followLabel}</button><button class="btn btn-outline" id="publicProfileReport">Report</button></div></div></div>`;
+      $("#publicProfileFollow")?.addEventListener("click", async () => { try { if(data.followStatus) await socialRequest("unfollow",{username:p.username}); else { const result=await socialRequest("follow",{username:p.username}); data.followStatus=result.status; } await loadPublicProfilePage(p.username); } catch(error){toast(error.message);} });
+      $("#publicProfileReport")?.addEventListener("click",()=>{location.hash="#reports";setTimeout(()=>{const type=$("#reportTargetType");const usernameField=$("#reportUsername");if(type&&usernameField){type.value="user";usernameField.value=p.username;updateReportFields();}},0);});
+      return;
+    }
+    const cover = validUrl(p.cover_url) ? `style="background-image:url('${esc(validUrl(p.cover_url))}')"` : "";
+    const followLabel = data.followStatus === "active" ? "Following" : data.followStatus === "pending" ? "Requested" : "Follow";
+    host.innerHTML = `<div class="public-profile-shell"><div class="public-profile-cover" ${cover}></div><div class="public-profile-main"><div class="public-profile-identity">${socialAvatar(p,"public-profile-avatar")}<div class="public-profile-heading"><h1>${esc(p.display_name)} ${p.is_verified ? "✓" : ""}</h1><p>@${esc(p.username)}</p></div></div><div class="public-profile-actions">${p.id !== currentUser.uid ? `<button class="btn btn-primary" id="publicProfileFollow">${followLabel}</button><button class="btn btn-outline" id="publicProfileMessage">Message</button><button class="btn btn-outline" id="publicProfileReport">Report</button><button class="btn btn-outline" id="publicProfileBlock">Block</button>` : `<button class="btn btn-primary" id="publicProfileEdit">Edit profile</button>`}</div><p class="public-profile-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p><div class="member-links">${safeExternalLink(p.website,"Website")}${safeExternalLink(p.github_url,"GitHub")}${safeExternalLink(p.linkedin_url,"LinkedIn")}${safeExternalLink(p.portfolio_url,"Portfolio")}</div><div class="public-profile-stats"><div class="public-profile-stat"><b>${Number(p.follower_count||0)}</b><span>Followers</span></div><div class="public-profile-stat"><b>${Number(p.following_count||0)}</b><span>Following</span></div><div class="public-profile-stat"><b>${Number(p.post_count||0)}</b><span>Posts</span></div><div class="public-profile-stat"><b>${Number(p.upvote_count||0)}</b><span>Upvotes received</span></div></div><div class="public-profile-info-grid"><div class="public-profile-info"><small>LOCATION</small><b>${esc(p.location || "Not shared")}</b></div><div class="public-profile-info"><small>PRONOUNS</small><b>${esc(p.pronouns || "Not shared")}</b></div><div class="public-profile-info"><small>MEMBER SINCE</small><b>${esc(new Date(p.created_at).toLocaleDateString(undefined,{month:"long",year:"numeric"}))}</b></div><div class="public-profile-info"><small>HACKATHONS</small><b>${Number(data.hackathonCount||0)} participated</b></div></div>${p.id===currentUser.uid && (data.followRequests||[]).length ? `<section class="member-portfolio-section"><h3>Follow requests</h3>${data.followRequests.map(r=>`<div class="profile-person-row">${socialAvatar(r.profile)}<div><b>${esc(r.profile?.display_name||"Builder")}</b><small>@${esc(r.profile?.username||"member")}</small></div><button class="btn btn-primary btn-small" data-follow-request="accept" data-follow-id="${esc(r.id)}">Accept</button><button class="btn btn-outline btn-small" data-follow-request="reject" data-follow-id="${esc(r.id)}">Decline</button></div>`).join("")}</section>` : ""}<nav class="public-profile-tabs" aria-label="Profile sections">${["posts","replies","media","likes","followers","following"].map(tab=>`<button type="button" data-profile-tab="${tab}" class="${publicProfileTab===tab?"active":""}">${tab[0].toUpperCase()+tab.slice(1)}</button>`).join("")}</nav><div class="public-profile-tab-content" id="publicProfileTabContent"></div><section class="member-portfolio-section"><div class="member-portfolio-head"><h3>Hackathon journey</h3><b>${Number(data.hackathonCount||0)} participated</b></div>${(data.hackathons||[]).map(item=>`<article class="profile-history-card"><h4>${esc(item.eventName||"Hackathon")}</h4><p>${esc([item.year,item.organizer,item.role,item.outcome].filter(Boolean).join(" · "))}</p><p>${esc(item.description||"")}</p><div class="member-links">${safeExternalLink(item.projectUrl,"Project")}${safeExternalLink(item.proofUrl,"Proof")}${safeExternalLink(item.certificateUrl,"Certificate")}${safeExternalLink(item.mediaUrl,"Media")}</div></article>`).join("") || '<p class="muted">No public hackathon details shared.</p>'}</section></div></div>`;
+    $("#publicProfileFollow")?.addEventListener("click", async () => {
+      try { if (data.followStatus) await socialRequest("unfollow",{username:p.username}); else { const result=await socialRequest("follow",{username:p.username}); data.followStatus=result.status; } await loadPublicProfilePage(p.username); }
+      catch(error){toast(error.message);}
+    });
+    $("#publicProfileMessage")?.addEventListener("click",()=>startDirectConversation({uid:p.id,displayName:p.display_name,username:p.username,avatarUrl:p.avatar_url}));
+    $("#publicProfileReport")?.addEventListener("click",()=>{location.hash="#reports";setTimeout(()=>{$("#reportTargetType").value="user";$("#reportUsername").value=p.username;updateReportFields();},0);});
+    $("#publicProfileBlock")?.addEventListener("click",async()=>{if(!(await confirmInApp(`Block @${p.username}? This hides each other's community content and removes the follow connection.`,"Block builder")))return;try{await socialRequest("block",{username:p.username});toast("Builder blocked.");location.hash="#posts";await loadSocialFeed({reset:true});}catch(error){toast(error.message);}});
+    $("#publicProfileEdit")?.addEventListener("click",()=>openProfileEditor(false));
+    host.querySelectorAll("[data-follow-request]").forEach(button=>button.addEventListener("click",async()=>{
+      try{await socialRequest("follow-decision",{username:p.username,followId:button.dataset.followId,accept:button.dataset.followRequest==="accept"});await loadPublicProfilePage(p.username);}
+      catch(error){toast(error.message);}
+    }));
+    host.querySelectorAll("[data-profile-tab]").forEach(button=>button.addEventListener("click",()=>{publicProfileTab=button.dataset.profileTab;publicProfileTabCursor=null;host.querySelectorAll("[data-profile-tab]").forEach(b=>b.classList.toggle("active",b===button));void loadPublicProfileTab(p.username,publicProfileTab,{reset:true});}));
+    publicProfileTabCursor=null; await loadPublicProfileTab(p.username,publicProfileTab,{reset:true});
+  } catch(error) { host.innerHTML=`<div class="empty-note">${esc(error.message)}</div>`; }
+}
+async function loadPublicProfileTab(username, tab, { reset = true } = {}) {
+  const host=$("#publicProfileTabContent"); if(!host || publicProfileTabLoading)return;
+  if(reset){publicProfileTabCursor=null;host.innerHTML='<div class="loading-card">Loading profile activity…</div>';}
+  publicProfileTabLoading=true;
+  try {
+    const data=await socialRequest("profile-tab",{username,tab,cursor:publicProfileTabCursor}); const items=data.items||[];
+    let markup="";
+    if(tab==="followers"||tab==="following") markup=items.map(p=>`<div class="profile-person-row">${socialAvatar(p)}<div><b>${esc(p.display_name)}</b><small>@${esc(p.username)}</small></div><button class="btn btn-outline btn-small" type="button" data-open-social-user="${esc(p.username)}">View profile</button>${p.id!==currentUser?.uid?`<button class="btn btn-primary btn-small" type="button" data-profile-follow="${esc(p.username)}" data-follow-status="${esc(p.follow_status||"")}">${p.follow_status==="active"?"Following":p.follow_status==="pending"?"Requested":"Follow"}</button>`:""}</div>`).join("")||'<div class="empty-note">No one here yet.</div>';
+    else if(tab==="replies") markup=items.map(item=>`<article class="profile-reply-card"><p>${esc(item.content)}</p><small>Commented on a post · ${esc(socialTime(item.created_at))}</small></article>`).join("")||'<div class="empty-note">No replies yet.</div>';
+    else markup=items.map(renderSocialPost).join("")||'<div class="empty-note">Nothing to show in this section yet.</div>';
+    if(reset)host.innerHTML=markup;else host.insertAdjacentHTML("beforeend",markup);
+    publicProfileTabCursor=data.nextCursor||null;
+    const oldMore=host.querySelector("[data-profile-load-more]");oldMore?.remove();
+    if(publicProfileTabCursor){const more=document.createElement("button");more.type="button";more.className="btn btn-outline full";more.dataset.profileLoadMore="1";more.textContent="Load more posts";more.addEventListener("click",()=>loadPublicProfileTab(username,tab,{reset:false}));host.append(more);}
+    host.querySelectorAll("[data-open-social-user]").forEach(b=>{if(b.dataset.bound)return;b.dataset.bound="1";b.onclick=()=>navigateToProfile(b.dataset.openSocialUser);});
+    host.querySelectorAll("[data-profile-follow]").forEach(b=>{if(b.dataset.bound)return;b.dataset.bound="1";b.onclick=async()=>{try{if(b.dataset.followStatus)await socialRequest("unfollow",{username:b.dataset.profileFollow});else await socialRequest("follow",{username:b.dataset.profileFollow});await loadPublicProfileTab(username,tab,{reset:true});}catch(error){toast(error.message);}};});
+    bindSocialPostActions(host);
+  } catch(error){if(reset)host.innerHTML=`<div class="empty-note">${esc(error.message)}</div>`;else toast(error.message);}
+  finally{publicProfileTabLoading=false;}
+}
+
+function updateReportFields() {
+  const type=$("#reportTargetType")?.value || "site_issue";
+  $("#reportUsernameWrap").hidden=type!=="user";
+  $("#reportTargetIdWrap").hidden=type==="site_issue"||type==="user"||type==="other";
+  const targetId=$("#reportTargetId"), username=$("#reportUsername");
+  if(targetId)targetId.required=["post","comment","message"].includes(type);
+  if(username)username.required=type==="user";
+  if(type==="site_issue")$("#reportCategory").value="technical_issue";
+}
+async function submitCommunityReport(event) {
+  event.preventDefault(); if(!requireAccount())return;
+  const button=$("#submitCommunityReport"),message=$("#communityReportMessage"); button.disabled=true; message.textContent="Submitting securely…";
+  try {
+    await socialRequest("report",{targetType:$("#reportTargetType").value,targetId:$("#reportTargetId").value.trim(),targetUsername:$("#reportUsername").value.trim(),category:$("#reportCategory").value,details:$("#reportDetails").value,evidenceUrl:$("#reportEvidenceUrl").value.trim()});
+    $("#communityReportForm").reset();updateReportFields();message.textContent="Report submitted. It is private to your account and will be reviewed by the HackVerse team.";await loadMyReports();
+  }catch(error){message.textContent=error.message;}finally{button.disabled=false;}
+}
+async function loadMyReports() {
+  const host=$("#myReportsList");if(!host||!currentUser)return;
+  try{const data=await socialRequest("my-reports");host.innerHTML=(data.reports||[]).map(item=>`<div class="report-history-row"><div><b>${esc(item.category.replaceAll("_"," "))} · ${esc(item.target_type.replaceAll("_"," "))}</b><small>${esc(socialTime(item.created_at))} · ${esc(item.details.slice(0,160))}</small></div><span class="report-status">${esc(item.status)}</span></div>`).join("")||'<div class="empty-note">You have not submitted any reports.</div>';}
+  catch(error){host.innerHTML=`<div class="empty-note">${esc(error.message)}</div>`;}
+}
+async function loadAdminReports() {
+  const section=$("#adminReportQueue"),host=$("#adminReportsList"); if(!section||!host||!isAdminUser)return;
+  section.hidden=false;
+  try{
+    const data=await socialRequest("admin-reports");
+    host.innerHTML=(data.reports||[]).map(item=>`<article class="moderation-report-card"><div class="moderation-report-head"><b>${esc(item.category.replaceAll("_"," "))} · ${esc(item.target_type.replaceAll("_"," "))}</b><small>${esc(socialTime(item.created_at))} · ${esc(item.status)}</small></div><p>${esc(item.details)}</p>${item.evidence_url?safeExternalLink(item.evidence_url,"Evidence link"):""}<div class="moderation-report-actions"><select aria-label="Report status" data-moderation-status="${esc(item.id)}"><option value="new" ${item.status==="new"?"selected":""}>New</option><option value="reviewing" ${item.status==="reviewing"?"selected":""}>Reviewing</option><option value="resolved" ${item.status==="resolved"?"selected":""}>Resolved</option><option value="dismissed" ${item.status==="dismissed"?"selected":""}>Dismissed</option></select><input aria-label="Moderator note" data-moderation-note="${esc(item.id)}" maxlength="1000" placeholder="Internal moderator note" value="${esc(item.moderator_notes||"")}"><button class="btn btn-primary btn-small" type="button" data-moderation-save="${esc(item.id)}">Save review</button></div></article>`).join("")||'<div class="empty-note">No reports in the moderation queue.</div>';
+    host.querySelectorAll("[data-moderation-save]").forEach(button=>button.addEventListener("click",async()=>{const id=button.dataset.moderationSave;const status=host.querySelector(`[data-moderation-status="${CSS.escape(id)}"]`)?.value;const moderatorNotes=host.querySelector(`[data-moderation-note="${CSS.escape(id)}"]`)?.value||"";button.disabled=true;try{await socialRequest("moderate-report",{reportId:id,status,moderatorNotes});toast("Report review saved.");await loadAdminReports();}catch(error){toast(error.message);}finally{button.disabled=false;}}));
+  }catch(error){host.innerHTML=`<div class="empty-note">${esc(error.message)}</div>`;}
+}
+async function loadSocialNotifications(){
+  const host=$("#socialNotificationFeed");if(!host||!currentUser)return;
+  try{const data=await socialRequest("notifications");const items=data.notifications||[];host.innerHTML=items.map(item=>{const actor=esc(item.actor?.display_name||"A builder");const text={follow:`started following you`,follow_request:`requested to follow you`,follow_accepted:`accepted your follow request`,upvote:`upvoted your post`,downvote:`downvoted your post`,comment:`commented on your post`,mention:`mentioned you`,repost:`reposted your post`}[item.type]||"interacted with your account";return `<button type="button" class="notification-item ${item.is_read?"":"unread"}" data-social-notification="${esc(item.id)}" data-notification-post="${esc(item.post_id||"")}"><span class="notification-icon">${item.type==="follow"?"＋":"✦"}</span><span><b>${actor} ${text}</b><small>${esc(socialTime(item.created_at))}</small></span><i>${item.is_read?"SEEN":"NEW"}</i></button>`;}).join("")||'<div class="empty-note">No builder activity yet.</div>';
+    host.querySelectorAll("[data-social-notification]").forEach(button=>button.addEventListener("click",async()=>{try{await socialRequest("mark-read",{ids:[button.dataset.socialNotification]});if(button.dataset.notificationPost){location.hash="#posts";}await loadSocialNotifications();}catch(error){toast(error.message);}}));
+  }catch(error){host.innerHTML=`<div class="empty-note">${esc(error.message)}</div>`;}
+}
+function saveHomeFeedPreference() {
+  const value=$("#homeFeedPreference")?.value||"overview";
+  localStorage.setItem("hackverse-home-feed-v13",value);
+  if(currentUser) socialRequest("preferences",{save:true,homeFeed:value}).catch(error=>console.warn("Could not sync home feed preference",error));
+  toast("Your Home preference is saved.");
+}
+
 function initSupabase() {
   if (!CONFIGURED) {
     setSystemNotice("Supabase is not configured yet. Add your Supabase project URL and publishable key in public/supabase-config.js to enable live data, registration, profiles, and chat.");
@@ -83,7 +348,7 @@ function initSupabase() {
   onAuthStateChanged(auth, async user => {
     currentUser = user;
     handleRoute();
-    isAdminUser = Boolean(user?.app_metadata?.admin === true);
+    isAdminUser = Boolean(user?.app_metadata?.admin === true || user?.app_metadata?.role === "admin");
     $("#discoveryAdminPanel").hidden = !isAdminUser;
     if (isAdminUser) loadDiscoverySources();
     updateAiAccessUI();
@@ -189,7 +454,7 @@ async function loadAccountWorkspace() {
       getDoc(doc(db, "publicProfiles", currentUser.uid))
     ]);
     privateProfile = snap.exists() ? snap.data() : null;
-    publicProfile = pubSnap.exists() ? pubSnap.data() : (privateProfile?.profileVisibility === "private" ? (privateProfile?.profileData || null) : null);
+    publicProfile = pubSnap.exists() ? pubSnap.data() : (privateProfile?.profileVisibility && privateProfile.profileVisibility !== "public" ? (privateProfile?.profileData || null) : null);
     renderMyProfile(); loadSettingsUI(); renderNotificationCenter();
     // Saved items and projects are not required to render the first screen.
     void loadSaved();
@@ -197,6 +462,7 @@ async function loadAccountWorkspace() {
       openProfileEditor(true);
     } else {
       hideModal("profileModal");
+      void syncSocialProfile(publicProfile || privateProfile?.profileData);
       beginInboxListener();
       void loadProjects();
       void loadHackathonHistory();
@@ -217,7 +483,7 @@ function openProfileEditor(mandatory = false) {
   $("#profileCollege").value = p.college || ""; $("#profileCollegeShort").value = p.collegeShort || ""; $("#profileCourse").value = p.course || "";
   $("#profileStudyLevel").value = p.studyLevel || ""; $("#profileGradYear").value = p.graduationYear || "";
   $("#profileCity").value = p.city || ""; $("#profileCountry").value = p.country || "";
-  $("#profileBio").value = p.bio || ""; $("#profileStatus").value = p.statusText || ""; $("#profileSkills").value = (p.skills || []).join(", ");
+  $("#profileBio").value = p.bio || ""; $("#profileStatus").value = p.statusText || ""; if($("#profilePronouns"))$("#profilePronouns").value=p.pronouns||""; if($("#profileWebsite"))$("#profileWebsite").value=p.website||p.portfolio||""; if($("#profileCover"))$("#profileCover").value=p.coverUrl||""; $("#profileSkills").value = (p.skills || []).join(", ");
   $("#profileRoles").value = (p.rolesInterested || []).join(", "); $("#profileInterests").value = (p.interests || []).join(", ");
   $("#profileAvailability").value = p.availability || "Open to opportunities"; $("#profileMode").value = p.preferredMode || "Any format";
   $("#profileAvatar").value = p.avatarUrl || ""; $("#profileAvatarFile").value = ""; $("#profileAvatarPreviewWrap").hidden = !p.avatarUrl; if(p.avatarUrl) $("#profileAvatarPreview").src = p.avatarUrl; $("#profileGithub").value = p.github || "";
@@ -273,13 +539,13 @@ async function saveProfile(event) {
     college, collegeLower: college.toLowerCase(), collegeShort: $("#profileCollegeShort").value.trim(), collegeShortLower: $("#profileCollegeShort").value.trim().toLowerCase(), course, studyLevel: $("#profileStudyLevel").value,
     graduationYear: Number($("#profileGradYear").value) || null,
     city: $("#profileCity").value.trim(), country: $("#profileCountry").value.trim(),
-    bio, statusText: String($("#profileStatus").value || "").trim().slice(0,100), joinedAt: privateProfile?.createdAt || publicProfile?.joinedAt || Date.now(), skills, skillsLower: normalizedList(skills.join(",")),
+    bio, statusText: String($("#profileStatus").value || "").trim().slice(0,100), pronouns: String($("#profilePronouns")?.value||"").trim().slice(0,50), website: validUrl($("#profileWebsite")?.value), coverUrl: validUrl($("#profileCover")?.value), joinedAt: privateProfile?.createdAt || publicProfile?.joinedAt || Date.now(), skills, skillsLower: normalizedList(skills.join(",")),
     rolesInterested: listFrom($("#profileRoles").value), rolesLower: normalizedList($("#profileRoles").value),
     interests: listFrom($("#profileInterests").value), interestsLower: normalizedList($("#profileInterests").value),
     courseLower: course.toLowerCase(), availability: $("#profileAvailability").value,
     preferredMode: $("#profileMode").value, avatarUrl: validUrl($("#profileAvatar").value),
     github: validUrl($("#profileGithub").value), linkedin: validUrl($("#profileLinkedin").value),
-    portfolio: validUrl($("#profilePortfolio").value), lookingForTeam: $("#profileLooking").value === "true",
+    portfolio: validUrl($("#profilePortfolio").value), website: validUrl($("#profileWebsite")?.value) || validUrl($("#profilePortfolio").value), lookingForTeam: $("#profileLooking").value === "true",
     publicEmail: $("#profileEmailVisibility").value === "public" ? (currentUser.email || "") : "",
     publicEmailLower: $("#profileEmailVisibility").value === "public" ? (currentUser.email || "").toLowerCase() : "",
     publicPhone: $("#profilePhoneVisibility").value === "public" ? $("#profilePhone").value.trim() : "",
@@ -307,13 +573,13 @@ async function saveProfile(event) {
       const savedPrivate = { ...privateData };
       if (userSnap.exists()) delete savedPrivate.role;
       transaction.set(userRef, savedPrivate, { merge: true });
-      if (profile.profileVisibility === "private") transaction.delete(publicRef);
+      if (profile.profileVisibility !== "public") transaction.delete(publicRef);
       else transaction.set(publicRef, profile, { merge: true });
     });
     await updateAuthProfile(currentUser, { displayName: name, photoURL: profile.avatarUrl || null }).catch(() => {});
     privateProfile = { ...(privateProfile || {}), ...privateData, profileComplete: true };
     publicProfile = profile; profileIsMandatory = false; hideModal("profileModal");
-    renderMyProfile(); beginInboxListener(); loadProjects(); loadHackathonHistory(); searchPeople(); toast("Your builder profile is saved.");
+    renderMyProfile(); beginInboxListener(); loadProjects(); loadHackathonHistory(); searchPeople(); void syncSocialProfile(profile); toast("Your builder profile is saved.");
   } catch (error) { console.error(error); message.textContent = friendlyError(error); }
 }
 
@@ -856,27 +1122,14 @@ function renderPeople() {
   });
 }
 async function viewMember(uid) {
-  if (!db) return;
+  if (!db || !uid) return;
   try {
-    const snap = await getDoc(doc(db, "publicProfiles", uid)); if (!snap.exists()) { toast("This profile is no longer available."); return; }
-    selectedMember = { uid, ...snap.data() }; const p = selectedMember;
-    $("#memberProfileContent").innerHTML = `<div class="member-profile-head"><div class="avatar avatar-large">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div><div class="eyebrow">HACKVERSE BUILDER</div><h2 id="memberModalTitle">${esc(p.displayName || "Builder")}</h2><p class="member-handle">@${esc(p.username || "member")}</p></div></div><p class="member-bio">${esc(p.statusText || "")}</p><p class="member-bio">${esc(p.bio || "No bio added yet.")}</p><div class="member-facts">${p.joinedAt ? `<span>Joined ${new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"short",year:"numeric"})}</span>` : ""}<span>${esc([p.course,p.college].filter(Boolean).join(" · ") || "Education not listed")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not listed")}</span><span>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not listed")}</span><span>${esc(p.availability || "Availability not listed")}</span><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span></div><h3>Skills</h3><div class="skill-tags">${(p.skills || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interested roles</h3><div class="skill-tags">${(p.rolesInterested || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><h3>Interests</h3><div class="skill-tags">${(p.interests || []).map(s => `<span>${esc(s)}</span>`).join("") || "Not listed"}</div><div class="member-contact"><h3>Contact details</h3><p>${p.publicEmail ? `Email: <a href="mailto:${esc(p.publicEmail)}">${esc(p.publicEmail)}</a>` : "Email kept private by this member."}</p><p>${p.publicPhone ? `Phone: <a href="tel:${esc(p.publicPhone)}">${esc(p.publicPhone)}</a>` : "Phone kept private by this member."}</p></div><div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>`;
-    const [historySnapshot, postSnapshot] = await Promise.all([
-      getDocs(query(collection(db, "hackathonHistory"), where("ownerUid", "==", uid), limit(100))),
-      getDocs(query(collection(db, "builderPosts"), where("ownerUid", "==", uid), orderBy("createdAt", "desc"), limit(30)))
-    ]);
-    const visibleHistory = historySnapshot.docs.map(d => d.data()).filter(item => item.visibility === "public").sort((a,b) => Number(b.year || 0)-Number(a.year || 0));
-    const visiblePosts = postSnapshot.docs.map(d => ({ id:d.id, ...d.data() })).filter(item => item.visibility === "public");
-    const historySection = `<section class="member-portfolio-section"><div class="member-portfolio-head"><h3>Hackathon journey</h3><b>${Number(p.hackathonsParticipatedCount || 0)} participated</b></div>${visibleHistory.length ? visibleHistory.map(item => `<article class="member-history-row"><b>${esc(item.eventName || "Hackathon")}</b><span>${esc([item.year,item.organizer,item.role].filter(Boolean).join(" · "))}</span><small>${esc(item.outcome || "Participated")}</small><div class="member-links">${safeExternalLink(item.projectUrl,"Project")}${safeExternalLink(item.proofUrl,"Proof")}${safeExternalLink(item.certificateUrl,"Certificate")}${safeExternalLink(item.mediaUrl,"Media")}</div></article>`).join("") : '<p class="muted">No public participation details shared.</p>'}</section>`;
-    const postsSection = `<section class="member-portfolio-section"><div class="member-portfolio-head"><h3>Shipped projects & posts</h3><b>${visiblePosts.length} posts</b></div>${visiblePosts.length ? visiblePosts.map(item => `<article class="member-post-preview"><b>${esc(item.title || "Project")}</b><p>${esc(item.tagline || item.body || "")}</p><div class="builder-post-links">${safeExternalLink(item.demoUrl,"Live demo")}${safeExternalLink(item.repositoryUrl,"Source")}${safeExternalLink(item.deckUrl,"Pitch deck")}</div></article>`).join("") : '<p class="muted">No public project posts yet.</p>'}</section>`;
-    $("#memberProfileContent").insertAdjacentHTML("beforeend", historySection + postsSection);
-    $("#memberMessageBtn").onclick = () => startDirectConversation(selectedMember);
-    const alreadyFollowing = builderFollows.some(row => row.followerUid === currentUser?.uid && row.followingUid === uid);
-    $("#memberFollowBtn").hidden = uid === currentUser?.uid;
-    $("#memberFollowBtn").textContent = alreadyFollowing ? "Following ✓" : "Follow builder";
-    $("#memberFollowBtn").onclick = () => toggleBuilderFollow(uid);
-    $("#memberReportBtn").onclick = () => reportMember(selectedMember);
-    showModal("memberModal");
+    const snap = await getDoc(doc(db, "publicProfiles", uid));
+    if (snap.exists() && snap.data()?.username) { navigateToProfile(snap.data().username); return; }
+    if (!currentUser) { openAuth(); return; }
+    const result = await socialRequest("profile-by-id", { userId: uid });
+    if (result.profile?.username) navigateToProfile(result.profile.username);
+    else toast("This builder has not completed a community profile yet.");
   } catch (error) { toast(friendlyError(error)); }
 }
 
@@ -987,7 +1240,7 @@ function selectConversation(conversation) {
     renderPendingChatAttachment();
   }
   activeConversation = conversation; activeConversationId = conversation.id; replyingToMessageId = null;
-  $("#chatPlaceholder").hidden = true; $("#chatActive").hidden = false; renderChatHeading(); updateReplyPreview();
+  $("#chatPlaceholder").hidden = true; $("#chatActive").hidden = false; $(".chat-workspace")?.classList.add("has-active-chat"); renderChatHeading(); updateReplyPreview();
   if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
   const messagesQuery = query(collection(db, "conversations", conversation.id, "messages"), orderBy("createdAt", "desc"), limit(300));
   let firstMessagesSnapshot = true;
@@ -1404,26 +1657,45 @@ async function reportMember(profile) {
   } catch (error) { toast(friendlyError(error)); }
 }
 
+let openingDirectConversation = false;
 async function startDirectConversation(profile) {
-  if (!requireAccount()) return;
-  if (!profile?.uid || profile.uid === currentUser.uid) { toast("You cannot start a chat with your own account."); return; }
+  if (!requireAccount() || openingDirectConversation) return;
+  const targetUid = profile?.uid || profile?.id;
+  if (!targetUid || targetUid === currentUser.uid) { toast("You cannot start a chat with your own account."); return; }
+  openingDirectConversation = true;
   try {
-    const participants = [currentUser.uid, profile.uid].sort();
-    const inbox = await getDocs(query(collection(db, "conversations"), where("participants", "array-contains", currentUser.uid)));
-    const existing = inbox.docs.find(d => { const c = d.data(); return !c.isGroup && Array.isArray(c.participants) && c.participants.length === 2 && c.participants.includes(profile.uid); });
-    const conversationId = existing?.id || `dm_${participants.map(encodeURIComponent).join("_")}`;
-    const participantNames = { [currentUser.uid]: publicProfile?.displayName || currentUser.displayName || "Member", [profile.uid]: profile.displayName || "Member" };
-    const conversation = existing ? { id: existing.id, ...existing.data() } : {
-      id: conversationId, isGroup: false, participants, participantNames,
-      groupName: "", lastMessage: "", createdAt: null, updatedAt: null, lastMessageAt: null
+    // Direct messages already use a deterministic ID in older releases. Reuse
+    // it without querying every inbox row, avoiding a slow read and duplicate
+    // chats while making profile-to-chat navigation deterministic.
+    const participants = [currentUser.uid, targetUid].sort();
+    const conversationId = `dm_${participants.map(encodeURIComponent).join("_")}`;
+    const participantNames = {
+      [currentUser.uid]: publicProfile?.displayName || currentUser.displayName || "Member",
+      [targetUid]: profile.displayName || profile.display_name || "Member"
     };
-    if (!existing) await setDoc(doc(db, "conversations", conversationId), {
-      isGroup: false, participants, participantNames, groupName: "", lastMessage: "",
-      createdAt: serverTimestamp(), updatedAt: serverTimestamp(), lastMessageAt: serverTimestamp()
-    });
-    hideModal("memberModal"); location.hash = "#messages";
+    const conversationRef = doc(db, "conversations", conversationId);
+    const existingSnapshot = await getDoc(conversationRef);
+    const existingConversation = existingSnapshot.exists() ? existingSnapshot.data() : null;
+    const conversation = {
+      id: conversationId, isGroup: false, participants, participantNames,
+      groupName: "", lastMessage: existingConversation?.lastMessage || "", updatedAt: existingConversation?.updatedAt || serverTimestamp(),
+      ...(existingConversation || {})
+    };
+    await setDoc(conversationRef, {
+      isGroup: false, participants, participantNames, groupName: "",
+      updatedAt: serverTimestamp(),
+      ...(!existingConversation ? { lastMessage: "", createdAt: serverTimestamp(), lastMessageAt: serverTimestamp() } : {})
+    }, { merge: true });
+    hideModal("memberModal");
+    if(stopMessageListener){stopMessageListener();stopMessageListener=null;}
+    if(stopTypingListener){stopTypingListener();stopTypingListener=null;}
+    activeConversationId=null; activeConversation=null;
+    history.pushState({}, "", "/#messages");
+    handleRoute();
     selectConversation(conversation);
-  } catch (error) { console.error(error); toast(friendlyError(error)); }
+    $("#chatMobileBackBtn")?.focus({ preventScroll: true });
+  } catch (error) { console.error("Could not start direct conversation", error); toast(friendlyError(error)); }
+  finally { openingDirectConversation = false; }
 }
 
 function refreshSelectedGroupMembers() {
@@ -1660,9 +1932,9 @@ function renderMyProfile() {
   panel.innerHTML = `<div class="profile-overview">
     <div class="avatar avatar-profile">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="Profile photo" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div>
     <div class="profile-main">
-      <div class="profile-name-line"><div><div class="eyebrow">${p.profileVisibility === "private" ? "YOUR PRIVATE BUILDER PROFILE" : "YOUR PUBLIC BUILDER PROFILE"}</div><h3>${esc(p.displayName)}</h3><span>@${esc(p.username)}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to teammates</span>' : ''}</div>
+      <div class="profile-name-line"><div><div class="eyebrow">${p.profileVisibility === "private" ? "YOUR PRIVATE BUILDER PROFILE" : p.profileVisibility === "followers" ? "YOUR FOLLOWERS-ONLY BUILDER PROFILE" : "YOUR PUBLIC BUILDER PROFILE"}</div><h3>${esc(p.displayName)}</h3><span>@${esc(p.username)}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to teammates</span>' : ''}</div>
       ${p.statusText ? `<p class="profile-status-text">${esc(p.statusText)}</p>` : ""}<p>${esc(p.bio || "Add a short introduction to help teammates understand what you build.")}</p>
-      ${p.profileVisibility === "private" ? '<p class="privacy-state-note">Private profile · only you can see these details. This profile is not in the directory or public team matcher.</p>' : ''}
+      ${p.profileVisibility !== "public" ? `<p class="privacy-state-note">${p.profileVisibility === "private" ? "Private profile · approved followers only can see your shared details." : "Followers-only profile · people must request to follow before seeing your posts and details."} This profile is not shown in the public directory.</p>` : ''}
       <div class="profile-completion"><div><b>Profile completeness</b><strong>${completion}%</strong></div><span class="profile-completion-track"><i style="width:${completion}%"></i></span><small>A complete profile helps teammates understand your strengths before they contact you.</small></div>
       <div class="profile-detail-grid">
         <section class="profile-detail-card"><small>MEMBER SINCE</small><b>${p.joinedAt ? esc(new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"long",year:"numeric"})) : "HackVerse member"}</b><span>@${esc(p.username)}</span></section>
@@ -1671,7 +1943,7 @@ function renderMyProfile() {
         <section class="profile-detail-card"><small>EDUCATION</small><b>${esc(p.college || "College not added")}</b><span>${esc([p.collegeShort,p.course].filter(Boolean).join(" · ") || "Course not added")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not added")}</span></section>
         <section class="profile-detail-card"><small>COLLABORATION</small><b>${esc(p.availability || "Availability not added")}</b><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span><span>${p.lookingForTeam ? "Open to teammate invitations" : "Not currently looking for a team"}</span></section>
         <section class="profile-detail-card"><small>LOCATION</small><b>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not added")}</b><span>Visible according to your profile privacy settings</span></section>
-        <section class="profile-detail-card"><small>CONTACT VISIBILITY</small><b>${p.profileVisibility === "private" ? "Private profile" : "Community profile"}</b><span>Email: ${p.publicEmail ? "Shared publicly" : "Private"}</span><span>Phone: ${p.publicPhone ? "Shared publicly" : "Private"}</span></section>
+        <section class="profile-detail-card"><small>CONTACT VISIBILITY</small><b>${p.profileVisibility === "private" ? "Private profile" : p.profileVisibility === "followers" ? "Followers-only profile" : "Community profile"}</b><span>Email: ${p.publicEmail ? "Shared publicly" : "Private"}</span><span>Phone: ${p.publicPhone ? "Shared publicly" : "Private"}</span></section>
       </div>
       <h4>Skills</h4><div class="skill-tags">${skills.map(s => `<span>${esc(s)}</span>`).join("") || '<span>Add the skills you use</span>'}</div>
       <h4>Interested roles</h4><div class="skill-tags">${roles.map(s => `<span>${esc(s)}</span>`).join("") || '<span>Add roles you want to explore</span>'}</div>
@@ -3194,7 +3466,19 @@ function initAdvancedUI(){
   $("#saveSettingsBtn").onclick=saveAppPrefs;["#settingTheme","#settingMotion","#settingFontFamily","#settingTextSize","#prefReduceMotion"].forEach(sel=>$(sel).addEventListener("change",()=>{const p=readAppPrefs();p.theme=$("#settingTheme").value;p.motion=$("#settingMotion").value;p.textSize=$("#settingTextSize").value;p.fontFamily=$("#settingFontFamily").value;p.reduceMotion=$("#prefReduceMotion").checked;localStorage.setItem("hackverse-app-preferences",JSON.stringify({...p}));if(p.theme)localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();}));
   $("#privacyEditProfile").onclick=$("#settingsEditProfile").onclick=()=>currentUser?openProfileEditor(false):openAuth();
   $("#settingsSignOut").onclick=()=>currentUser&&signOut(auth).then(()=>toast("Signed out.")).catch(e=>toast(friendlyError(e)));
-  $("#settingProfileVisibility").addEventListener("change",async e=>{if(!requireAccount())return;if(!publicProfile){toast("Complete your profile first.");return;}try{await updateDoc(doc(db,"publicProfiles",currentUser.uid),{profileVisibility:e.target.value,updatedAt:serverTimestamp()});publicProfile.profileVisibility=e.target.value;toast("Profile visibility updated.");}catch(error){toast(friendlyError(error));}});
+  $("#settingProfileVisibility").addEventListener("change",async e=>{
+    if(!requireAccount())return;
+    const base=publicProfile||privateProfile?.profileData;
+    if(!base){toast("Complete your profile first.");return;}
+    const next={...base,profileVisibility:e.target.value};
+    try{
+      await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:e.target.value,profileData:next,updatedAt:serverTimestamp()},{merge:true});
+      const publicRef=doc(db,"publicProfiles",currentUser.uid);
+      if(e.target.value==="public")await setDoc(publicRef,next,{merge:true});else await deleteDoc(publicRef);
+      privateProfile={...(privateProfile||{}),profileVisibility:e.target.value,profileData:next};
+      publicProfile=next; await syncSocialProfile(next); renderMyProfile(); searchPeople(); toast("Profile visibility updated.");
+    }catch(error){e.target.value=base.profileVisibility||"public";toast(friendlyError(error));}
+  });
   $$('[data-settings-tab]').forEach(b=>b.onclick=()=>showSettingsTab(b.dataset.settingsTab));
   $("#navTourBtn").onclick=()=>{ $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); startWebsiteTour(); };$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);
   $("#newDirectChatBtn").onclick=()=>location.hash="#people";$("#chatMenuBtn").onclick=openChatActions;
@@ -3212,9 +3496,16 @@ function initAdvancedUI(){
 }
 
 function handleRoute() {
-  const raw=(location.hash||"#home").slice(1);
-  const aliases={top:"home",discover:"home",opportunities:"opportunities",feed:"feed",saved:"saved",people:"people",messages:"messages",aiwish:"aiwish",profile:"profile",notifications:"notifications",settings:"settings"};
-  const view=aliases[raw]||"home";
+  const profileMatch = location.pathname.match(/^\/@([A-Za-z0-9_]{3,24})\/?$/);
+  const postMatch = location.pathname.match(/^\/post\/([0-9a-f-]{36})\/?$/i);
+  let raw=(location.hash||"#home").slice(1);
+  if (!profileMatch && (!location.hash || raw === "home")) {
+    const preferred = localStorage.getItem("hackverse-home-feed-v13") || "overview";
+    const destinations = { public_posts:"posts", following_posts:"posts", builds:"feed", opportunities:"opportunities" };
+    if (destinations[preferred]) { history.replaceState({}, "", `/#${destinations[preferred]}`); raw = destinations[preferred]; }
+  }
+  const aliases={top:"home",discover:"home",opportunities:"opportunities",feed:"feed",build:"feed",posts:"posts",saved:"saved",people:"people",messages:"messages",aiwish:"aiwish",profile:"profile",notifications:"notifications",settings:"settings",reports:"reports"};
+  const view=profileMatch ? "public-profile" : postMatch ? "post-detail" : (aliases[raw]||"home");
   const aiPanel=$("#aiPanel"), wishMount=$("#aiWishMount"), aiAssistant=$("#aiAssistant");
   if(view==="aiwish"){
     if(aiPanel.parentElement!==wishMount) wishMount.append(aiPanel);
@@ -3224,6 +3515,15 @@ function handleRoute() {
     if(aiPanel.parentElement!==aiAssistant) aiAssistant.append(aiPanel);
     aiPanel.classList.remove("ai-panel-page"); aiPanel.hidden=true; aiAssistant.classList.remove("ai-on-wish-page");
     setAiHistoryOpen(false); setAiMode("chat");
+  }
+  const needsInbox = view === "messages" || view === "notifications";
+  if(needsInbox && currentUser && !stopInboxListener) beginInboxListener();
+  else if(!needsInbox && stopInboxListener){stopInboxListener();stopInboxListener=null;}
+  if(view!=="messages"){
+    if(stopMessageListener){stopMessageListener();stopMessageListener=null;}
+    if(stopTypingListener){stopTypingListener();stopTypingListener=null;}
+  } else if(activeConversation && activeConversationId && !stopMessageListener){
+    selectConversation(activeConversation);
   }
   const requiresMember = view !== "home";
   const blocked = requiresMember && !currentUser;
@@ -3248,10 +3548,13 @@ function handleRoute() {
   if(blocked)return;
   if(view==="opportunities"){ updateEventAccessUI(); if(currentUser)renderEvents(); }
   if(view==="feed") void loadBuilderFeed();
+  if(view==="posts") { const preference=localStorage.getItem("hackverse-home-feed-v13"); if(preference==="following_posts")socialFeedType="following"; else if(preference==="public_posts")socialFeedType="explore"; void loadSocialFeed({reset:true}); }
+  if(view==="public-profile" && profileMatch) void loadPublicProfilePage(profileMatch[1]);
+  if(view==="reports"){updateReportFields();void loadMyReports();if(isAdminUser)void loadAdminReports();}
   if(view==="profile"){ if(currentUser){ void loadHackathonHistory(); if(!builderPosts.length) void loadBuilderFeed(); } }
   if(view==="saved")renderSaved();
   if(view==="people"&&currentUser)searchPeople();
-  if(view==="notifications")renderNotificationCenter();
+  if(view==="notifications"){renderNotificationCenter();void loadSocialNotifications();}
   if(view==="settings")loadSettingsUI();
 }
 
@@ -3307,6 +3610,16 @@ function bindUI() {
   $("#messageSearch").addEventListener("input",()=>renderMessages(currentMessages));
   $("#groupForm").addEventListener("submit", createGroup);
   $("#messageForm").addEventListener("submit", sendMessage);
+  $("#chatMobileBackBtn").onclick=()=>{if(stopMessageListener)stopMessageListener();if(stopTypingListener)stopTypingListener();stopMessageListener=null;stopTypingListener=null;activeConversationId=null;activeConversation=null;currentMessages=[];$("#chatActive").hidden=true;$("#chatPlaceholder").hidden=false;$(".chat-workspace")?.classList.remove("has-active-chat");renderConversationList(currentConversations);};
+  $("#socialPostForm").addEventListener("submit",createSocialPost);
+  $("#focusPostComposer").onclick=()=>$("#socialPostContent").focus();
+  $("#refreshSocialFeed").onclick=()=>loadSocialFeed({reset:true});
+  $("#socialLoadMore").onclick=()=>loadSocialFeed();
+  $$('[data-social-feed]').forEach(button=>button.addEventListener("click",()=>{socialFeedType=button.dataset.socialFeed;$$('[data-social-feed]').forEach(x=>x.classList.toggle("active",x===button));loadSocialFeed({reset:true});}));
+  $("#communityReportForm").addEventListener("submit",submitCommunityReport);
+  $("#reportTargetType").addEventListener("change",updateReportFields);
+  $("#saveHomeFeedPreference").onclick=saveHomeFeedPreference;
+  $("#homeFeedPreference").value=localStorage.getItem("hackverse-home-feed-v13")||"overview";
   $("#createBuilderPostBtn").onclick = openBuilderPostComposer;
   $("#createBuilderPostSideBtn").onclick = openBuilderPostComposer;
   $("#builderPostForm").addEventListener("submit", createBuilderPost);
@@ -3375,5 +3688,6 @@ function bindUI() {
 }
 function runHeroSearch() { if (!requireAccount()) return; $("#eventSearch").value = $("#heroSearch").value; renderEvents(); location.hash = "#opportunities"; }
 
+window.addEventListener("popstate", handleRoute);
 bindUI();
 initSupabase();

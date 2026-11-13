@@ -167,12 +167,25 @@ async function fetchRows(collectionRef, constraints = []) {
       ? request.gte(`data->>${field}`, String(value))
       : request.lte(`data->>${field}`, String(value));
   }
-  if (!constraints.some(item => item.type === "startAfter")) {
-    const serverLimit = constraints.find(item => item.type === "limit");
-    request = serverLimit ? request.limit(serverLimit.value) : request.range(0, 49999);
-  } else {
-    request = request.range(0, 49999);
+  const serverLimit = constraints.find(item => item.type === "limit");
+  const after = constraints.find(item => item.type === "startAfter");
+  if (after) {
+    const cursor = after.value;
+    const cursorId = String(cursor?.id || cursor?.doc_id || "");
+    const sort = orderConstraints[0];
+    const sortField = sort && safeField(sort.field);
+    const cursorData = typeof cursor?.data === "function" ? cursor.data() : (cursor?.data || cursor || {});
+    const cursorValue = sortField ? getField(cursorData, sortField) : null;
+    if (sortField && cursorValue != null && cursorId) {
+      const operator = sort.direction === "desc" ? "lt" : "gt";
+      const quoted = JSON.stringify(String(cursorValue));
+      // Same ordering as applyQuery: selected field first, stable doc ID second.
+      request = request.or(`data->>${sortField}.${operator}.${quoted},and(data->>${sortField}.eq.${quoted},doc_id.gt.${cursorId})`);
+    } else if (cursorId) {
+      request = request.gt("doc_id", cursorId);
+    }
   }
+  request = serverLimit ? request.limit(serverLimit.value) : request.limit(500);
 
   const { data, error } = await request;
   if (error) throw error;
@@ -311,9 +324,18 @@ export function onSnapshot(target, callback, errorCallback) {
       if (signature !== previous) { previous = signature; callback(snapshot); }
     } catch (error) { errorCallback?.(error); }
   };
+  // Poll much less aggressively for normal collections, pause background polling,
+  // and keep only the live typing indicator on a short interval. The former
+  // universal 3-second timer multiplied network traffic across every open view.
   tick();
-  const timer = setInterval(tick, 3000);
-  return () => { stopped = true; clearInterval(timer); };
+  const path = target?.__kind === "query" ? target.collectionRef?.path : target?.path;
+  const intervalMs = String(path || "").endsWith("/typing") ? 3500
+    : String(path || "").endsWith("/messages") ? 9000
+    : String(path || "") === "conversations" ? 15000 : 20000;
+  const timer = setInterval(() => { if (!document.hidden) tick(); }, intervalMs);
+  const onVisible = () => { if (!document.hidden) tick(); };
+  document.addEventListener("visibilitychange", onVisible);
+  return () => { stopped = true; clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
 }
 
 export class Timestamp {

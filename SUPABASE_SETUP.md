@@ -1,79 +1,38 @@
-# HackVerse — Supabase setup
+# HackVerse v13 — Deployment checklist
 
-## 1. Create the project
-Open Supabase and create a new project on the Free plan.
+Use this checklist for an **existing v12.0.1 project**.
 
-## 2. Create the database schema
-Open **SQL Editor**, paste the contents of `supabase-schema.sql`, and run it.
+1. Back up the Supabase project and keep a copy of the current v12.0.1 deployment.
+2. Replace project files with this v13 release and push to the connected Git repository.
+3. In Supabase SQL Editor, run `supabase-community-v13.sql` after v11 and v12 migrations. Do not run the full fresh-install `supabase-schema.sql` over existing data.
+4. Confirm Storage buckets: `community-media` public 8 MB, `profile-avatars` public 5 MB, and `chat-media` private 15 MB.
+5. In Vercel server environment variables, configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Keep the service key out of all browser files. Preserve the AI variables required by the existing site.
+6. Verify `public/supabase-config.js` has the project's public URL and publishable/anon key.
+7. Verify Supabase Auth → URL Configuration contains the exact deployed Site URL and redirect URLs. Google Cloud OAuth must use `https://YOUR_PROJECT.supabase.co/auth/v1/callback` as its authorized redirect URI. Enable Google provider with the matching client ID/secret.
+8. Deploy from Vercel and verify direct reload of `/@username` and `/post/:postId`.
+9. Test with two separate accounts. Test direct chat from a profile, follow requests, privacy, posts/votes/comments/reposts, uploads, and reports.
+10. Grant the moderator claim only to trusted staff using the Supabase Admin API; never from the client.
 
-## 3. Authentication and Google account chooser
-In **Authentication → Providers**:
-- enable Email
-- enable Google and add the Google OAuth Client ID and Client Secret
-- in Google Cloud Console, add this exact Supabase callback as an Authorized redirect URI: `https://iwrvyboweubwkjedjunh.supabase.co/auth/v1/callback`
+## Storage buckets
 
-In **Authentication → URL Configuration**:
-- set Site URL to your deployed website origin, for example `https://your-domain.example`
-- add the deployed origin and local development origin to Redirect URLs, for example `https://your-domain.example/**` and `http://localhost:3000/**`
-- do not use a URL with a hash route as the Google redirect target
+| Name | Public | Max size | MIME types |
+| --- | --- | ---: | --- |
+| `community-media` | Yes | 8 MB | `image/jpeg`, `image/png`, `image/webp` |
+| `profile-avatars` | Yes | 5 MB | `image/jpeg`, `image/png`, `image/webp` |
+| `chat-media` | No | 15 MB | Existing supported chat file types |
 
-HackVerse requests Google's `select_account` prompt so the user can choose an account on each sign-in. Email confirmation can remain enabled. Google sign-in is verified through Supabase Auth.
+For each profile, sign in and save the builder profile at least once after migration to synchronise username, visibility and links into `public.profiles`.
 
-## 4. Storage
-Create these buckets:
-- `chat-media` — private
-- `profile-avatars` — public, 5 MB limit, JPG / PNG / WebP only (the current avatar endpoint renders its `getPublicUrl` value)
-- `community-media` — public, 8 MB limit, JPG / PNG / WebP only (created by the v12 SQL migration)
+## Local checks
 
-The v12 SQL migration creates or updates the `community-media` bucket. Public read access is used so project cover images can render in the Builder feed; uploads are still issued through a signed URL created by a server-side authenticated endpoint.
+```bash
+npm install
+npm run check
+npm test
+```
 
-Do not expose the service-role key in the browser.
+Run seed data only in a disposable development project. See README for the required 10 test-user IDs and environment variables.
 
-## 5. Browser configuration
-Edit `public/supabase-config.js` with:
-- Project URL
-- publishable/anon key
+## Important limitations
 
-The publishable key is designed to be used in browser code. The service-role key is not.
-
-## 6. GitHub Actions secrets
-Repository → Settings → Secrets and variables → Actions → New repository secret:
-
-`SUPABASE_URL`
-
-`SUPABASE_SERVICE_ROLE_KEY`
-
-Optional:
-
-`HACKVERSE_YOUTUBE_API_KEY`
-
-`HACKVERSE_BRABBLE_API_KEY`
-
-## 7. Vercel environment variables
-Add:
-
-`SUPABASE_URL`
-
-`SUPABASE_SERVICE_ROLE_KEY`
-
-`AGENT37_API_KEY`
-
-`AGENT37_INSTANCE_ID`
-
-Optional `SUPABASE_COMMUNITY_BUCKET=community-media` and `SUPABASE_PROFILE_BUCKET=profile-avatars` can be added; these are the defaults. Optional Agent37 settings can also be added.
-
-## 8. Upgrade to HackVerse v12 community features
-For an existing v11 project, open **Supabase → SQL Editor** and run the corrected `supabase-community-v12.sql` included with this release. It defines the conversation helper functions used by the existing message policies (`document_has_participant(text, uuid)` and `document_owned_by(text, uuid)`) before creating the community policies, then adds public/private policies for posts and hackathon participation records and creates the `community-media` bucket. This also supports v11 databases where those helper functions were missing. Do not skip this migration; without it, the Builder feed will show a database permission message.
-
-Add the optional Vercel variable `SUPABASE_COMMUNITY_BUCKET=community-media`. Keep `SUPABASE_SERVICE_ROLE_KEY` server-only.
-
-## 9. Discovery
-Run:
-
-GitHub → Actions → HackVerse Automatic Opportunity Discovery → Run workflow
-
-The job is scheduled once daily and can also be run manually.
-
-## 10. Admin access
-
-Admin privileges must be assigned server-side in Supabase `app_metadata` only. Use `functions/scripts/set-admin.js` with the user's Supabase Auth UUID and the server-only `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`. Never grant admin access through editable `user_metadata`.
+Successful SQL execution, OAuth, storage permissions, AI provider calls, chat delivery and mobile device behavior must be confirmed on the actual Supabase/Vercel deployment. This release is not represented as production-live tested.
