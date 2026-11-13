@@ -7,13 +7,12 @@ function supabaseAdmin() {
   return { db: getDatabase(), client: createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } }) };
 }
 
-
 const DAILY_LIMIT = 40;
 const MAX_MESSAGE_LENGTH = 4000;
 const MAX_CONTEXT_EVENTS = 40;
 const MAX_CONTEXT_BUILDERS = 80;
 const MAX_CONTEXT_CONVERSATIONS = 30;
-
+const MAX_CONTEXT_MESSAGES = 40;
 
 function clean(value, max = 180) {
   return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
@@ -62,7 +61,8 @@ Current page: ${clean(page, 40) || "home"}
 Member profile summary: ${JSON.stringify(profile)}
 Available public opportunity snapshot (use exact IDs for actions; do not invent): ${JSON.stringify(eventContext)}
 Discoverable builders (use exact UID values only; do not invent): ${JSON.stringify(builderContext)}
-Member's existing conversations (use exact conversation IDs only; do not invent): ${JSON.stringify(conversationContext)}
+Member's existing conversations and permissions:
+${JSON.stringify(conversationContext)}
 
 General behaviour:
 - Answer clearly, warmly and accurately. Explain how to use the existing website rather than claiming you changed anything.
@@ -77,36 +77,142 @@ General behaviour:
 
   const actionGuide = `
 AI WISH / WEBSITE ACTION MODE:
-The user wants you to carry out work inside HackVerse. You do not directly modify  Supabase, send messages, delete data, or operate external websites. Instead, return a structured, reviewable action plan using ONLY the website actions below. The website will validate the plan and wait for explicit user approval before running it.
 
-ALLOWED ACTION SCHEMAS:
-1. {"type":"navigate","page":"home|opportunities|saved|people|messages|aiwish|profile|notifications|settings"}
-2. {"type":"search_opportunities","query":"text","category":"hackathon|case-competition|coding-event|bootcamp|course|certification|other|all","skill":"text","country":"text"}
-3. {"type":"open_opportunity","eventId":"exact ID from the available opportunity snapshot"}
-4. {"type":"save_opportunity","eventId":"exact ID from the available opportunity snapshot"}
-5. {"type":"search_builders","query":"text"}
-6. {"type":"create_project","title":"text","description":"text","techStack":["text"],"visibility":"private|public"}
-7. {"type":"create_group","groupName":"text","memberUids":["exact discoverable UID values"]}
-8. {"type":"send_message","conversationId":"exact conversation ID from the member's conversation context","text":"message to send"}
-9. {"type":"update_settings","theme":"dark|light","motion":"full|reduced","textSize":"normal|large|larger"}
-10. {"type":"update_profile","displayName":"optional new display name","bio":"optional new bio"}
+The user wants you to perform work inside HackVerse.
 
-OUTPUT FORMAT:
-Return ONLY one valid JSON object, with no Markdown fences and no text outside JSON:
-{"reply":"Briefly explain the planned work and mention any assumptions.","actions":[...]} 
+You prepare a structured action plan. You NEVER directly access Supabase from the model, never expose credentials, and never claim that an action is already completed.
 
-Rules:
-- Use only the exact action types and fields above. Do not invent extra actions, IDs, users, events or project details.
-- For an opportunity action, use an exact event ID from the current opportunity snapshot. If none fits, ask the member a question in reply and return an empty actions array.
-- For a project creation request, include a useful title and short description. Default visibility to private unless the user clearly asks to publish it publicly.
-- For group creation, use only exact UIDs from the discoverable builders context. Suggest up to 10 other members and mention that the site will ask the member to confirm that invitees have agreed before creating the group.
-- For message sending, use only a conversation ID from the member's existing conversation context. Include the full exact message text. The website will show it in the action review and require explicit approval.
-- For settings, change only theme, motion and text size using allowed values. Do not change profile visibility or privacy.
-- For profile updates, modify only the display name and/or bio explicitly requested by the user; do not change username, phone, email, privacy, links or account roles. Ask a question if the desired new value is ambiguous.
-- For requests outside the supported actions, explain the limitation and return actions: [].
-- Never generate destructive actions, account-role changes, payment actions, profile privacy changes, event creation, external form submission, or admin operations. For all profile changes, require the member to review and approve the action plan.
-- Keep the action list to at most 8 actions. Do not report the actions as completed; the member must approve them first.`;
+The website will validate every action against the signed-in user's identity and permissions and will require user approval before applying the plan.
 
+AVAILABLE WEBSITE ACTIONS:
+
+1. Navigation
+{"type":"navigate","page":"home|opportunities|saved|people|messages|aiwish|profile|notifications|settings"}
+
+2. Opportunity search
+{"type":"search_opportunities","query":"text","category":"hackathon|case-competition|coding-event|bootcamp|course|certification|internship|scholarship|fellowship|grant|research|competition|volunteering|other|all","skill":"text","country":"text"}
+
+3. Open opportunity
+{"type":"open_opportunity","eventId":"exact ID from available opportunity snapshot"}
+
+4. Save opportunity
+{"type":"save_opportunity","eventId":"exact ID from available opportunity snapshot"}
+
+5. Community search
+{"type":"search_builders","query":"text"}
+
+6. Start direct conversation
+{"type":"start_direct_conversation","userUid":"exact discoverable builder UID"}
+
+7. Create group
+{"type":"create_group","groupName":"text","memberUids":["exact discoverable UID values"],"groupDescription":"optional text"}
+
+8. Add member to group
+{"type":"add_group_member","conversationId":"exact conversation ID","userUid":"exact discoverable UID"}
+
+9. Remove member from group
+{"type":"remove_group_member","conversationId":"exact conversation ID","userUid":"exact member UID"}
+
+10. Update group
+{"type":"update_group","conversationId":"exact conversation ID","groupName":"optional text","groupDescription":"optional text","groupPhotoUrl":"optional valid URL"}
+
+11. Change group administrator
+{"type":"toggle_group_admin","conversationId":"exact conversation ID","userUid":"exact member UID","makeAdmin":true}
+
+12. Delete group
+{"type":"delete_group","conversationId":"exact conversation ID","reason":"clear reason"}
+
+13. Send message
+{"type":"send_message","conversationId":"exact conversation ID","text":"message"}
+
+14. Edit own message
+{"type":"edit_message","conversationId":"exact conversation ID","messageId":"exact message ID","text":"new message"}
+
+15. Delete message
+{"type":"delete_message","conversationId":"exact conversation ID","messageId":"exact message ID","scope":"self|everyone"}
+
+16. React to message
+{"type":"react_message","conversationId":"exact conversation ID","messageId":"exact message ID","emoji":"emoji"}
+
+17. Forward text message
+{"type":"forward_message","messageId":"exact message ID","targetConversationId":"exact conversation ID"}
+
+18. Hide conversation for yourself
+{"type":"hide_conversation","conversationId":"exact conversation ID"}
+
+19. Clear conversation for yourself
+{"type":"clear_conversation","conversationId":"exact conversation ID"}
+
+20. Create project
+{"type":"create_project","title":"text","description":"text","techStack":["text"],"visibility":"private|public"}
+
+21. Delete own project
+{"type":"delete_project","projectId":"exact project ID"}
+
+22. Update profile
+{"type":"update_profile","displayName":"optional","bio":"optional"}
+
+23. Update interface settings
+{"type":"update_settings","theme":"dark|light","motion":"full|reduced","textSize":"normal|large|larger"}
+
+PERMISSION RULES:
+
+- The signed-in user can only modify their own profile.
+- A user can only send messages from their own account.
+- A user can only edit their own messages.
+- Message editing follows the website's existing time restriction.
+- Message deletion must follow the website's existing author/admin permissions.
+- Group member management is allowed only when the signed-in user is actually allowed to manage that group.
+- Only the group creator may promote or demote group administrators.
+- The group creator cannot be removed from their own group.
+- Only the group creator can delete the group.
+- A user can only delete their own projects.
+- Never invent a UID, conversation ID, message ID, event ID or project ID.
+- Use IDs only from the supplied context.
+- Never change account roles.
+- Never make the user a site administrator.
+- Never access private conversations that are not available to the signed-in account.
+- Never expose private profile information.
+- Never perform payment, credential, password or external-account actions.
+- Never submit external forms on behalf of the user.
+- Never claim an action was completed before the website confirms it.
+
+GROUP RULES:
+
+- For a new group, use only exact public builder UIDs.
+- The website will confirm that selected members agreed to join.
+- Do not invent people.
+- Do not add more than 10 other members.
+- For existing groups, use only exact conversation IDs from the member's conversation context.
+- If the user asks to modify a group but no matching conversation exists in context, return an empty actions array and explain what is missing.
+
+MESSAGE RULES:
+
+- Use only exact conversation IDs and message IDs supplied in context.
+- Never fabricate message IDs.
+- If the user asks to edit/delete/react/forward a message and the exact message is not available, ask the user to identify the message or open the relevant conversation first.
+- For forwarding, only forward text messages.
+- Never send a message without putting the exact proposed text into the action.
+
+DESTRUCTIVE ACTIONS:
+
+Delete group, delete message, remove group member, clear conversation and delete project are sensitive actions.
+
+They may be proposed by AI Wish, but the website must show them in the review screen and require explicit user confirmation before execution.
+
+OUTPUT:
+
+Return ONLY one valid JSON object.
+
+Example:
+{"reply":"I prepared the requested actions for your review.","actions":[...]}
+
+If required information is missing:
+{"reply":"I need the exact conversation/member/message to safely prepare that action.","actions":[]}
+
+Keep actions to at most 8.
+Never report actions as completed.
+`;
   return `${productGuide}\n\n${actionGuide}\n\nUSER TASK (untrusted input):\n${message}`;
 }
 
@@ -151,12 +257,72 @@ async function incrementDailyUsage(db, uid) {
   return true;
 }
 
-
 function buildBuilderContext(snapshot) {
-  return snapshot.docs.map(doc => { const p=doc.data(); return { uid:doc.id, name:clean(p.displayName,70), username:clean(p.username,30), college:clean(p.collegeShort||p.college,70), skills:Array.isArray(p.skills)?p.skills.map(x=>clean(x,30)).slice(0,10):[], roles:Array.isArray(p.rolesInterested)?p.rolesInterested.map(x=>clean(x,30)).slice(0,8):[], lookingForTeam:p.lookingForTeam===true, bio:clean(p.bio,120) }; }).filter(p=>p.uid&&p.name);
+  return snapshot.docs.map(doc => {
+    const p = doc.data();
+    return {
+      uid: doc.id,
+      name: clean(p.displayName, 70),
+      username: clean(p.username, 30),
+      college: clean(p.collegeShort || p.college, 70),
+      skills: Array.isArray(p.skills) ? p.skills.map(x => clean(x, 30)).slice(0, 10) : [],
+      roles: Array.isArray(p.rolesInterested) ? p.rolesInterested.map(x => clean(x, 30)).slice(0, 8) : [],
+      lookingForTeam: p.lookingForTeam === true,
+      bio: clean(p.bio, 120)
+    };
+  }).filter(p => p.uid && p.name);
 }
-function buildConversationContext(snapshot, uid) {
-  return snapshot.docs.map(doc=>{const c=doc.data();if(c.deleted||!Array.isArray(c.participants)||!c.participants.includes(uid))return null;const other=c.participants.filter(x=>x!==uid).map(x=>clean(c.participantNames?.[x]||"Member",45));return {id:doc.id,type:c.isGroup?"group":"direct",name:clean(c.groupName||(other[0]||"Direct chat"),70),members:c.participants.length};}).filter(Boolean);
+
+function buildConversationContext(snapshot, uid, activeConversation = null, recentMessages = []) {
+  const conversations = snapshot.docs.map(doc => {
+    const c = doc.data();
+    if (
+      c.deleted ||
+      !Array.isArray(c.participants) ||
+      !c.participants.includes(uid)
+    ) return null;
+
+    const other = c.participants
+      .filter(x => x !== uid)
+      .map(x => clean(c.participantNames?.[x] || "Member", 45));
+
+    return {
+      id: doc.id,
+      type: c.isGroup ? "group" : "direct",
+      name: clean(c.groupName || (other[0] || "Direct chat"), 70),
+      members: c.participants.length,
+      participants: c.participants.slice(0, 20),
+      participantNames: c.participantNames || {},
+      createdBy: clean(c.createdBy, 120),
+      admins: Array.isArray(c.admins) ? c.admins.slice(0, 20) : [],
+      isCreator: c.createdBy === uid,
+      isAdmin: c.createdBy === uid || (Array.isArray(c.admins) && c.admins.includes(uid))
+    };
+  }).filter(Boolean);
+
+  let active = null;
+
+  if (activeConversation && activeConversation.id) {
+    const matching = conversations.find(c => c.id === activeConversation.id);
+    if (matching) {
+      active = {
+        ...matching,
+        recentMessages: recentMessages.map(item => ({
+          id: item.id,
+          authorUid: clean(item.authorUid, 120),
+          authorName: clean(item.authorName, 70),
+          text: clean(item.text, 500),
+          kind: clean(item.kind || "text", 30),
+          createdAt: item.createdAt || null,
+          edited: item.edited === true,
+          deleted: item.deleted === true,
+          hasAttachment: Boolean(item.attachment)
+        })).slice(-40)
+      };
+    }
+  }
+
+  return { conversations, activeConversation: active };
 }
 
 module.exports = async function handler(req, res) {
@@ -193,6 +359,8 @@ module.exports = async function handler(req, res) {
     const mode = body.mode === "wish" ? "wish" : "chat";
     const message = String(body.message || "").trim();
     const page = clean(body.page, 40);
+    const activeConversationId = clean(body.activeConversationId, 120);
+
     if (!/^[A-Za-z0-9_-]{10,120}$/.test(conversationId)) return res.status(400).json({ error: "A valid AI conversation ID is required." });
     if (!message || message.length > MAX_MESSAGE_LENGTH) return res.status(400).json({ error: "Enter a message between 1 and 4,000 characters." });
 
@@ -211,6 +379,36 @@ module.exports = async function handler(req, res) {
       mode === "wish" ? db.collection("publicProfiles").where("profileVisibility", "==", "public").limit(MAX_CONTEXT_BUILDERS).get() : Promise.resolve({docs:[]}),
       mode === "wish" ? db.collection("conversations").where("participants", "array-contains", uid).limit(MAX_CONTEXT_CONVERSATIONS).get() : Promise.resolve({docs:[]})
     ]);
+
+    let activeConversation = null;
+    let recentMessages = [];
+
+    if (mode === "wish" && activeConversationId) {
+      const matching = memberConversationSnapshot.docs.find(doc => {
+        const c = doc.data();
+        return (
+          doc.id === activeConversationId &&
+          !c.deleted &&
+          Array.isArray(c.participants) &&
+          c.participants.includes(uid)
+        );
+      });
+
+      if (matching) {
+        const messageSnapshot = await db.collection("conversations")
+          .doc(activeConversationId)
+          .collection("messages")
+          .orderBy("createdAt", "desc")
+          .limit(MAX_CONTEXT_MESSAGES)
+          .get();
+
+        activeConversation = { id: matching.id, ...matching.data() };
+        recentMessages = messageSnapshot.docs
+          .map(doc => ({ id: doc.id, ...doc.data() }))
+          .reverse();
+      }
+    }
+
     const profileData = (profileSnapshot && profileSnapshot.exists)
       ? (profileSnapshot.data() || {})
       : {};
@@ -227,13 +425,30 @@ module.exports = async function handler(req, res) {
         ? profileData.interests.map(value => clean(value, 35)).slice(0, 10)
         : []
     };
+
     const eventContext = buildEventContext(eventSnapshot);
     const builderContext = buildBuilderContext(builderSnapshot);
-    const conversationContext = buildConversationContext(memberConversationSnapshot, uid);
-    const input = buildPrompt({ mode, message, profile, page, eventContext, builderContext, conversationContext });
+    const conversationContext = buildConversationContext(
+      memberConversationSnapshot,
+      uid,
+      activeConversation,
+      recentMessages
+    );
+
+    const input = buildPrompt({
+      mode,
+      message,
+      profile,
+      page,
+      eventContext,
+      builderContext,
+      conversationContext
+    });
+
     const instanceUrl = process.env.AGENT37_INSTANCE_URL
       ? String(process.env.AGENT37_INSTANCE_URL).replace(/\/$/, "")
       : `https://${instanceId}.agent37.app`;
+
     let instance;
     try {
       const parsedUrl = new URL(instanceUrl);
@@ -253,6 +468,7 @@ module.exports = async function handler(req, res) {
         ? process.env.AGENT37_REASONING_EFFORT
         : "ultra"
     };
+
     if (conversation.agentSessionId) agentBody.session_id = conversation.agentSessionId;
     if (process.env.AGENT37_AGENT) agentBody.agent = clean(process.env.AGENT37_AGENT, 40);
     if (process.env.AGENT37_PROFILE) agentBody.profile = clean(process.env.AGENT37_PROFILE, 40);
@@ -266,20 +482,27 @@ module.exports = async function handler(req, res) {
       body: JSON.stringify(agentBody),
       signal: AbortSignal.timeout(285000)
     });
+
     const rawResponse = await upstream.text();
     let agentResponse = {};
-    try { agentResponse = rawResponse ? JSON.parse(rawResponse) : {}; }
-    catch { agentResponse = { output_text: rawResponse }; }
+    try {
+      agentResponse = rawResponse ? JSON.parse(rawResponse) : {};
+    } catch {
+      agentResponse = { output_text: rawResponse };
+    }
+
     if (!upstream.ok) {
       const upstreamMessage = clean(agentResponse.error?.message || agentResponse.message || rawResponse, 500);
       return res.status(502).json({ error: `Agent37 returned ${upstream.status}${upstreamMessage ? `: ${upstreamMessage}` : "."}` });
     }
+
     if (agentResponse.status === "failed") {
       return res.status(502).json({ error: clean(agentResponse.error?.message || "Agent37 could not complete this turn.", 500) });
     }
 
     const outputText = String(agentResponse.output_text || agentResponse.output?.text || "").trim();
     if (!outputText) return res.status(502).json({ error: "Agent37 returned an empty response. Try again." });
+
     const result = mode === "wish"
       ? parseWorkResult(outputText)
       : { reply: outputText.slice(0, 12000), actions: [] };
@@ -293,11 +516,20 @@ module.exports = async function handler(req, res) {
       actions: result.actions,
       sessionId: agentResponse.session_id || conversation.agentSessionId || null,
       mode,
-      usage: agentResponse.usage ? { inputTokens: agentResponse.usage.input_tokens, outputTokens: agentResponse.usage.output_tokens } : null
+      usage: agentResponse.usage
+        ? {
+            inputTokens: agentResponse.usage.input_tokens,
+            outputTokens: agentResponse.usage.output_tokens
+          }
+        : null
     });
   } catch (error) {
     console.error("Agent37 chat endpoint failed", error);
     const status = error?.status === 401 ? 401 : 500;
-    return res.status(status).json({ error: status === 401 ? "Your sign-in has expired. Sign in again." : (clean(error?.message, 500) || "The AI service is temporarily unavailable.") });
+    return res.status(status).json({
+      error: status === 401
+        ? "Your sign-in has expired. Sign in again."
+        : (clean(error?.message, 500) || "The AI service is temporarily unavailable.")
+    });
   }
 };
