@@ -333,13 +333,6 @@ async function loadSocialNotifications(){
     host.querySelectorAll("[data-social-notification]").forEach(button=>button.addEventListener("click",async()=>{try{await socialRequest("mark-read",{ids:[button.dataset.socialNotification]});if(button.dataset.notificationPost){location.hash="#posts";}await loadSocialNotifications();}catch(error){toast(error.message);}}));
   }catch(error){host.innerHTML=`<div class="empty-note">${esc(error.message)}</div>`;}
 }
-function saveHomeFeedPreference() {
-  const value=$("#homeFeedPreference")?.value||"overview";
-  localStorage.setItem("hackverse-home-feed-v13",value);
-  if(currentUser) socialRequest("preferences",{save:true,homeFeed:value}).catch(error=>console.warn("Could not sync home feed preference",error));
-  toast("Your Home preference is saved.");
-}
-
 function initSupabase() {
   if (!CONFIGURED) {
     setSystemNotice("Supabase is not configured yet. Add your Supabase project URL and publishable key in public/supabase-config.js to enable live data, registration, profiles, and chat.");
@@ -347,6 +340,7 @@ function initSupabase() {
   }
   onAuthStateChanged(auth, async user => {
     currentUser = user;
+    const homeCta = $("#homeSignupCta"); if (homeCta) homeCta.hidden = Boolean(user);
     handleRoute();
     isAdminUser = Boolean(user?.app_metadata?.admin === true || user?.app_metadata?.role === "admin");
     $("#discoveryAdminPanel").hidden = !isAdminUser;
@@ -362,7 +356,6 @@ function initSupabase() {
     }
     updateEventAccessUI();
     handleRoute();
-    void loadEvents();
     void loadAccountWorkspace();
   });
 }
@@ -456,16 +449,12 @@ async function loadAccountWorkspace() {
     privateProfile = snap.exists() ? snap.data() : null;
     publicProfile = pubSnap.exists() ? pubSnap.data() : (privateProfile?.profileVisibility && privateProfile.profileVisibility !== "public" ? (privateProfile?.profileData || null) : null);
     renderMyProfile(); loadSettingsUI(); renderNotificationCenter();
-    // Saved items and projects are not required to render the first screen.
-    void loadSaved();
+    // Load secondary workspace data only when the matching route is opened.
     if (!privateProfile?.profileComplete || !publicProfile) {
       openProfileEditor(true);
     } else {
       hideModal("profileModal");
       void syncSocialProfile(publicProfile || privateProfile?.profileData);
-      beginInboxListener();
-      void loadProjects();
-      void loadHackathonHistory();
       if ((location.hash || "#home") === "#feed") void loadBuilderFeed();
     }
   } catch (error) {
@@ -734,20 +723,11 @@ async function loadEvents({ forceRefresh = false } = {}) {
   }
   grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
-    // Read public listings in bounded pages rather than silently stopping at 500.
-    const loadedDocs = [];
-    let cursor = null;
-    // Three bounded pages are enough for a useful first load without letting a
-    // very large directory trigger dozens of sequential network round-trips.
-    for (let page = 0; page < 3; page++) {
-      const constraints = [where("visibility", "==", "public"), limit(500)];
-      if (cursor) constraints.push(startAfter(cursor));
-      const snapshot = await getDocs(query(collection(db, "hackathons"), ...constraints));
-      loadedDocs.push(...snapshot.docs);
-      if (snapshot.docs.length < 500) break;
-      cursor = snapshot.docs[snapshot.docs.length - 1];
-    }
-    const records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
+    // Keep first-load reads bounded to one page. The cached directory paints
+    // immediately on repeat visits; a dedicated paginated directory can extend
+    // this when a member searches or opens the full listing.
+    const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(500)));
+    const records = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     writeOpportunityCache(records);
     displayOpportunityRecords(records);
   } catch (error) {
@@ -2067,11 +2047,11 @@ async function loadBuilderFeed() {
   try {
     const [postsSnap, votesSnap, repostsSnap, commentsSnap, savesSnap, followsSnap] = await Promise.all([
       getDocs(query(collection(db, "builderPosts"), orderBy("createdAt", "desc"), limit(120))),
-      getDocs(query(collection(db, "builderPostVotes"), limit(5000))),
-      getDocs(query(collection(db, "builderReposts"), limit(2000))),
-      getDocs(query(collection(db, "builderPostComments"), orderBy("createdAt", "desc"), limit(3000))),
+      getDocs(query(collection(db, "builderPostVotes"), limit(1000))),
+      getDocs(query(collection(db, "builderReposts"), limit(500))),
+      getDocs(query(collection(db, "builderPostComments"), orderBy("createdAt", "desc"), limit(1000))),
       getDocs(query(collection(db, "builderPostSaves"), where("userUid", "==", currentUser.uid), limit(1000))),
-      getDocs(query(collection(db, "builderFollows"), limit(5000)))
+      getDocs(query(collection(db, "builderFollows"), limit(1000)))
     ]);
     builderPosts = postsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     builderPostVotes = votesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -3499,11 +3479,6 @@ function handleRoute() {
   const profileMatch = location.pathname.match(/^\/@([A-Za-z0-9_]{3,24})\/?$/);
   const postMatch = location.pathname.match(/^\/post\/([0-9a-f-]{36})\/?$/i);
   let raw=(location.hash||"#home").slice(1);
-  if (!profileMatch && (!location.hash || raw === "home")) {
-    const preferred = localStorage.getItem("hackverse-home-feed-v13") || "overview";
-    const destinations = { public_posts:"posts", following_posts:"posts", builds:"feed", opportunities:"opportunities" };
-    if (destinations[preferred]) { history.replaceState({}, "", `/#${destinations[preferred]}`); raw = destinations[preferred]; }
-  }
   const aliases={top:"home",discover:"home",opportunities:"opportunities",feed:"feed",build:"feed",posts:"posts",saved:"saved",people:"people",messages:"messages",aiwish:"aiwish",profile:"profile",notifications:"notifications",settings:"settings",reports:"reports"};
   const view=profileMatch ? "public-profile" : postMatch ? "post-detail" : (aliases[raw]||"home");
   const aiPanel=$("#aiPanel"), wishMount=$("#aiWishMount"), aiAssistant=$("#aiAssistant");
@@ -3546,13 +3521,14 @@ function handleRoute() {
   document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
   window.scrollTo({top:0,behavior:"auto"});
   if(blocked)return;
-  if(view==="opportunities"){ updateEventAccessUI(); if(currentUser)renderEvents(); }
+  if(view==="opportunities"){ updateEventAccessUI(); if(currentUser){ renderEvents(); void loadEvents(); } }
+  if(view==="home" && currentUser && $("#homeEventsContent") && !$("#homeEventsContent").hidden && !events.length) void loadEvents();
   if(view==="feed") void loadBuilderFeed();
-  if(view==="posts") { const preference=localStorage.getItem("hackverse-home-feed-v13"); if(preference==="following_posts")socialFeedType="following"; else if(preference==="public_posts")socialFeedType="explore"; void loadSocialFeed({reset:true}); }
+  if(view==="posts") { socialFeedType="explore"; void loadSocialFeed({reset:true}); }
   if(view==="public-profile" && profileMatch) void loadPublicProfilePage(profileMatch[1]);
   if(view==="reports"){updateReportFields();void loadMyReports();if(isAdminUser)void loadAdminReports();}
-  if(view==="profile"){ if(currentUser){ void loadHackathonHistory(); if(!builderPosts.length) void loadBuilderFeed(); } }
-  if(view==="saved")renderSaved();
+  if(view==="profile"){ if(currentUser){ void loadProjects(); void loadHackathonHistory(); if(!builderPosts.length) void loadBuilderFeed(); } }
+  if(view==="saved"){ if(currentUser) void loadSaved(); renderSaved(); }
   if(view==="people"&&currentUser)searchPeople();
   if(view==="notifications"){renderNotificationCenter();void loadSocialNotifications();}
   if(view==="settings")loadSettingsUI();
@@ -3618,8 +3594,6 @@ function bindUI() {
   $$('[data-social-feed]').forEach(button=>button.addEventListener("click",()=>{socialFeedType=button.dataset.socialFeed;$$('[data-social-feed]').forEach(x=>x.classList.toggle("active",x===button));loadSocialFeed({reset:true});}));
   $("#communityReportForm").addEventListener("submit",submitCommunityReport);
   $("#reportTargetType").addEventListener("change",updateReportFields);
-  $("#saveHomeFeedPreference").onclick=saveHomeFeedPreference;
-  $("#homeFeedPreference").value=localStorage.getItem("hackverse-home-feed-v13")||"overview";
   $("#createBuilderPostBtn").onclick = openBuilderPostComposer;
   $("#createBuilderPostSideBtn").onclick = openBuilderPostComposer;
   $("#builderPostForm").addEventListener("submit", createBuilderPost);

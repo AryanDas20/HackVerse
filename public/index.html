@@ -10,7 +10,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://esm.sh" crossorigin>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="preload" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet"></noscript>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="workspace.css">
   <link rel="stylesheet" href="redesign.css">
@@ -89,11 +90,6 @@
       </div>
     </section>
 
-
-    <section class="home-feed-preferences wrap" data-view="home" aria-label="Home feed preferences">
-      <div><span class="eyebrow">YOUR HACKVERSE HOME</span><b>Choose what opens when you tap Home</b><small>Keep the opportunity overview or jump straight into the feed that matters to you.</small></div>
-      <div class="home-feed-preference-controls"><select id="homeFeedPreference" aria-label="Choose your default home feed"><option value="overview">Overview</option><option value="public_posts">Public posts</option><option value="following_posts">Following posts</option><option value="builds">Builds</option><option value="opportunities">Opportunities</option></select><button class="btn btn-outline btn-small" id="saveHomeFeedPreference" type="button">Save home feed</button></div>
-    </section>
 
     <section class="section wrap" id="discover" data-view="home">
       <div id="homeEventsContent" hidden>
@@ -259,7 +255,7 @@
       </div></div>
     </section>
 
-    <section class="cta wrap" data-view="home"><div class="cta-orb">✳</div><div class="eyebrow">YOUR NEXT BUILD STARTS WITH A CONNECTION</div><h2>Think bigger.<br><span class="gradient-text">Build together.</span></h2><p>Create your profile and meet the people who can help make it real.</p><div class="cta-actions"><button class="btn btn-primary" id="ctaJoin">Create your free account ↗</button><a class="btn btn-outline" href="#aiwish">Open AI Wish ✦</a></div></section>
+    <section class="cta wrap" id="homeSignupCta" data-view="home"><div class="cta-orb">✳</div><div class="eyebrow">YOUR NEXT BUILD STARTS WITH A CONNECTION</div><h2>Think bigger.<br><span class="gradient-text">Build together.</span></h2><p>Create your profile and meet the people who can help make it real.</p><div class="cta-actions"><button class="btn btn-primary" id="ctaJoin">Create your free account ↗</button><a class="btn btn-outline" href="#aiwish">Open AI Wish ✦</a></div></section>
   </main>
   <footer class="footer wrap"><div class="footer-top"><a class="brand" href="#top"><span class="brand-mark">H</span><span>hack<span class="brand-accent">verse</span></span></a><p>Built for people who turn ambitious ideas into real things.</p><div class="footer-links"><a href="#opportunities">Explore</a><a href="#people">Community</a><a href="#messages">Messages</a><a href="#aiwish">AI Wish</a><a href="mailto:hello@hackverse.example">Contact</a></div></div><div class="footer-bottom"><span>© <span id="year"></span> HackVerse. Made for builders.</span><div><a href="HackVerse-Website-Guide.pdf" download="HackVerse-Website-Guide.pdf">Download guide ↓</a><a href="guide.html" target="_blank" rel="noopener">Help centre ↗</a><a href="privacy.html">Privacy policy</a><a href="terms.html">Terms</a><a href="#settings">Settings</a></div></div><span class="footer-wordmark" aria-hidden="true">HACKVERSE</span></footer>
 
