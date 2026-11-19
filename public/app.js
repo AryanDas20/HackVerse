@@ -12,7 +12,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const CONFIGURED = Boolean(supabaseConfig.url && !String(supabaseConfig.url).startsWith("YOUR_") && supabaseConfig.anonKey && !String(supabaseConfig.anonKey).startsWith("YOUR_"));
 let currentUser = null, authMode = "signin", isAdminUser = false;
 let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [];
-let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null, chatReturnHash = null;
+let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null, chatReturnRoute = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
 let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
 let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [], isSendingChatMessage = false;
@@ -27,6 +27,34 @@ const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;"
 const listFrom = value => String(value || "").split(",").map(x => x.trim()).filter(Boolean).slice(0, 30);
 const normalizedList = value => listFrom(value).map(x => x.toLowerCase()).filter((x, i, a) => a.indexOf(x) === i);
 const validUrl = value => { if (!value) return ""; try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) ? u.href : ""; } catch { return ""; } };
+
+const APP_ROUTE_NAMES = new Set(["home", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings"]);
+function routePath(route) {
+  const value = String(route || "home").trim();
+  if (value === "/" || value === "home") return "/";
+  if (value.startsWith("/")) return value;
+  return `/${value}`;
+}
+function currentRouteName() {
+  const path = location.pathname.replace(/\/+$/, "") || "/";
+  if (path === "/") return "home";
+  if (/^\/@[A-Za-z0-9_]{3,24}$/i.test(path)) return "public-profile";
+  if (/^\/post\/[0-9a-f-]{36}$/i.test(path)) return "post-detail";
+  const route = decodeURIComponent(path.slice(1)).toLowerCase();
+  return APP_ROUTE_NAMES.has(route) ? route : "home";
+}
+function isAppRoutePath(pathname) {
+  const path = String(pathname || "/").replace(/\/+$/, "") || "/";
+  if (path === "/" || /^\/@[A-Za-z0-9_]{3,24}$/i.test(path) || /^\/post\/[0-9a-f-]{36}$/i.test(path)) return true;
+  return APP_ROUTE_NAMES.has(decodeURIComponent(path.slice(1)).toLowerCase());
+}
+function navigateToRoute(route, { replace = false } = {}) {
+  const path = routePath(route);
+  const method = replace ? "replaceState" : "pushState";
+  if (location.pathname !== path || location.search) history[method]({}, "", path);
+  handleRoute();
+}
+
 const initials = name => String(name || "HV").trim().split(/\s+/).slice(0, 2).map(x => x[0] || "").join("").toUpperCase() || "HV";
 const toast = message => { const el = $("#toast"); el.textContent = message; el.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove("show"), 3000); };
 const showModal = id => { const el = document.getElementById(id); if (el) el.hidden = false; };
@@ -172,25 +200,31 @@ function shareFilename(item) {
   return `hackverse-${slug}.png`;
 }
 async function shareExternally(item) {
-  const url = validUrl(item.url) || `${location.origin}/#home`;
+  const url = validUrl(item.url) || `${location.origin}/`;
   const normalized = { ...item, url };
+  const payload = {
+    title: normalized.title || "HackVerse",
+    text: `${normalized.description || "Explore this on HackVerse."}\n${url}`,
+    url
+  };
+  // Invoke the platform share sheet before awaiting any image generation so mobile browsers
+  // retain the user's click activation and can offer their installed apps and contacts.
+  if (navigator.share) {
+    try { await navigator.share(payload); toast("Share sheet opened."); return; }
+    catch (error) { if (error?.name === "AbortError") return; }
+  }
   try {
     const blob = await makeShareCardBlob(normalized);
-    const file = new File([blob], shareFilename(normalized), { type: "image/png" });
-    const payload = { title: normalized.title || "HackVerse", text: `${normalized.description || "Explore this on HackVerse."}\n${url}`, url };
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ ...payload, files: [file] });
-      toast("Share card sent."); return;
-    }
     downloadShareCard(blob, shareFilename(normalized));
-    if (navigator.share) {
-      await navigator.share(payload); toast("PNG downloaded and link shared."); return;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast("Branded PNG downloaded and link copied.");
+    } catch {
+      toast("Branded PNG downloaded. Copy the link from the share menu to send it.");
     }
-    await navigator.clipboard.writeText(url);
-    toast("Square PNG downloaded and link copied. Attach the PNG when sharing externally.");
   } catch (error) {
-    if (error?.name === "AbortError") return;
-    try { await navigator.clipboard.writeText(url); toast("Link copied. Your browser could not create the image share."); }
+    console.warn("Could not create share image", error);
+    try { await navigator.clipboard.writeText(url); toast("Link copied."); }
     catch { toast("Could not share this item from this browser."); }
   }
 }
@@ -198,7 +232,7 @@ async function sendSharedItemToConversation(item, conversationId, forwarded = fa
   if (!currentUser || !db || !conversationId) throw new Error("Choose a chat before sharing.");
   const title = String(item.title || "HackVerse update").slice(0, 180);
   const description = String(item.description || "").slice(0, 600);
-  const url = validUrl(item.url) || `${location.origin}/#home`;
+  const url = validUrl(item.url) || `${location.origin}/`;
   const text = `${forwarded ? "Forwarded" : "Shared"} ${item.type || "update"}: ${title}\n${description}\n${url}`.slice(0, 2000);
   await addDoc(collection(db, "conversations", conversationId, "messages"), {
     authorUid: currentUser.uid,
@@ -211,34 +245,138 @@ async function sendSharedItemToConversation(item, conversationId, forwarded = fa
     lastMessageAt: serverTimestamp(), updatedAt: serverTimestamp()
   });
 }
-async function forwardSharedItem(item) {
-  if (!requireAccount()) return;
-  const choices = currentConversations.slice(0, 20);
-  if (!choices.length) { toast("Open another conversation before forwarding."); return; }
-  const listing = choices.map((c, i) => `${i + 1}. ${conversationLabel(c)}`).join("\n");
-  const entered = await promptInApp("Share in a chat", `Choose a destination chat:\n${listing}`, "1", "Destination number");
-  if (entered === null) return;
-  const target = choices[Number(entered) - 1];
-  if (!target) { toast("Choose a valid conversation number."); return; }
-  try { await sendSharedItemToConversation(item, target.id, false); toast(`Shared in ${conversationLabel(target)}.`); }
-  catch (error) { toast(friendlyError(error)); }
+function shareTextForItem(item) {
+  const title = String(item.title || "HackVerse update");
+  const description = String(item.description || "See this update on HackVerse.");
+  const url = validUrl(item.url) || `${location.origin}/`;
+  return `${title}\n${description}\n${url}`.slice(0, 1800);
 }
-async function openShareMenu(item) {
-  const restricted = item.visibility === "private" || item.visibility === "followers";
-  if (restricted) {
-    await chooseInApp("Sharing is restricted", "This item is not public. Change its visibility to Public before forwarding or sharing it outside its allowed audience.", [{ value: "cancel", label: "Close", variant: "outline" }]);
+function closeShareContactPicker() {
+  const picker = $("#shareContactPicker");
+  if (picker) picker.hidden = true;
+}
+function openShareContactPicker(item) {
+  if (!requireAccount()) return;
+  const conversations = [...currentConversations].sort((a, b) => tsMillis(b.lastMessageAt || b.updatedAt) - tsMillis(a.lastMessageAt || a.updatedAt));
+  let contacts = [];
+  let contactsLoading = true;
+  const modal = document.createElement("div");
+  modal.id = "shareContactPicker";
+  modal.className = "modal-backdrop share-picker-backdrop";
+  modal.innerHTML = `<section class="modal share-picker-modal" role="dialog" aria-modal="true" aria-labelledby="sharePickerTitle">
+    <button class="modal-close" type="button" data-share-picker-close aria-label="Close">×</button>
+    <div class="eyebrow">SHARE WITH A BUILDER</div><h2 id="sharePickerTitle">Choose a contact</h2><p class="muted">Send to a recent chat or start a new conversation with a public builder.</p>
+    <label class="share-picker-search-label"><span class="sr-only">Search contacts</span><input id="sharePickerSearch" type="search" placeholder="Search people, groups or chats…" autocomplete="off"></label>
+    <div class="share-picker-list" id="sharePickerList"></div>
+  </section>`;
+  document.body.append(modal);
+  const list = modal.querySelector("#sharePickerList");
+  const search = modal.querySelector("#sharePickerSearch");
+  const render = () => {
+    const term = search.value.trim().toLowerCase();
+    const visibleConversations = conversations.filter(conversation => {
+      const label = conversationLabel(conversation).toLowerCase();
+      const last = String(conversation.lastMessage || "").toLowerCase();
+      return !term || label.includes(term) || last.includes(term);
+    });
+    const visibleContacts = contacts.filter(profile => [profile.displayName, profile.username, profile.college, profile.collegeShort, profile.course, ...(profile.skills || [])].join(" ").toLowerCase().includes(term));
+    const chatMarkup = visibleConversations.length ? `<div class="share-picker-section-title">RECENT CHATS</div>${visibleConversations.map(conversation => {
+      const label = conversationLabel(conversation);
+      const photo = conversation.isGroup ? validUrl(conversation.groupPhotoUrl) : "";
+      const avatar = photo ? `<img src="${esc(photo)}" alt="" loading="lazy">` : `<span>${esc(conversation.isGroup ? "✦" : initials(label))}</span>`;
+      const preview = conversation.lastMessage || (conversation.isGroup ? "Group conversation" : "Direct conversation");
+      return `<button type="button" class="share-picker-contact" data-share-conversation="${esc(conversation.id)}"><span class="share-picker-avatar ${conversation.isGroup ? "is-group" : ""}">${avatar}</span><span class="share-picker-contact-copy"><b>${esc(label)}</b><small>${esc(preview)}</small></span><span class="share-picker-send">Send</span></button>`;
+    }).join("")}` : "";
+    const contactMarkup = visibleContacts.length ? `<div class="share-picker-section-title">BUILDERS</div>${visibleContacts.map(profile => {
+      const label = profile.displayName || "HackVerse builder";
+      const photo = validUrl(profile.avatarUrl);
+      const avatar = photo ? `<img src="${esc(photo)}" alt="" loading="lazy">` : `<span>${esc(initials(label))}</span>`;
+      return `<button type="button" class="share-picker-contact" data-share-profile="${esc(profile.uid)}"><span class="share-picker-avatar">${avatar}</span><span class="share-picker-contact-copy"><b>${esc(label)}</b><small>@${esc(profile.username || "builder")}${profile.collegeShort || profile.college ? ` · ${esc(profile.collegeShort || profile.college)}` : ""}</small></span><span class="share-picker-send">Send</span></button>`;
+    }).join("")}` : "";
+    const emptyMarkup = contactsLoading ? '<div class="empty-note">Loading builders…</div>' : '<div class="empty-note">No matching contacts yet. Try another search or discover builders from the People page.</div>';
+    list.innerHTML = chatMarkup + contactMarkup || emptyMarkup;
+  };
+  const finish = () => modal.remove();
+  render();
+  search.addEventListener("input", render);
+  modal.querySelector("[data-share-picker-close]").addEventListener("click", finish);
+  modal.addEventListener("click", event => { if (event.target === modal) finish(); });
+  list.addEventListener("click", async event => {
+    const button = event.target.closest("[data-share-conversation], [data-share-profile]");
+    if (!button) return;
+    button.disabled = true;
+    button.querySelector(".share-picker-send").textContent = "Sending…";
+    try {
+      if (button.dataset.shareConversation) {
+        const target = conversations.find(conversation => conversation.id === button.dataset.shareConversation);
+        if (!target) throw new Error("That conversation is no longer available.");
+        await sendSharedItemToConversation(item, target.id, false);
+        toast(`Shared in ${conversationLabel(target)}.`);
+      } else {
+        const target = contacts.find(profile => profile.uid === button.dataset.shareProfile);
+        if (!target) throw new Error("That builder is no longer available.");
+        const conversationId = await startDirectConversation(target);
+        if (!conversationId) throw new Error("Could not start a conversation with this builder.");
+        await sendSharedItemToConversation(item, conversationId, false);
+        toast(`Shared with ${target.displayName || "the builder"}.`);
+      }
+      finish();
+    } catch (error) {
+      button.disabled = false;
+      button.querySelector(".share-picker-send").textContent = "Retry";
+      toast(friendlyError(error));
+    }
+  });
+  search.focus({ preventScroll: true });
+  void searchPublicProfiles("", 50).then(results => {
+    if (!modal.isConnected) return;
+    const existingPeople = new Set(conversations.filter(row => !row.isGroup).map(row => (row.participants || []).find(uid => uid !== currentUser?.uid)).filter(Boolean));
+    contacts = results.filter(profile => profile.uid !== currentUser?.uid && !existingPeople.has(profile.uid));
+    contactsLoading = false;
+    render();
+  }).catch(error => {
+    console.warn("Could not load share contacts", error);
+    contactsLoading = false;
+    if (modal.isConnected) render();
+  });
+}
+async function forwardSharedItem(item) {
+  await openShareContactPicker(item);
+}
+function openShareMenu(item) {
+  if (item.visibility === "private" || item.visibility === "followers") {
+    void chooseInApp("Sharing is restricted", "This item is not public. Change its visibility to Public before forwarding or sharing it outside its allowed audience.", [{ value: "cancel", label: "Close", variant: "outline" }]);
     return;
   }
-  const choices = [{ value: "chat", label: "Share in a HackVerse chat", variant: "primary" }];
-  choices.push({ value: "external", label: "Share externally + PNG", variant: "outline" });
-  choices.push({ value: "copy", label: "Copy link", variant: "outline" }, { value: "cancel", label: "Cancel", variant: "outline" });
-  const choice = await chooseInApp("Share this on HackVerse", "Choose how you would like to share this item.", choices);
-  if (choice === "chat") await forwardSharedItem(item);
-  else if (choice === "external") await shareExternally(item);
-  else if (choice === "copy") {
-    try { await navigator.clipboard.writeText(validUrl(item.url) || `${location.origin}/#home`); toast("Link copied."); }
+  const old = document.getElementById("shareActionPicker");
+  old?.remove();
+  const url = validUrl(item.url) || `${location.origin}/`;
+  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareTextForItem({ ...item, url }))}`;
+  const modal = document.createElement("div");
+  modal.id = "shareActionPicker";
+  modal.className = "modal-backdrop share-picker-backdrop";
+  modal.innerHTML = `<section class="modal share-picker-modal share-action-modal" role="dialog" aria-modal="true" aria-labelledby="shareActionTitle">
+    <button class="modal-close" type="button" data-share-action-close aria-label="Close">×</button>
+    <div class="eyebrow">SHARE WITH YOUR NETWORK</div><h2 id="shareActionTitle">Share this update</h2>
+    <p class="muted">Choose a contact in WhatsApp, your device share sheet, or a HackVerse conversation.</p>
+    <div class="share-action-list">
+      <a class="share-action-option" href="${esc(whatsappUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-action-icon">↗</span><span><b>WhatsApp</b><small>Choose a contact in WhatsApp</small></span><span class="share-action-arrow">→</span></a>
+      <button class="share-action-option" type="button" data-share-native><span class="share-action-icon">⇧</span><span><b>More apps and contacts</b><small>Open your device share sheet</small></span><span class="share-action-arrow">→</span></button>
+      <button class="share-action-option" type="button" data-share-chat><span class="share-action-icon">✉</span><span><b>HackVerse chat</b><small>Send directly to a person or group</small></span><span class="share-action-arrow">→</span></button>
+      <button class="share-action-option" type="button" data-share-copy><span class="share-action-icon">⧉</span><span><b>Copy link</b><small>Copy a shareable link</small></span><span class="share-action-arrow">→</span></button>
+    </div>
+  </section>`;
+  document.body.append(modal);
+  const close = () => modal.remove();
+  modal.querySelector("[data-share-action-close]").addEventListener("click", close);
+  modal.addEventListener("click", event => { if (event.target === modal) close(); });
+  // Keep these actions synchronous with the actual click for browser share permissions.
+  modal.querySelector("[data-share-native]").addEventListener("click", () => { close(); void shareExternally(item); });
+  modal.querySelector("[data-share-chat]").addEventListener("click", () => { close(); void forwardSharedItem(item); });
+  modal.querySelector("[data-share-copy]").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(url); toast("Link copied."); close(); }
     catch { toast("Clipboard access was blocked by your browser."); }
-  }
+  });
 }
 function renderSocialPost(post) {
   const author = post.author || {};
@@ -283,7 +421,7 @@ function bindSocialPostActions(root) {
     openShareMenu({ type: "post", title, description: `${author} shared an update with the HackVerse community.`, url: `${location.origin}/post/${encodeURIComponent(postId)}`, sourceId: postId, visibility });
   });
   bind("[data-social-report]", button => {
-    location.hash = "#reports"; setTimeout(() => { const type=$("#reportTargetType"); const target=$("#reportTargetId"); if(type&&target){type.value="post";target.value=button.dataset.socialReport;updateReportFields();} }, 0);
+    navigateToRoute("reports"); setTimeout(() => { const type=$("#reportTargetType"); const target=$("#reportTargetId"); if(type&&target){type.value="post";target.value=button.dataset.socialReport;updateReportFields();} }, 0);
   });
   bind("[data-social-delete]", async button => {
     if (!(await confirmInApp("Delete this post? It will be soft-deleted and removed from public feeds.", "Delete post"))) return;
@@ -303,7 +441,6 @@ function navigateToPost(postId) {
   if (!postId) return;
   history.pushState({}, "", `/post/${encodeURIComponent(postId)}`);
   handleRoute();
-  void loadSocialPostDetail(postId);
 }
 async function loadSocialPostDetail(postId) {
   const host = $("#socialPostDetail"); if (!host || !postId) return;
@@ -318,17 +455,31 @@ async function loadSocialPostDetail(postId) {
 async function loadSocialFeed({ reset = false } = {}) {
   const host = $("#socialPostList"); if (!host || socialFeedLoading) return;
   if (!currentUser) { host.innerHTML = '<div class="empty-note">Sign in to explore community posts.</div>'; return; }
-  if (reset) { socialFeedCursor = null; host.innerHTML = '<div class="loading-card">Loading posts…</div>'; }
+  const cacheKey = `hv-social-feed-v2:${currentUser.uid}:${socialFeedType}`;
+  if (reset) {
+    socialFeedCursor = null;
+    try {
+      const cached = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
+      if (cached?.savedAt && Date.now() - cached.savedAt < 5 * 60 * 1000 && Array.isArray(cached.posts)) {
+        host.innerHTML = cached.posts.map(renderSocialPost).join("") || '<div class="empty-note">No posts yet. Share an idea, a question or a lesson learned.</div>';
+        socialFeedCursor = null;
+        $("#socialLoadMore").hidden = true;
+        bindSocialPostActions(host);
+      } else host.innerHTML = '<div class="loading-card">Loading posts…</div>';
+    } catch { host.innerHTML = '<div class="loading-card">Loading posts…</div>'; }
+  }
   socialFeedLoading = true;
   try {
     const data = await socialRequest("feed", { type: socialFeedType, cursor: socialFeedCursor });
-    const markup = (data.posts || []).map(renderSocialPost).join("");
+    const posts = data.posts || [];
+    const markup = posts.map(renderSocialPost).join("");
     if (reset) host.innerHTML = markup || '<div class="empty-note">No posts yet. Share an idea, a question or a lesson learned.</div>';
     else if (markup) host.insertAdjacentHTML("beforeend", markup);
     socialFeedCursor = data.nextCursor || null;
     $("#socialLoadMore").hidden = !socialFeedCursor;
+    if (reset) { try { sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), posts, nextCursor: socialFeedCursor })); } catch {} }
     bindSocialPostActions(host);
-  } catch (error) { if (reset) host.innerHTML = `<div class="empty-note">Could not load posts. ${esc(error.message)}</div>`; else toast(error.message); }
+  } catch (error) { if (reset && !host.querySelector("[data-social-post]")) host.innerHTML = `<div class="empty-note">Could not load posts. ${esc(error.message)}</div>`; else if (!reset) toast(error.message); }
   finally { socialFeedLoading = false; }
 }
 async function toggleSocialComments(postId) {
@@ -389,7 +540,7 @@ async function loadPublicProfilePage(username) {
       const followLabel = data.followStatus === "active" ? "Following" : data.followStatus === "pending" ? "Requested" : "Request to follow";
       host.innerHTML = `<div class="public-profile-shell"><div class="public-profile-cover" ${cover}></div><div class="public-profile-main"><div class="public-profile-identity">${socialAvatar(p,"public-profile-avatar")}<div class="public-profile-heading"><h1>${esc(p.display_name)}</h1><p>@${esc(p.username)}</p></div></div><p class="public-profile-bio">This is a ${p.profile_visibility === "private" ? "private" : "followers-only"} profile. Follow this builder to request access to their posts and shared profile details.</p><div class="public-profile-stats"><div class="public-profile-stat"><b>${Number(p.follower_count||0)}</b><span>Followers</span></div><div class="public-profile-stat"><b>${Number(p.post_count||0)}</b><span>Posts</span></div><div class="public-profile-stat"><b>${Number(p.upvote_count||0)}</b><span>Upvotes</span></div><div class="public-profile-stat"><b>${Number(data.hackathonCount||0)}</b><span>Hackathons</span></div></div><div class="public-profile-actions"><button class="btn btn-primary" id="publicProfileFollow">${followLabel}</button><button class="btn btn-outline" id="publicProfileReport">Report</button></div></div></div>`;
       $("#publicProfileFollow")?.addEventListener("click", async () => { try { if(data.followStatus) await socialRequest("unfollow",{username:p.username}); else { const result=await socialRequest("follow",{username:p.username}); data.followStatus=result.status; } await loadPublicProfilePage(p.username); } catch(error){toast(error.message);} });
-      $("#publicProfileReport")?.addEventListener("click",()=>{location.hash="#reports";setTimeout(()=>{const type=$("#reportTargetType");const usernameField=$("#reportUsername");if(type&&usernameField){type.value="user";usernameField.value=p.username;updateReportFields();}},0);});
+      $("#publicProfileReport")?.addEventListener("click",()=>{navigateToRoute("reports");setTimeout(()=>{const type=$("#reportTargetType");const usernameField=$("#reportUsername");if(type&&usernameField){type.value="user";usernameField.value=p.username;updateReportFields();}},0);});
       return;
     }
     const cover = validUrl(p.cover_url) ? `style="background-image:url('${esc(validUrl(p.cover_url))}')"` : "";
@@ -400,8 +551,8 @@ async function loadPublicProfilePage(username) {
       catch(error){toast(error.message);}
     });
     $("#publicProfileMessage")?.addEventListener("click",()=>startDirectConversation({uid:p.id,displayName:p.display_name,username:p.username,avatarUrl:p.avatar_url}));
-    $("#publicProfileReport")?.addEventListener("click",()=>{location.hash="#reports";setTimeout(()=>{$("#reportTargetType").value="user";$("#reportUsername").value=p.username;updateReportFields();},0);});
-    $("#publicProfileBlock")?.addEventListener("click",async()=>{if(!(await confirmInApp(`Block @${p.username}? This hides each other's community content and removes the follow connection.`,"Block builder")))return;try{await socialRequest("block",{username:p.username});toast("Builder blocked.");location.hash="#posts";await loadSocialFeed({reset:true});}catch(error){toast(error.message);}});
+    $("#publicProfileReport")?.addEventListener("click",()=>{navigateToRoute("reports");setTimeout(()=>{$("#reportTargetType").value="user";$("#reportUsername").value=p.username;updateReportFields();},0);});
+    $("#publicProfileBlock")?.addEventListener("click",async()=>{if(!(await confirmInApp(`Block @${p.username}? This hides each other's community content and removes the follow connection.`,"Block builder")))return;try{await socialRequest("block",{username:p.username});toast("Builder blocked.");navigateToRoute("posts");await loadSocialFeed({reset:true});}catch(error){toast(error.message);}});
     $("#publicProfileEdit")?.addEventListener("click",()=>openProfileEditor(false));
     host.querySelectorAll("[data-follow-request]").forEach(button=>button.addEventListener("click",async()=>{
       try{await socialRequest("follow-decision",{username:p.username,followId:button.dataset.followId,accept:button.dataset.followRequest==="accept"});await loadPublicProfilePage(p.username);}
@@ -466,7 +617,7 @@ async function loadAdminReports() {
 async function loadSocialNotifications(){
   const host=$("#socialNotificationFeed");if(!host||!currentUser)return;
   try{const data=await socialRequest("notifications");const items=data.notifications||[];host.innerHTML=items.map(item=>{const actor=esc(item.actor?.display_name||"A builder");const text={follow:`started following you`,follow_request:`requested to follow you`,follow_accepted:`accepted your follow request`,upvote:`upvoted your post`,downvote:`downvoted your post`,comment:`commented on your post`,mention:`mentioned you`,repost:`reposted your post`}[item.type]||"interacted with your account";return `<button type="button" class="notification-item ${item.is_read?"":"unread"}" data-social-notification="${esc(item.id)}" data-notification-post="${esc(item.post_id||"")}"><span class="notification-icon">${item.type==="follow"?"＋":"✦"}</span><span><b>${actor} ${text}</b><small>${esc(socialTime(item.created_at))}</small></span><i>${item.is_read?"SEEN":"NEW"}</i></button>`;}).join("")||'<div class="empty-note">No builder activity yet.</div>';
-    host.querySelectorAll("[data-social-notification]").forEach(button=>button.addEventListener("click",async()=>{try{await socialRequest("mark-read",{ids:[button.dataset.socialNotification]});if(button.dataset.notificationPost){location.hash="#posts";}await loadSocialNotifications();}catch(error){toast(error.message);}}));
+    host.querySelectorAll("[data-social-notification]").forEach(button=>button.addEventListener("click",async()=>{try{await socialRequest("mark-read",{ids:[button.dataset.socialNotification]});if(button.dataset.notificationPost){navigateToRoute("posts");}await loadSocialNotifications();}catch(error){toast(error.message);}}));
   }catch(error){host.innerHTML=`<div class="empty-note">${esc(error.message)}</div>`;}
 }
 
@@ -588,16 +739,13 @@ async function loadAccountWorkspace() {
     renderMyProfile(); loadSettingsUI(); renderNotificationCenter();
     // Saved items and projects are not required to render the first screen.
     void loadSaved();
-    if (!privateProfile?.profileComplete || !publicProfile) {
-      openProfileEditor(true);
-    } else {
-      hideModal("profileModal");
-      void syncSocialProfile(publicProfile || privateProfile?.profileData);
-      beginInboxListener();
-      void loadProjects();
-      void loadHackathonHistory();
-      if ((location.hash || "#home") === "#feed") void loadBuilderFeed();
-    }
+    hideModal("profileModal");
+    profileIsMandatory = false;
+    if (publicProfile?.username && publicProfile?.profileConsentAt) void syncSocialProfile(publicProfile);
+    beginInboxListener();
+    void loadProjects();
+    void loadHackathonHistory();
+    if (currentRouteName() === "feed") void loadBuilderFeed();
   } catch (error) {
     console.error("Could not load account", error); toast(friendlyError(error));
   }
@@ -605,7 +753,7 @@ async function loadAccountWorkspace() {
 
 function openProfileEditor(mandatory = false) {
   if (!requireAccount()) return;
-  profileIsMandatory = mandatory;
+  profileIsMandatory = false;
   const p = { ...(privateProfile || {}), ...(publicProfile || {}) };
   $("#profileName").value = p.displayName || currentUser.displayName || "";
   $("#profileUsername").value = p.username || "";
@@ -622,9 +770,11 @@ function openProfileEditor(mandatory = false) {
   $("#profilePublicConsent").checked = Boolean(p.profileConsentAt);
   $("#profileMessage").textContent = "";
   $("#profileModalTitle").textContent = mandatory ? "Complete your builder profile." : "Update your builder profile.";
-  $("#profileModalHint").textContent = mandatory ? "Complete the required details to unlock the community directory and chat." : "Keep your builder profile current so collaborators can find you.";
-  $("#profileModalClose").hidden = mandatory;
-  $("#profileSignOutBtn").hidden = !mandatory;
+  $("#profileModalHint").textContent = "Your profile is optional. Save what you have now, then add education, skills, links or contact details later.";
+  $("#profileModalClose").hidden = false;
+  $("#profileSignOutBtn").hidden = true;
+  const steps = $$("#profileForm .profile-step");
+  steps.forEach((step, index) => { step.open = index === 0; });
   showModal("profileModal");
 }
 
@@ -652,65 +802,112 @@ async function uploadProfileAvatar(file) {
 async function saveProfile(event) {
   event.preventDefault();
   if (!requireAccount()) return;
-  const message = $("#profileMessage"); message.textContent = "Saving profile…";
+  const message = $("#profileMessage");
+  const button = $("#saveProfileBtn");
+  if (button?.disabled) return;
+  if (button) { button.disabled = true; button.setAttribute("aria-busy", "true"); }
+  message.textContent = "Saving your progress…";
   const uid = currentUser.uid;
-  const username = $("#profileUsername").value.trim().replace(/^@/, "");
+  const name = $("#profileName").value.trim() || currentUser.displayName || "";
+  const username = $("#profileUsername").value.trim().replace(/^@/, "") || publicProfile?.username || privateProfile?.username || "";
   const usernameLower = username.toLowerCase();
-  if (!/^[a-zA-Z0-9_]{3,24}$/.test(username)) { message.textContent = "Username must be 3–24 letters, numbers, or underscores."; return; }
-  const skills = listFrom($("#profileSkills").value); if (!skills.length) { message.textContent = "Add at least one skill."; return; }
-  const name = $("#profileName").value.trim(); const college = $("#profileCollege").value.trim();
-  const course = $("#profileCourse").value.trim(); const bio = $("#profileBio").value.trim();
+  if (username && !/^[a-zA-Z0-9_]{3,24}$/.test(username)) {
+    message.textContent = "Username must be 3–24 letters, numbers, or underscores.";
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+    return;
+  }
+  const existingUsername = publicProfile?.usernameLower || privateProfile?.usernameLower;
+  if (existingUsername && usernameLower && existingUsername !== usernameLower) {
+    message.textContent = "Username changes are disabled in this starter release.";
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+    return;
+  }
   const consent = $("#profilePublicConsent").checked;
-  if (!consent) { message.textContent = "Please confirm the public profile visibility notice."; return; }
-  const existingUsername = publicProfile?.usernameLower;
-  if (existingUsername && existingUsername !== usernameLower) { message.textContent = "Username changes are disabled in this starter release."; return; }
+  const requestedVisibility = $("#profileVisibility").value || "public";
+  const visibility = consent ? requestedVisibility : "private";
+  const skills = listFrom($("#profileSkills").value);
+  const college = $("#profileCollege").value.trim();
+  const course = $("#profileCourse").value.trim();
+  const bio = $("#profileBio").value.trim();
+  const phone = $("#profilePhone").value.trim();
   const profile = {
     uid, displayName: name, nameLower: name.toLowerCase(), username, usernameLower,
-    college, collegeLower: college.toLowerCase(), collegeShort: $("#profileCollegeShort").value.trim(), collegeShortLower: $("#profileCollegeShort").value.trim().toLowerCase(), course, studyLevel: $("#profileStudyLevel").value,
-    graduationYear: Number($("#profileGradYear").value) || null,
-    city: $("#profileCity").value.trim(), country: $("#profileCountry").value.trim(),
-    bio, statusText: String($("#profileStatus").value || "").trim().slice(0,100), pronouns: String($("#profilePronouns")?.value||"").trim().slice(0,50), website: validUrl($("#profileWebsite")?.value), coverUrl: validUrl($("#profileCover")?.value), joinedAt: privateProfile?.createdAt || publicProfile?.joinedAt || Date.now(), skills, skillsLower: normalizedList(skills.join(",")),
+    college, collegeLower: college.toLowerCase(), collegeShort: $("#profileCollegeShort").value.trim(), collegeShortLower: $("#profileCollegeShort").value.trim().toLowerCase(),
+    course, studyLevel: $("#profileStudyLevel").value, graduationYear: Number($("#profileGradYear").value) || null,
+    city: $("#profileCity").value.trim(), country: $("#profileCountry").value.trim(), bio,
+    statusText: String($("#profileStatus").value || "").trim().slice(0, 100),
+    pronouns: String($("#profilePronouns")?.value || "").trim().slice(0, 50),
+    website: validUrl($("#profileWebsite")?.value), coverUrl: validUrl($("#profileCover")?.value),
+    joinedAt: privateProfile?.createdAt || publicProfile?.joinedAt || Date.now(), skills, skillsLower: normalizedList(skills.join(",")),
     rolesInterested: listFrom($("#profileRoles").value), rolesLower: normalizedList($("#profileRoles").value),
     interests: listFrom($("#profileInterests").value), interestsLower: normalizedList($("#profileInterests").value),
     courseLower: course.toLowerCase(), availability: $("#profileAvailability").value,
     preferredMode: $("#profileMode").value, avatarUrl: validUrl($("#profileAvatar").value),
     github: validUrl($("#profileGithub").value), linkedin: validUrl($("#profileLinkedin").value),
-    portfolio: validUrl($("#profilePortfolio").value), website: validUrl($("#profileWebsite")?.value) || validUrl($("#profilePortfolio").value), lookingForTeam: $("#profileLooking").value === "true",
-    publicEmail: $("#profileEmailVisibility").value === "public" ? (currentUser.email || "") : "",
-    publicEmailLower: $("#profileEmailVisibility").value === "public" ? (currentUser.email || "").toLowerCase() : "",
-    publicPhone: $("#profilePhoneVisibility").value === "public" ? $("#profilePhone").value.trim() : "",
-    publicPhoneDigits: $("#profilePhoneVisibility").value === "public" ? $("#profilePhone").value.replace(/\D/g, "") : "",
-    profileVisibility: $("#profileVisibility").value,
+    portfolio: validUrl($("#profilePortfolio").value), website: validUrl($("#profileWebsite")?.value) || validUrl($("#profilePortfolio").value),
+    lookingForTeam: $("#profileLooking").value === "true",
+    publicEmail: consent && $("#profileEmailVisibility").value === "public" ? (currentUser.email || "") : "",
+    publicEmailLower: consent && $("#profileEmailVisibility").value === "public" ? (currentUser.email || "").toLowerCase() : "",
+    publicPhone: consent && $("#profilePhoneVisibility").value === "public" ? phone : "",
+    publicPhoneDigits: consent && $("#profilePhoneVisibility").value === "public" ? phone.replace(/\D/g, "") : "",
+    profileVisibility: visibility,
     hackathonsParticipatedCount: Number(publicProfile?.hackathonsParticipatedCount ?? privateProfile?.hackathonsParticipatedCount ?? 0),
-    profileConsentAt: privateProfile?.profileConsentAt || serverTimestamp(), updatedAt: serverTimestamp()
+    profileConsentAt: consent ? (privateProfile?.profileConsentAt || serverTimestamp()) : null,
+    updatedAt: serverTimestamp()
   };
+  const canPublish = Boolean(consent && name && usernameLower && visibility === "public");
   const privateData = {
-    email: currentUser.email || "", phone: $("#profilePhone").value.trim(),
-    profileVisibility: profile.profileVisibility, profileData: profile,
-    displayName: name, username, usernameLower, college, collegeShort: profile.collegeShort, course, studyLevel: profile.studyLevel,
-    phoneVisibility: $("#profilePhoneVisibility").value, emailVisibility: $("#profileEmailVisibility").value,
+    email: currentUser.email || "", phone,
+    profileVisibility: visibility, profileData: profile,
+    displayName: name, username, usernameLower,
+    college, collegeShort: profile.collegeShort, course, studyLevel: profile.studyLevel,
+    phoneVisibility: $("#profilePhoneVisibility").value,
+    emailVisibility: $("#profileEmailVisibility").value,
     graduationYear: profile.graduationYear, city: profile.city, country: profile.country,
-    profileComplete: true, updatedAt: serverTimestamp(),
+    profileComplete: Boolean(name && usernameLower), updatedAt: serverTimestamp(),
     ...(privateProfile ? {} : { role: "participant", createdAt: serverTimestamp() })
   };
   try {
     await runTransaction(db, async transaction => {
-      const userRef = doc(db, "users", uid); const publicRef = doc(db, "publicProfiles", uid);
-      const usernameRef = doc(db, "usernames", usernameLower);
-      const [userSnap, usernameSnap] = await Promise.all([transaction.get(userRef), transaction.get(usernameRef)]);
-      if (usernameSnap.exists() && usernameSnap.data().uid !== uid) throw new Error("USERNAME_TAKEN");
-      if (!usernameSnap.exists()) transaction.set(usernameRef, { uid, createdAt: serverTimestamp() });
+      const userRef = doc(db, "users", uid);
+      const publicRef = doc(db, "publicProfiles", uid);
+      const userSnap = await transaction.get(userRef);
+      let usernameSnap = null;
+      if (usernameLower) {
+        const usernameRef = doc(db, "usernames", usernameLower);
+        usernameSnap = await transaction.get(usernameRef);
+        if (usernameSnap.exists() && usernameSnap.data().uid !== uid) throw new Error("USERNAME_TAKEN");
+        if (!usernameSnap.exists()) transaction.set(usernameRef, { uid, createdAt: serverTimestamp() });
+      }
       const savedPrivate = { ...privateData };
       if (userSnap.exists()) delete savedPrivate.role;
       transaction.set(userRef, savedPrivate, { merge: true });
-      if (profile.profileVisibility !== "public") transaction.delete(publicRef);
-      else transaction.set(publicRef, profile, { merge: true });
+      if (canPublish) transaction.set(publicRef, profile, { merge: true });
+      else transaction.delete(publicRef);
     });
-    await updateAuthProfile(currentUser, { displayName: name, photoURL: profile.avatarUrl || null }).catch(() => {});
-    privateProfile = { ...(privateProfile || {}), ...privateData, profileComplete: true };
-    publicProfile = profile; profileIsMandatory = false; hideModal("profileModal");
-    renderMyProfile(); beginInboxListener(); loadProjects(); loadHackathonHistory(); searchPeople(); void syncSocialProfile(profile); toast("Your builder profile is saved.");
-  } catch (error) { console.error(error); message.textContent = friendlyError(error); }
+    const authUpdates = {};
+    if (name) authUpdates.displayName = name;
+    if (profile.avatarUrl) authUpdates.photoURL = profile.avatarUrl;
+    if (Object.keys(authUpdates).length) await updateAuthProfile(currentUser, authUpdates).catch(() => {});
+    privateProfile = { ...(privateProfile || {}), ...privateData, profileComplete: Boolean(name && usernameLower) };
+    publicProfile = name || usernameLower ? profile : null;
+    profileIsMandatory = false;
+    hideModal("profileModal");
+    renderMyProfile();
+    beginInboxListener();
+    void loadProjects();
+    void loadHackathonHistory();
+    if (consent && name && usernameLower) {
+      void syncSocialProfile(profile);
+      if (visibility === "public") void searchPeople();
+    }
+    toast(canPublish ? "Your public builder profile is saved." : "Progress saved privately. You can publish your profile whenever you are ready.");
+  } catch (error) {
+    console.error(error);
+    message.textContent = friendlyError(error);
+  } finally {
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+  }
 }
 
 async function loadDiscoverySources() {
@@ -1147,7 +1344,7 @@ function renderEvents() {
 }
 function shareOpportunity(eventId) {
   const event = events.find(row => row.id === eventId); if (!event) return;
-  const url = validUrl(event.officialRegistrationUrl || event.officialEventUrl || event.sourceUrl) || `${location.origin}/#opportunities`;
+  const url = validUrl(event.officialRegistrationUrl || event.officialEventUrl || event.sourceUrl) || `${location.origin}/opportunities`;
   const desc = [event.organizer || event.sourceName, event.summary || event.description, event.registrationDeadline ? `Deadline: ${dateLabel(event.registrationDeadline)}` : ""].filter(Boolean).join(" · ").slice(0, 500);
   openShareMenu({ type: "opportunity", title: event.title || "HackVerse opportunity", description: desc, url, sourceId: event.id, visibility: "public" });
 }
@@ -1283,7 +1480,7 @@ function beginInboxListener() {
   stopInboxListener = onSnapshot(inboxQuery, snapshot => {
     currentConversations = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(c => !c.deleted).sort((a,b) => tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
     renderConversationList(currentConversations);
-    if (location.hash === "#notifications") renderNotificationCenter();
+    if (currentRouteName() === "notifications") renderNotificationCenter();
     const notificationBaselineKey=`hv-inbox-baseline-${currentUser.uid}`;
     if(localStorage.getItem(notificationBaselineKey)==="1") notifyIncomingActivity(currentConversations);
     else { currentConversations.forEach(c=>{const stamp=tsMillis(c.lastMessageAt);if(stamp)localStorage.setItem(`hv-notified-${currentUser.uid}-${c.id}`,String(stamp));});localStorage.setItem(notificationBaselineKey,"1"); }
@@ -1333,7 +1530,7 @@ function renderConversationList(rows) {
     const preview = c.lastMessageSender === currentUser?.uid ? `You: ${c.lastMessage || ""}` : (c.lastMessage || (c.isGroup ? "Group created" : "Say hello"));
     return `<button class="conversation-item ${c.id === activeConversationId ? "selected" : ""} ${unread ? "has-unread" : ""}" data-conversation="${esc(c.id)}"><span class="conversation-avatar ${c.isGroup ? "group-avatar" : ""}">${esc(avatar)}</span><span class="conversation-copy"><b>${esc(conversationLabel(c))}</b><small>${esc(preview)}</small></span><span class="conversation-side-meta"><time>${esc(time)}</time>${unread ? '<i class="unread-dot"></i>' : (pinned.has(c.id) ? '<i class="pinned-mark">⌖</i>' : '')}</span></button>`;
   }).join("");
-  list.querySelectorAll("[data-conversation]").forEach(b => b.onclick = () => { chatReturnHash = null; selectConversation(visible.find(c => c.id === b.dataset.conversation)); });
+  list.querySelectorAll("[data-conversation]").forEach(b => b.onclick = () => { chatReturnRoute = null; selectConversation(visible.find(c => c.id === b.dataset.conversation)); });
 }
 async function hideChatForMe() {
   if(!activeConversationId||!requireAccount())return;
@@ -1461,7 +1658,7 @@ function renderMessages(messages, options = {}) {
     const deliveryLabel=readByAll?"Read":deliveredByAll?"Delivered":"Sent";
     const status = mine ? `<span class="message-ticks ${readByAll?"read":deliveredByAll?"delivered":""}" title="${deliveryLabel}">${readByAll?"✓✓":deliveredByAll?"✓✓":"✓"}</span>` : "";
     const messageText = m.sharedItem ? "" : (m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || ""));
-    const shared = m.sharedItem ? `<a class="chat-shared-card" href="${esc(validUrl(m.sharedItem.url) || "#home")}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-kicker">${esc(m.sharedItem.type || "Shared item")} · HACKVERSE</span><b>${esc(m.sharedItem.title || "Shared update")}</b><small>${esc(m.sharedItem.description || "Open this shared item.")}</small><span class="chat-shared-link">Open link ↗</span></a>` : "";
+    const shared = m.sharedItem ? `<a class="chat-shared-card" href="${esc(validUrl(m.sharedItem.url) || "/")}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-kicker">${esc(m.sharedItem.type || "Shared item")} · HACKVERSE</span><b>${esc(m.sharedItem.title || "Shared update")}</b><small>${esc(m.sharedItem.description || "Open this shared item.")}</small><span class="chat-shared-link">Open link ↗</span></a>` : "";
     const forwarded = m.forwarded ? '<small class="message-forwarded">↪ Forwarded</small>' : "";
     return `<article class="message-row ${mine ? "mine" : "theirs"} ${animateIds.has(m.id) ? "is-new" : ""}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${forwarded}${reply}${shared}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}${isPinnedHere?'<small class="message-pinned-label">⌖ Pinned on this device</small>':""}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-pin-message="${esc(m.id)}" title="Pin on this device">${isPinnedHere?"⌖":"♧"}</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine&&canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}${!mine?`<button type="button" data-report-message="${esc(m.id)}" title="Report message">⚑</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete for me or everyone">⌫</button><button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
   }).join("");
@@ -1846,11 +2043,11 @@ async function reportMember(profile) {
 
 let openingDirectConversation = false;
 async function startDirectConversation(profile) {
-  if (!requireAccount() || openingDirectConversation) return;
-  const originHash = location.hash || "#messages";
-  chatReturnHash = originHash === "#messages" ? null : originHash;
+  if (!requireAccount() || openingDirectConversation) return null;
+  const originRoute = currentRouteName();
+  chatReturnRoute = originRoute === "messages" ? null : originRoute;
   const targetUid = profile?.uid || profile?.id;
-  if (!targetUid || targetUid === currentUser.uid) { toast("You cannot start a chat with your own account."); return; }
+  if (!targetUid || targetUid === currentUser.uid) { toast("You cannot start a chat with your own account."); return null; }
   openingDirectConversation = true;
   try {
     // Direct messages already use a deterministic ID in older releases. Reuse
@@ -1879,11 +2076,11 @@ async function startDirectConversation(profile) {
     if(stopMessageListener){stopMessageListener();stopMessageListener=null;}
     if(stopTypingListener){stopTypingListener();stopTypingListener=null;}
     activeConversationId=null; activeConversation=null;
-    history.pushState({}, "", "/#messages");
-    handleRoute();
+    navigateToRoute("messages");
     selectConversation(conversation);
     $("#chatMobileBackBtn")?.focus({ preventScroll: true });
-  } catch (error) { console.error("Could not start direct conversation", error); toast(friendlyError(error)); }
+    return conversationId;
+  } catch (error) { console.error("Could not start direct conversation", error); toast(friendlyError(error)); return null; }
   finally { openingDirectConversation = false; }
 }
 
@@ -1917,7 +2114,7 @@ async function createGroupWithMembers(groupName, peopleToAdd, groupDescription="
   const safeDescription=String(groupDescription||"").trim().slice(0,300);const safePhoto=validUrl(groupPhotoUrl||"");
   await setDoc(conversationRef,{isGroup:true,groupName,groupDescription:safeDescription,groupPhotoUrl:safePhoto,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:"Group created",createdAt:serverTimestamp(),updatedAt:serverTimestamp(),lastMessageAt:serverTimestamp()});
   const conversation = {id:conversationRef.id,isGroup:true,groupName,groupDescription:safeDescription,groupPhotoUrl:safePhoto,participants,participantNames,createdBy:currentUser.uid,admins:[currentUser.uid],lastMessage:"Group created",updatedAt:Date.now()};
-  location.hash="#messages"; selectConversation(conversation); toast("Team chat created.");
+  navigateToRoute("messages"); selectConversation(conversation); toast("Team chat created.");
 }
 async function createGroup(event) {
   event.preventDefault(); if (!requireAccount()) return;
@@ -2108,7 +2305,7 @@ async function createMatchedTeam() {
 function renderMyProfile() {
   const panel = $("#myProfilePanel");
   if (!currentUser || !publicProfile) {
-    panel.innerHTML = `<div class="profile-empty"><div class="placeholder-icon">◎</div><h3>${currentUser ? "Complete your builder profile." : "Your profile starts here."}</h3><p>${currentUser ? "Add your skills, college, interests, and preferred team roles." : "Sign in and complete your builder profile to be discoverable by teammates."}</p><button class="btn btn-primary" id="profileStartInline">${currentUser ? "Complete profile" : "Sign in to create profile"}</button></div>`;
+    panel.innerHTML = `<div class="profile-empty"><div class="placeholder-icon">◎</div><h3>${currentUser ? "Build your builder profile." : "Your profile starts here."}</h3><p>${currentUser ? "Start with your name and username. Add skills, education and links whenever you are ready." : "Sign in to create a profile and connect with other builders."}</p><button class="btn btn-primary" id="profileStartInline">${currentUser ? "Build my profile" : "Sign in to create profile"}</button></div>`;
     $("#profileStartInline").onclick = () => currentUser ? openProfileEditor(false) : openAuth();
     return;
   }
@@ -2160,7 +2357,7 @@ function shareProject(projectId) {
   // Project records are loaded into the profile showcase. The DOM card supplies safe display text;
   // links are re-read from its visible anchors rather than trusting arbitrary markup.
   const links = [...(card?.querySelectorAll(".member-links a") || [])].map(a => validUrl(a.href)).filter(Boolean);
-  const profileUrl = publicProfile?.username ? `${location.origin}/@${encodeURIComponent(publicProfile.username)}` : `${location.origin}/#profile`;
+  const profileUrl = publicProfile?.username ? `${location.origin}/@${encodeURIComponent(publicProfile.username)}` : `${location.origin}/profile`;
   const projectUrl = links[0] || profileUrl;
   const description = card?.querySelector("p")?.textContent?.slice(0, 500) || "A project shared by a HackVerse builder.";
   const visibility = card?.querySelector(".project-visibility")?.textContent?.trim().toLowerCase() || "private";
@@ -2206,7 +2403,7 @@ function renderBuilderPostCard(post, repost = null) {
   const postId = post.id;
   const privatePost = post.visibility === "private";
   const votes = postCount(builderPostVotes, postId);
-  const comments = builderPostComments.filter(row => row.postId === postId);
+  const comments = builderPostComments.filter(row => row.postId === postId).sort((a, b) => tsMillis(b.createdAt) - tsMillis(a.createdAt));
   const voted = builderPostVotes.some(row => row.postId === postId && row.userUid === currentUser?.uid);
   const saved = builderPostSaves.some(row => row.postId === postId && row.userUid === currentUser?.uid);
   const reposted = builderPostReposts.some(row => row.postId === postId && row.userUid === currentUser?.uid);
@@ -2266,25 +2463,49 @@ async function loadBuilderFeed() {
   feedLoadInProgress = true;
   const list = $("#builderFeedList");
   if (list && !builderPosts.length) list.innerHTML = '<div class="loading-card">Loading builder posts…</div>';
+  const cacheKey = `hv-builder-feed-v2:${currentUser.uid}`;
   try {
-    const [postsSnap, votesSnap, repostsSnap, commentsSnap, savesSnap, followsSnap] = await Promise.all([
-      getDocs(query(collection(db, "builderPosts"), orderBy("createdAt", "desc"), limit(120))),
-      getDocs(query(collection(db, "builderPostVotes"), limit(5000))),
-      getDocs(query(collection(db, "builderReposts"), limit(2000))),
-      getDocs(query(collection(db, "builderPostComments"), orderBy("createdAt", "desc"), limit(3000))),
-      getDocs(query(collection(db, "builderPostSaves"), where("userUid", "==", currentUser.uid), limit(1000))),
-      getDocs(query(collection(db, "builderFollows"), limit(5000)))
-    ]);
+    if (!builderPosts.length) {
+      try {
+        const cached = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
+        if (cached?.savedAt && Date.now() - cached.savedAt < 3 * 60 * 1000 && Array.isArray(cached.posts)) {
+          builderPosts = cached.posts;
+          builderPostVotes = cached.votes || [];
+          builderPostReposts = cached.reposts || [];
+          builderPostComments = cached.comments || [];
+          builderPostSaves = cached.saves || [];
+          builderFollows = cached.follows || [];
+          renderBuilderFeed();
+        }
+      } catch {}
+    }
+    // Fetch the feed page first. Engagement reads are then scoped to these post IDs,
+    // rather than downloading thousands of votes, comments and follows on every visit.
+    const postsSnap = await getDocs(query(collection(db, "builderPosts"), orderBy("createdAt", "desc"), limit(60)));
     builderPosts = postsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    builderPostVotes = votesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    builderPostReposts = repostsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    builderPostComments = commentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const postIds = builderPosts.map(post => post.id);
+    const chunks = [];
+    for (let index = 0; index < postIds.length; index += 30) chunks.push(postIds.slice(index, index + 30));
+    const relatedReadsPromise = chunks.length ? Promise.all(chunks.flatMap(ids => [
+      getDocs(query(collection(db, "builderPostVotes"), where("postId", "in", ids), limit(1200))),
+      getDocs(query(collection(db, "builderReposts"), where("postId", "in", ids), limit(600))),
+      getDocs(query(collection(db, "builderPostComments"), where("postId", "in", ids), limit(600)))
+    ])) : Promise.resolve([]);
+    const savesRead = getDocs(query(collection(db, "builderPostSaves"), where("userUid", "==", currentUser.uid), limit(500)));
+    const followersRead = getDocs(query(collection(db, "builderFollows"), where("followerUid", "==", currentUser.uid), limit(500)));
+    const followedByRead = getDocs(query(collection(db, "builderFollows"), where("followingUid", "==", currentUser.uid), limit(500)));
+    const [relatedReads, savesSnap, followsSnap, followedBySnap] = await Promise.all([relatedReadsPromise, savesRead, followersRead, followedByRead]);
+    const flatten = (snapshots) => snapshots.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    builderPostVotes = flatten(relatedReads.filter((_, index) => index % 3 === 0));
+    builderPostReposts = flatten(relatedReads.filter((_, index) => index % 3 === 1));
+    builderPostComments = flatten(relatedReads.filter((_, index) => index % 3 === 2));
     builderPostSaves = savesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    builderFollows = followsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    builderFollows = [...followsSnap.docs, ...followedBySnap.docs].map(d => ({ id: d.id, ...d.data() })).filter((row, index, all) => all.findIndex(item => item.id === row.id) === index);
+    try { sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), posts: builderPosts, votes: builderPostVotes, reposts: builderPostReposts, comments: builderPostComments, saves: builderPostSaves, follows: builderFollows })); } catch {}
     renderBuilderFeed();
   } catch (error) {
     console.error("Builder feed failed to load", error);
-    if (list) list.innerHTML = `<div class="empty-note">The Builder feed could not load. ${esc(friendlyError(error))} Deploy the community policies from supabase-community-v12.sql and try again.</div>`;
+    if (list && !list.querySelector(".builder-post-card")) list.innerHTML = `<div class="empty-note">The Builder feed could not load. ${esc(friendlyError(error))} Check the deployed database rules and indexes, then try again.</div>`;
   } finally { feedLoadInProgress = false; }
 }
 function openBuilderPostComposer() {
@@ -2435,7 +2656,7 @@ async function toggleSaveBuilderPost(postId) {
 }
 async function shareBuilderPost(postId) {
   const post = builderPosts.find(row => row.id === postId); if (!post) return;
-  const url = validUrl(post.demoUrl || post.repositoryUrl || post.otherUrl) || `${location.origin}/#feed`;
+  const url = validUrl(post.demoUrl || post.repositoryUrl || post.otherUrl) || `${location.origin}/feed`;
   openShareMenu({ type: "project", title: post.title || "HackVerse builder post", description: post.tagline || post.body || "See what builders are shipping on HackVerse.", url, sourceId: postId, visibility: post.visibility || "public" });
 }
 async function deleteBuilderPost(postId) {
@@ -3163,7 +3384,7 @@ async function sendAiMessage(event) {
         conversationId: activeAiConversationId,
         mode: aiMode,
         message,
-        page: (location.hash || "#home").slice(1),
+        page: currentRouteName(),
         activeConversationId: activeConversationId || ""
       }),
       signal: controller.signal
@@ -3245,7 +3466,7 @@ async function applyAiActions() {
     for (const action of actions) {
       try {
         if (action.type === "navigate") {
-          location.hash = `#${action.page}`;
+          navigateToRoute(action.page);
           completed.push(`Opened ${action.page}`);
 
         } else if (action.type === "search_opportunities") {
@@ -3258,11 +3479,11 @@ async function applyAiActions() {
           }
           allEventsVisible = 24;
           renderEvents();
-          location.hash = "#opportunities";
+          navigateToRoute("opportunities");
           completed.push("Applied opportunity search filters");
 
         } else if (action.type === "open_opportunity") {
-          location.hash = "#opportunities";
+          navigateToRoute("opportunities");
           await viewEvent(action.eventId);
           completed.push("Opened opportunity details");
 
@@ -3278,7 +3499,7 @@ async function applyAiActions() {
         } else if (action.type === "search_builders") {
           const searchQuery = String(action.query || "").trim().toLowerCase().replace(/^@/, "");
           $("#peopleSearch").value = action.query || "";
-          location.hash = "#people";
+          navigateToRoute("people");
 
           if (!db) throw new Error("Community search is unavailable until Supabase is configured.");
 
@@ -3540,7 +3761,7 @@ async function applyAiActions() {
             updatedAt: serverTimestamp()
           });
           await loadProjects();
-          location.hash = "#profile";
+          navigateToRoute("profile");
           completed.push(`Created ${action.visibility === "private" ? "private" : "public"} project “${title}”`);
 
         } else if (action.type === "delete_project") {
@@ -3621,7 +3842,7 @@ function applyAppPrefs(){const p=readAppPrefs();const theme=p.theme||localStorag
 function saveAppPrefs(){const p={theme:$("#settingTheme").value,motion:$("#settingMotion").value,fontFamily:$("#settingFontFamily").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked};localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
 function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme||localStorage.getItem("hackverse-theme")||(document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";}
 function upcomingSavedDeadlines(){if(!currentUser||readAppPrefs().opportunity===false)return [];const now=Date.now();return events.filter(e=>savedIds.has(e.id)).map(e=>({...e,deadlineMs:tsMillis(e.registrationDeadline)})).filter(e=>e.deadlineMs>now&&e.deadlineMs<=now+14*86400000).sort((a,b)=>a.deadlineMs-b.deadlineMs);}
-function notifyUpcomingDeadlines(){const prefs=readAppPrefs();if(!currentUser||!prefs.desktop||!("Notification" in window)||Notification.permission!=="granted")return;for(const e of upcomingSavedDeadlines()){const key=`hv-deadline-notified-${currentUser.uid}-${e.id}`;const stamp=String(e.deadlineMs);if(localStorage.getItem(key)===stamp)continue;localStorage.setItem(key,stamp);try{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));const n=new Notification("Saved opportunity deadline",{body:`${e.title||"A saved opportunity"} closes in ${days} day${days===1?"":"s"}.`,tag:`deadline-${e.id}`});n.onclick=()=>{window.focus();location.hash="#opportunities";viewEvent(e.id);};}catch{}}}
+function notifyUpcomingDeadlines(){const prefs=readAppPrefs();if(!currentUser||!prefs.desktop||!("Notification" in window)||Notification.permission!=="granted")return;for(const e of upcomingSavedDeadlines()){const key=`hv-deadline-notified-${currentUser.uid}-${e.id}`;const stamp=String(e.deadlineMs);if(localStorage.getItem(key)===stamp)continue;localStorage.setItem(key,stamp);try{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));const n=new Notification("Saved opportunity deadline",{body:`${e.title||"A saved opportunity"} closes in ${days} day${days===1?"":"s"}.`,tag:`deadline-${e.id}`});n.onclick=()=>{window.focus();navigateToRoute("opportunities");viewEvent(e.id);};}catch{}}}
 function renderNotificationCenter(){
   const feed=$("#notificationFeed");if(!feed)return;const prefs=readAppPrefs();
   if(!currentUser){feed.innerHTML='<div class="empty-note">Sign in to view your notifications and chat activity.</div>';$("#notificationBadge").hidden=true;$("#unreadChatCount").textContent="0";$("#activeChatCount").textContent="0";$("#savedOpportunityCount").textContent="0";return;}
@@ -3633,11 +3854,11 @@ function renderNotificationCenter(){
   const chatHtml=rows.length?'<div class="notification-section-heading">MESSAGES & CONVERSATIONS</div>'+rows.map(c=>{const unreadNow=chatIsUnread(c);const when=tsMillis(c.lastMessageAt)?new Date(tsMillis(c.lastMessageAt)).toLocaleString():"Recently";const preview=c.lastMessage||"Conversation updated";return `<button class="notification-item ${unreadNow?"unread":""}" type="button" data-open-notification-chat="${esc(c.id)}"><span class="notification-icon">${c.isGroup?"✦":"↗"}</span><span><b>${esc(conversationLabel(c))}${unreadNow?" · New message":""}</b><small>${esc(preview)}</small><time>${esc(when)}</time></span><i>${unreadNow?"NEW":"CHAT"}</i></button>`;}).join("") : "";
   const deadlineHtml=reminders.length?'<div class="notification-section-heading">SAVED OPPORTUNITY DEADLINES</div>'+reminders.map(e=>{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));return `<button class="notification-item deadline-item" type="button" data-open-notification-event="${esc(e.id)}"><span class="notification-icon">◷</span><span><b>${esc(e.title||"Saved opportunity")}</b><small>Registration closes in ${days} day${days===1?"":"s"} · ${esc(e.organizer||e.sourceName||"Organiser not listed")}</small><time>${new Date(e.deadlineMs).toLocaleDateString()}</time></span><i>DEADLINE</i></button>`;}).join("") : "";
   feed.innerHTML=chatHtml+deadlineHtml||'<div class="empty-note">You are all caught up. New chat activity and saved-opportunity deadlines will appear here.</div>';
-  feed.querySelectorAll("[data-open-notification-chat]").forEach(b=>b.onclick=()=>{const c=currentConversations.find(x=>x.id===b.dataset.openNotificationChat);if(c){location.hash="#messages";selectConversation(c);}});
-  feed.querySelectorAll("[data-open-notification-event]").forEach(b=>b.onclick=()=>{location.hash="#opportunities";viewEvent(b.dataset.openNotificationEvent);});
+  feed.querySelectorAll("[data-open-notification-chat]").forEach(b=>b.onclick=()=>{const c=currentConversations.find(x=>x.id===b.dataset.openNotificationChat);if(c){navigateToRoute("messages");selectConversation(c);}});
+  feed.querySelectorAll("[data-open-notification-event]").forEach(b=>b.onclick=()=>{navigateToRoute("opportunities");viewEvent(b.dataset.openNotificationEvent);});
 }
 function playAppNotificationTone(){try{const AudioContextClass=window.AudioContext||window.webkitAudioContext;if(!AudioContextClass)return;const context=new AudioContextClass();const oscillator=context.createOscillator();const gain=context.createGain();oscillator.type="sine";oscillator.frequency.value=740;gain.gain.setValueAtTime(0.0001,context.currentTime);gain.gain.exponentialRampToValueAtTime(0.08,context.currentTime+0.02);gain.gain.exponentialRampToValueAtTime(0.0001,context.currentTime+0.16);oscillator.connect(gain);gain.connect(context.destination);oscillator.start();oscillator.stop(context.currentTime+0.17);oscillator.onended=()=>context.close().catch(()=>{});}catch{}}
-function notifyIncomingActivity(rows){if(!currentUser)return;const prefs=readAppPrefs();for(const c of rows){if(c.lastMessageSender===currentUser.uid||!chatIsUnread(c))continue;const stamp=tsMillis(c.lastMessageAt);const key=`hv-notified-${currentUser.uid}-${c.id}`;if(!stamp||Number(localStorage.getItem(key)||0)>=stamp)continue;localStorage.setItem(key,String(stamp));if(prefs.sound)playAppNotificationTone();if(prefs.desktop&&"Notification" in window&&Notification.permission==="granted"){try{const n=new Notification(conversationLabel(c),{body:c.lastMessage||"New message",tag:c.id});n.onclick=()=>{window.focus();location.hash="#messages";selectConversation(c);};}catch{}}}}
+function notifyIncomingActivity(rows){if(!currentUser)return;const prefs=readAppPrefs();for(const c of rows){if(c.lastMessageSender===currentUser.uid||!chatIsUnread(c))continue;const stamp=tsMillis(c.lastMessageAt);const key=`hv-notified-${currentUser.uid}-${c.id}`;if(!stamp||Number(localStorage.getItem(key)||0)>=stamp)continue;localStorage.setItem(key,String(stamp));if(prefs.sound)playAppNotificationTone();if(prefs.desktop&&"Notification" in window&&Notification.permission==="granted"){try{const n=new Notification(conversationLabel(c),{body:c.lastMessage||"New message",tag:c.id});n.onclick=()=>{window.focus();navigateToRoute("messages");selectConversation(c);};}catch{}}}}
 function showSettingsTab(tab){$$('[data-settings-panel]').forEach(p=>p.classList.toggle("active",p.dataset.settingsPanel===tab));$$('[data-settings-tab]').forEach(b=>b.classList.toggle("active",b.dataset.settingsTab===tab));}
 const tourSteps=[
  {route:"feed",selector:"#builderFeedPage .section-heading",title:"Builder feed",text:"Ship project launches, demos and progress updates. Builders can upvote, comment, repost, save and share public posts. You can control post visibility when publishing."},
@@ -3654,13 +3875,13 @@ const tourSteps=[
 ];
 let activeTourIndex=-1;
 function removeTourHighlight(){document.querySelectorAll(".tour-highlight").forEach(el=>el.classList.remove("tour-highlight"));}
-function renderTourStep(index){activeTourIndex=Math.max(0,Math.min(index,tourSteps.length-1));const step=tourSteps[activeTourIndex];removeTourHighlight();if(location.hash!==`#${step.route}`)location.hash=`#${step.route}`;setTimeout(()=>{const target= [...document.querySelectorAll(step.selector)].find(el=>!el.hidden&&el.getClientRects().length) || document.querySelector("main");target?.scrollIntoView({behavior:readAppPrefs().motion==="reduced"?"auto":"smooth",block:"center"});target?.classList.add("tour-highlight");$("#tourStepCount").textContent=`GUIDE ${activeTourIndex+1} / ${tourSteps.length}`;$("#tourProgressBar").style.width=`${((activeTourIndex+1)/tourSteps.length)*100}%`;$("#tourTitle").textContent=step.title;$("#tourDescription").textContent=step.text;$("#tourBackBtn").disabled=activeTourIndex===0;$("#tourNextBtn").textContent=activeTourIndex===tourSteps.length-1?"Finish tour ✓":"Next →";},180);}
+function renderTourStep(index){activeTourIndex=Math.max(0,Math.min(index,tourSteps.length-1));const step=tourSteps[activeTourIndex];removeTourHighlight();if(currentRouteName()!==step.route)navigateToRoute(step.route);setTimeout(()=>{const target= [...document.querySelectorAll(step.selector)].find(el=>!el.hidden&&el.getClientRects().length) || document.querySelector("main");target?.scrollIntoView({behavior:readAppPrefs().motion==="reduced"?"auto":"smooth",block:"center"});target?.classList.add("tour-highlight");$("#tourStepCount").textContent=`GUIDE ${activeTourIndex+1} / ${tourSteps.length}`;$("#tourProgressBar").style.width=`${((activeTourIndex+1)/tourSteps.length)*100}%`;$("#tourTitle").textContent=step.title;$("#tourDescription").textContent=step.text;$("#tourBackBtn").disabled=activeTourIndex===0;$("#tourNextBtn").textContent=activeTourIndex===tourSteps.length-1?"Finish tour ✓":"Next →";},180);}
 function startWebsiteTour(){activeTourIndex=0;$("#tourOverlay").hidden=false;renderTourStep(0);}
 function endWebsiteTour(){removeTourHighlight();$("#tourOverlay").hidden=true;activeTourIndex=-1;localStorage.setItem("hackverse-tour-complete","1");}
 function initAdvancedUI(){
   applyAppPrefs();loadSettingsUI();
-  $("#notificationBell").onclick=()=>location.hash="#notifications";
-  $("#notificationSettingsBtn").onclick=()=>{location.hash="#settings";setTimeout(()=>showSettingsTab("notifications"),100);};
+  $("#notificationBell").onclick=()=>navigateToRoute("notifications");
+  $("#notificationSettingsBtn").onclick=()=>{navigateToRoute("settings");setTimeout(()=>showSettingsTab("notifications"),100);};
   $("#openNotificationPreferences").onclick=$("#notificationSettingsBtn").onclick;
   $("#markAllReadBtn").onclick=async()=>{if(!requireAccount())return;await Promise.all(currentConversations.map(c=>markConversationRead(c.id)));toast("Your conversation activity is marked as read.");};
   $("#saveSettingsBtn").onclick=saveAppPrefs;["#settingTheme","#settingMotion","#settingFontFamily","#settingTextSize","#prefReduceMotion"].forEach(sel=>$(sel).addEventListener("change",()=>{const p=readAppPrefs();p.theme=$("#settingTheme").value;p.motion=$("#settingMotion").value;p.textSize=$("#settingTextSize").value;p.fontFamily=$("#settingFontFamily").value;p.reduceMotion=$("#prefReduceMotion").checked;localStorage.setItem("hackverse-app-preferences",JSON.stringify({...p}));if(p.theme)localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();}));
@@ -3670,6 +3891,7 @@ function initAdvancedUI(){
     if(!requireAccount())return;
     const base=publicProfile||privateProfile?.profileData;
     if(!base){toast("Complete your profile first.");return;}
+    if(e.target.value!=="private"&&!base.profileConsentAt){e.target.value="private";toast("Open your profile editor and opt in to community visibility before making your profile discoverable.");return;}
     const next={...base,profileVisibility:e.target.value};
     try{
       await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:e.target.value,profileData:next,updatedAt:serverTimestamp()},{merge:true});
@@ -3681,7 +3903,7 @@ function initAdvancedUI(){
   });
   $$('[data-settings-tab]').forEach(b=>b.onclick=()=>showSettingsTab(b.dataset.settingsTab));
   $("#navTourBtn").onclick=()=>{ $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); startWebsiteTour(); };$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);
-  $("#newDirectChatBtn").onclick=()=>{chatReturnHash="#people";location.hash="#people";setTimeout(()=>{const grid=$("#peopleGrid");if(grid){grid.hidden=false;$("#viewMembersBtn").textContent="Hide members";$("#viewMembersBtn").setAttribute("aria-expanded","true");searchPeople();}},0);};$("#chatMenuBtn").onclick=openChatActions;
+  $("#newDirectChatBtn").onclick=()=>{chatReturnRoute="people";navigateToRoute("people");setTimeout(()=>{const grid=$("#peopleGrid");if(grid){grid.hidden=false;$("#viewMembersBtn").textContent="Hide members";$("#viewMembersBtn").setAttribute("aria-expanded","true");searchPeople();}},0);};$("#chatMenuBtn").onclick=openChatActions;
   $$('[data-chat-filter]').forEach(b=>b.onclick=()=>{activeChatFilter=b.dataset.chatFilter;$$('[data-chat-filter]').forEach(x=>x.classList.toggle("active",x===b));renderConversationList(currentConversations);});
   $("#chatSearchToggle").onclick=()=>{$("#messageSearchWrap").hidden=!$("#messageSearchWrap").hidden;if(!$("#messageSearchWrap").hidden)$("#messageSearch").focus();};$("#chatDetailsBtn").onclick=openChatIdentity;
   $("#cancelReply").onclick=()=>{replyingToMessageId=null;updateReplyPreview();};
@@ -3696,36 +3918,34 @@ function initAdvancedUI(){
 }
 
 function handleRoute() {
-  const profileMatch = location.pathname.match(/^\/@([A-Za-z0-9_]{3,24})\/?$/);
-  const postMatch = location.pathname.match(/^\/post\/([0-9a-f-]{36})\/?$/i);
-  let raw=(location.hash||"#home").slice(1);
-  const aliases={top:"home",discover:"home",opportunities:"opportunities",feed:"feed",build:"feed",posts:"posts",saved:"saved",people:"people",messages:"messages",aiwish:"aiwish",profile:"profile",notifications:"notifications",settings:"settings",reports:"reports"};
-  const view=profileMatch ? "public-profile" : postMatch ? "post-detail" : (aliases[raw]||"home");
-  const aiPanel=$("#aiPanel"), wishMount=$("#aiWishMount"), aiAssistant=$("#aiAssistant");
-  if(view==="aiwish"){
-    if(aiPanel.parentElement!==wishMount) wishMount.append(aiPanel);
-    aiPanel.classList.add("ai-panel-page"); aiPanel.hidden=false; aiAssistant.classList.add("ai-on-wish-page");
+  const pathname = location.pathname.replace(/\/+$/, "") || "/";
+  const profileMatch = pathname.match(/^\/@([A-Za-z0-9_]{3,24})$/);
+  const postMatch = pathname.match(/^\/post\/([0-9a-f-]{36})$/i);
+  const view = profileMatch ? "public-profile" : postMatch ? "post-detail" : currentRouteName();
+  const aiPanel = $("#aiPanel"), wishMount = $("#aiWishMount"), aiAssistant = $("#aiAssistant");
+  if (view === "aiwish") {
+    if (aiPanel.parentElement !== wishMount) wishMount.append(aiPanel);
+    aiPanel.classList.add("ai-panel-page"); aiPanel.hidden = false; aiAssistant.classList.add("ai-on-wish-page");
     setAiMode("wish"); updateAiAccessUI(); setAiHistoryOpen(false);
-  }else{
-    if(aiPanel.parentElement!==aiAssistant) aiAssistant.append(aiPanel);
-    aiPanel.classList.remove("ai-panel-page"); aiPanel.hidden=true; aiAssistant.classList.remove("ai-on-wish-page");
+  } else {
+    if (aiPanel.parentElement !== aiAssistant) aiAssistant.append(aiPanel);
+    aiPanel.classList.remove("ai-panel-page"); aiPanel.hidden = true; aiAssistant.classList.remove("ai-on-wish-page");
     setAiHistoryOpen(false); setAiMode("chat");
   }
   const needsInbox = view === "messages" || view === "notifications";
-  if(needsInbox && currentUser && !stopInboxListener) beginInboxListener();
-  else if(!needsInbox && stopInboxListener){stopInboxListener();stopInboxListener=null;}
-  if(view!=="messages"){
-    if(stopMessageListener){stopMessageListener();stopMessageListener=null;}
-    if(stopTypingListener){stopTypingListener();stopTypingListener=null;}
-  } else if(activeConversation && activeConversationId && !stopMessageListener){
-    selectConversation(activeConversation);
-  }
+  if (needsInbox && currentUser && !stopInboxListener) beginInboxListener();
+  else if (!needsInbox && stopInboxListener) { stopInboxListener(); stopInboxListener = null; }
+  if (view !== "messages") {
+    if (stopMessageListener) { stopMessageListener(); stopMessageListener = null; }
+    if (stopTypingListener) { stopTypingListener(); stopTypingListener = null; }
+  } else if (activeConversation && activeConversationId && !stopMessageListener) selectConversation(activeConversation);
+
   const requiresMember = view !== "home";
   const blocked = requiresMember && !currentUser;
-  $("#routeAccessGate").hidden=!blocked;
-  $$('[data-view]').forEach(el=>{
-    if(el.id==="discoveryAdminPanel"){el.hidden=blocked||!(view==="home"&&isAdminUser);return;}
-    el.hidden=blocked || el.dataset.view!==view;
+  $("#routeAccessGate").hidden = !blocked;
+  $$('[data-view]').forEach(el => {
+    if (el.id === "discoveryAdminPanel") { el.hidden = blocked || !(view === "home" && isAdminUser); return; }
+    el.hidden = blocked || el.dataset.view !== view;
     if (!el.hidden) {
       el.classList.remove("hv-route-enter");
       requestAnimationFrame(() => {
@@ -3736,21 +3956,24 @@ function handleRoute() {
       });
     }
   });
-  if(blocked){aiPanel.hidden=true;aiAssistant.classList.remove("ai-on-wish-page");}
-  $$("[data-route]").forEach(a=>a.classList.toggle("active",a.dataset.route===view));
+  if (blocked) { aiPanel.hidden = true; aiAssistant.classList.remove("ai-on-wish-page"); }
+  $$('[data-route]').forEach(a => a.classList.toggle("active", a.dataset.route === view));
   document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
-  window.scrollTo({top:0,behavior:"auto"});
-  if(blocked)return;
-  if(view==="opportunities"){ updateEventAccessUI(); if(currentUser)renderEvents(); }
-  if(view==="feed") void loadBuilderFeed();
-  if(view==="posts") void loadSocialFeed({reset:true});
-  if(view==="public-profile" && profileMatch) void loadPublicProfilePage(profileMatch[1]);
-  if(view==="reports"){updateReportFields();void loadMyReports();if(isAdminUser)void loadAdminReports();}
-  if(view==="profile"){ if(currentUser){ void loadHackathonHistory(); if(!builderPosts.length) void loadBuilderFeed(); } }
-  if(view==="saved")renderSaved();
-  if(view==="people"&&currentUser)searchPeople();
-  if(view==="notifications"){renderNotificationCenter();void loadSocialNotifications();}
-  if(view==="settings")loadSettingsUI();
+  const titles = { home: "HackVerse", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
+  document.title = `${titles[view] || "HackVerse"} — HackVerse`;
+  window.scrollTo({ top: 0, behavior: "auto" });
+  if (blocked) return;
+  if (view === "opportunities") { updateEventAccessUI(); if (currentUser) renderEvents(); }
+  if (view === "feed") void loadBuilderFeed();
+  if (view === "posts") void loadSocialFeed({ reset: true });
+  if (view === "public-profile" && profileMatch) void loadPublicProfilePage(profileMatch[1]);
+  if (view === "post-detail" && postMatch) void loadSocialPostDetail(postMatch[1]);
+  if (view === "reports") { updateReportFields(); void loadMyReports(); if (isAdminUser) void loadAdminReports(); }
+  if (view === "profile") { if (currentUser) { void loadHackathonHistory(); if (!builderPosts.length) void loadBuilderFeed(); } }
+  if (view === "saved") renderSaved();
+  if (view === "people" && currentUser) searchPeople();
+  if (view === "notifications") { renderNotificationCenter(); void loadSocialNotifications(); }
+  if (view === "settings") loadSettingsUI();
 }
 
 function bindUI() {
@@ -3769,6 +3992,19 @@ function bindUI() {
     window.setTimeout(() => { minimumElapsed = true; dismissSplash(); }, 180);
     window.setTimeout(() => { pageReady = true; minimumElapsed = true; dismissSplash(); }, 1100);
   }
+
+  document.addEventListener("click", event => {
+    const link = event.target.closest("a[href]");
+    if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (link.target === "_blank" || link.hasAttribute("download")) return;
+    const rawHref = link.getAttribute("href") || "";
+    if (rawHref.startsWith("mailto:") || rawHref.startsWith("tel:") || rawHref.startsWith("javascript:")) return;
+    let target;
+    try { target = new URL(link.href, location.href); } catch { return; }
+    if (target.origin !== location.origin || !isAppRoutePath(target.pathname)) return;
+    event.preventDefault();
+    navigateToRoute(target.pathname + target.search);
+  });
   document.addEventListener("visibilitychange",()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);});
   window.setInterval(()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);},10*60*1000);
   $("#year").textContent = new Date().getFullYear();
@@ -3778,8 +4014,8 @@ function bindUI() {
   document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!$("#appDialog").hidden)closeInAppDialog();});
   $("#authButton").onclick = () => currentUser ? signOut(auth).then(() => toast("Signed out.")) : openAuth();
   $$('[data-open-auth]').forEach(button => button.addEventListener("click", () => openAuth()));
-  $("#accountButton").onclick = () => currentUser ? location.hash = "#profile" : openAuth("signup");
-  $("#ctaJoin").onclick = () => currentUser ? location.hash = "#profile" : openAuth("signup");
+  $("#accountButton").onclick = () => currentUser ? navigateToRoute("profile") : openAuth("signup");
+  $("#ctaJoin").onclick = () => currentUser ? navigateToRoute("profile") : openAuth("signup");
   $("#profileStartBtn").onclick = () => currentUser ? openProfileEditor(false) : openAuth("signup");
   $("#editProfileBtn").onclick = () => currentUser ? openProfileEditor(false) : openAuth("signup");
   $("#editProfileFromPeople").onclick = () => currentUser ? openProfileEditor(false) : openAuth("signup");
@@ -3809,8 +4045,8 @@ function bindUI() {
     if(stopMessageListener)stopMessageListener(); if(stopTypingListener)stopTypingListener();
     stopMessageListener=null; stopTypingListener=null; activeConversationId=null; activeConversation=null; currentMessages=[]; replyingToMessageId=null;
     $("#chatActive").hidden=true; $("#chatPlaceholder").hidden=false; $(".chat-workspace")?.classList.remove("has-active-chat");
-    const returnHash = chatReturnHash; chatReturnHash = null;
-    if (returnHash) { location.hash = returnHash; return; }
+    const returnRoute = chatReturnRoute; chatReturnRoute = null;
+    if (returnRoute) { navigateToRoute(returnRoute); return; }
     renderConversationList(currentConversations);
   };
   $("#chatMobileBackBtn").onclick=backToChatList;
@@ -3823,7 +4059,6 @@ function bindUI() {
   $("#communityReportForm").addEventListener("submit",submitCommunityReport);
   $("#reportTargetType").addEventListener("change",updateReportFields);
   $("#createBuilderPostBtn").onclick = openBuilderPostComposer;
-  $("#createBuilderPostSideBtn").onclick = openBuilderPostComposer;
   $("#builderPostForm").addEventListener("submit", createBuilderPost);
   $("#builderPostImageFile").addEventListener("change", event => { const file = event.target.files?.[0]; if (!file) { $("#builderPostImagePreview").hidden = true; return; } if (file.size > 8*1024*1024) { toast("Project images must be 8 MB or smaller."); event.target.value = ""; return; } const url = URL.createObjectURL(file); $("#builderPostImagePreviewImg").src = url; $("#builderPostImagePreview").hidden = false; });
   $$("[data-feed-filter]").forEach(button => button.addEventListener("click", () => { builderFeedFilter = button.dataset.feedFilter; $$("[data-feed-filter]").forEach(item => item.classList.toggle("active", item === button)); renderBuilderFeed(); }));
@@ -3835,7 +4070,7 @@ function bindUI() {
   $("#projectForm").addEventListener("submit", createProject);
   $$("[data-close]").forEach(button => button.addEventListener("click", () => { const id = button.dataset.close; if (id === "profileModal") closeProfileModal(); else hideModal(id); }));
   $$(".modal-backdrop").forEach(modal => modal.addEventListener("click", e => { if (e.target === modal) { if (modal.id === "profileModal") closeProfileModal(); else hideModal(modal.id); } }));
-  document.addEventListener("keydown", e => { if (e.key === "Escape") { closeMainNav(); } if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(location.hash==="#aiwish") location.hash="#home"; else { $("#aiPanel").hidden = true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") { closeMainNav(); } if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(currentRouteName()==="aiwish") navigateToRoute("home"); else { $("#aiPanel").hidden = true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
@@ -3853,15 +4088,15 @@ function bindUI() {
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
-  $("#aiLaunchBtn").onclick = () => { if(location.hash==="#aiwish") location.hash="#home"; const panel=$("#aiPanel"),assistant=$("#aiAssistant"); if(panel.parentElement!==assistant) assistant.append(panel); panel.classList.remove("ai-panel-page"); setAiMode("chat"); panel.hidden=!panel.hidden; $("#aiLaunchBtn").setAttribute("aria-expanded",String(!panel.hidden)); if(!panel.hidden) setAiHistoryOpen(false); };
+  $("#aiLaunchBtn").onclick = () => { if(currentRouteName()==="aiwish") navigateToRoute("home"); const panel=$("#aiPanel"),assistant=$("#aiAssistant"); if(panel.parentElement!==assistant) assistant.append(panel); panel.classList.remove("ai-panel-page"); setAiMode("chat"); panel.hidden=!panel.hidden; $("#aiLaunchBtn").setAttribute("aria-expanded",String(!panel.hidden)); if(!panel.hidden) setAiHistoryOpen(false); };
   $("#aiHistoryToggle").onclick = () => setAiHistoryOpen($("#aiHistoryDrawer").hidden);
-  $("#aiCloseBtn").onclick = () => { if(location.hash==="#aiwish"){location.hash="#home";return;} $("#aiPanel").hidden=true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded","false"); };
+  $("#aiCloseBtn").onclick = () => { if(currentRouteName()==="aiwish"){navigateToRoute("home");return;} $("#aiPanel").hidden=true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded","false"); };
   $("#aiNewChatBtn").onclick = () => currentUser ? startAiConversation(aiMode) : (openAuth(), toast("Sign in to keep a private AI history."));
   $("#aiClearHistoryBtn").onclick = clearAiHistoryForMode;
   $("#aiForm").addEventListener("submit", sendAiMessage);
   $("#aiInput").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#aiForm").requestSubmit(); } });
   $("#peopleSearch").addEventListener("input", searchPeople); $("#peopleRole").onchange = searchPeople; $("#lookingForTeamOnly").onchange = searchPeople;
-  $("#backToExploreBtn").onclick = () => { location.hash = "#opportunities"; };
+  $("#backToExploreBtn").onclick = () => { navigateToRoute("opportunities"); };
   $("#themeToggle").onclick = () => { const prefs=readAppPrefs();prefs.theme=document.body.classList.contains("light")?"dark":"light";localStorage.setItem("hackverse-app-preferences",JSON.stringify(prefs));localStorage.setItem("hackverse-theme",prefs.theme);applyAppPrefs();if($("#settingTheme"))$("#settingTheme").value=prefs.theme; };
   const mainNav = document.querySelector(".desktop-nav");
   const closeMainNav = () => {
@@ -3886,9 +4121,9 @@ function bindUI() {
     if (!mainNav?.classList.contains("mobile-open") && $("#navMoreMenu").hidden) return;
     if (!event.target.closest(".topbar")) closeMainNav();
   });
-  window.addEventListener("hashchange",handleRoute); handleRoute();
+  handleRoute();
 }
-function runHeroSearch() { if (!requireAccount()) return; $("#eventSearch").value = $("#heroSearch").value; renderEvents(); location.hash = "#opportunities"; }
+function runHeroSearch() { if (!requireAccount()) return; $("#eventSearch").value = $("#heroSearch").value; renderEvents(); navigateToRoute("opportunities"); }
 
 window.addEventListener("popstate", handleRoute);
 bindUI();

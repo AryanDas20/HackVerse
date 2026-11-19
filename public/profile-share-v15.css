@@ -1,0 +1,81 @@
+/* HackVerse v15 — progressive profile setup, native sharing and contact picker. */
+.profile-step {
+  margin: 10px 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface2);
+  overflow: clip;
+}
+.profile-step > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 16px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text);
+  font: 700 12px 'Space Grotesk', sans-serif;
+}
+.profile-step > summary::-webkit-details-marker { display: none; }
+.profile-step > summary::after { content: '＋'; color: var(--accent); font-size: 16px; }
+.profile-step[open] > summary::after { content: '−'; }
+.profile-step > summary small { margin-left: auto; color: var(--muted); font: 500 10px 'DM Sans', sans-serif; text-align: right; }
+.profile-step[open] > .form-grid { padding: 2px 16px 14px; }
+.profile-step .form-section-title { border: 0; margin: 0; padding: 3px 16px 9px; }
+.profile-form-actions { margin-top: 16px; }
+.profile-form-actions .btn[aria-busy="true"] { opacity: .7; cursor: wait; }
+.share-picker-backdrop { z-index: 1200; }
+.share-picker-modal { width: min(520px, 100%); max-height: min(82dvh, 720px); display: flex; flex-direction: column; }
+.share-picker-modal h2 { margin-bottom: 6px; }
+.share-picker-modal > p { margin-bottom: 15px; font-size: 12px; }
+.share-picker-search-label { display: block; margin: 0 0 10px; }
+.share-picker-search-label input { width: 100%; min-height: 44px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface2); color: var(--text); }
+.share-picker-list { overflow-y: auto; min-height: 100px; max-height: 48dvh; display: grid; gap: 4px; overscroll-behavior: contain; }
+.share-picker-contact { display: flex; align-items: center; gap: 11px; width: 100%; min-height: 64px; padding: 9px 10px; border: 0; border-radius: 12px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.share-picker-contact:hover { background: var(--surface2); }
+.share-picker-avatar { width: 42px; height: 42px; display: grid; place-items: center; flex: 0 0 auto; overflow: hidden; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font: 700 12px 'Space Grotesk', sans-serif; }
+.share-picker-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.share-picker-avatar.is-group { border-radius: 14px; }
+.share-picker-contact-copy { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.share-picker-contact-copy b { font-size: 12px; font-weight: 700; }
+.share-picker-contact-copy small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.share-picker-send { padding: 7px 11px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 10px; font-weight: 700; }
+.share-picker-contact:disabled { opacity: .65; cursor: wait; }
+@media (max-width: 600px) {
+  .profile-step > summary { align-items: flex-start; flex-wrap: wrap; }
+  .profile-step > summary small { width: 100%; margin: -4px 0 0; text-align: left; }
+  .share-picker-backdrop { align-items: flex-end; padding: 8px; }
+  .share-picker-modal { width: 100%; max-height: 88dvh; padding: 24px 16px max(18px, env(safe-area-inset-bottom)); border-radius: 20px 20px 12px 12px; }
+}
+
+/* Keep long timelines responsive by deferring paint for cards outside the viewport. */
+.social-post-card,
+.builder-post-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 440px;
+}
+.share-action-modal { gap: 14px; }
+.share-action-list { display: grid; gap: 7px; }
+.share-action-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 66px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface2);
+  color: var(--text);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.share-action-option:hover { border-color: var(--accent); }
+.share-action-option > span:nth-child(2) { display: grid; gap: 4px; flex: 1; }
+.share-action-option b { font-size: 12px; }
+.share-action-option small { color: var(--muted); font-size: 10px; }
+.share-action-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; background: var(--accent-soft); color: var(--accent); font-size: 19px; }
+.share-action-arrow { color: var(--muted); }
+.share-picker-section-title { padding: 12px 8px 5px; color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .12em; }

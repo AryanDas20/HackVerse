@@ -92,6 +92,7 @@ function matches(row, constraint) {
     case "==": return JSON.stringify(value) === JSON.stringify(expected);
     case "!=": return JSON.stringify(value) !== JSON.stringify(expected);
     case "array-contains": return Array.isArray(value) && value.includes(expected);
+    case "in": return Array.isArray(expected) && expected.some(item => JSON.stringify(value) === JSON.stringify(item));
     case "<": return comparable(value) < comparable(expected);
     case "<=": return comparable(value) <= comparable(expected);
     case ">": return comparable(value) > comparable(expected);
@@ -146,6 +147,9 @@ async function fetchRows(collectionRef, constraints = []) {
       case "<": request = request.lt(scalarColumn, String(constraint.value)); break;
       case "<=": request = request.lte(scalarColumn, String(constraint.value)); break;
       case "array-contains": request = request.contains("participants", [constraint.value]); break;
+      case "in":
+        if (Array.isArray(constraint.value) && constraint.value.length) request = request.in(scalarColumn, constraint.value.map(String));
+        break;
     }
   }
   const orderConstraints = constraints.filter(item => item.type === "orderBy");
@@ -304,13 +308,19 @@ export function writeBatch(_db) {
   return { set(ref, value, options = {}) { ops.push(() => setDoc(ref, value, options)); }, update(ref, value) { ops.push(() => updateDoc(ref, value)); }, delete(ref) { ops.push(() => deleteDoc(ref)); }, async commit() { for (const op of ops) await op(); } };
 }
 export async function runTransaction(_db, callback) {
+  // Firestore transactions expose synchronous set/update/delete queue methods.
+  // Match that contract and await the Supabase REST writes after the callback,
+  // so callers cannot report success before persistence finishes.
+  const writes = [];
   const tx = {
     async get(ref) { return getDoc(ref); },
-    set(ref, value, options = {}) { return setDoc(ref, value, options); },
-    update(ref, value) { return updateDoc(ref, value); },
-    delete(ref) { return deleteDoc(ref); }
+    set(ref, value, options = {}) { writes.push(() => setDoc(ref, value, options)); return tx; },
+    update(ref, value) { writes.push(() => updateDoc(ref, value)); return tx; },
+    delete(ref) { writes.push(() => deleteDoc(ref)); return tx; }
   };
-  return callback(tx);
+  const result = await callback(tx);
+  await Promise.all(writes.map(write => write()));
+  return result;
 }
 
 export function onSnapshot(target, callback, errorCallback) {
