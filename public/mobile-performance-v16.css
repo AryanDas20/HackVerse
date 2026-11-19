@@ -1,0 +1,26 @@
+/* v16 — scroll and paint performance. Loaded last so it overrides earlier decorative effects. */
+
+/* Every card floated and rotated forever (cardFloat), keeping dozens of layers animating at all times.
+   Hover/press feedback is kept; the endless idle motion is removed on every device. */
+.event-card, .feature-card, .person-card, .profile-panel, .chat-workspace,
+.deadline-band, .settings-grid, .notification-layout { animation: none !important; }
+
+/* Two full-screen blurred "nebula" blobs animated forever and were re-blurred on every frame.
+   On phones/tablets they are removed; on desktop they stay but no longer animate. */
+body:before, body:after { animation: none !important; }
+@media (max-width: 900px), (hover: none) {
+  body:before, body:after { display: none !important; }
+  /* background-attachment: fixed forces a full repaint on every scroll frame on mobile browsers. */
+  body { background-attachment: scroll !important; }
+  .topbar, .modal-backdrop, .app-dialog-backdrop, .tour-overlay {
+    -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+  }
+  .btn-primary, .event-card, .person-card, .social-post-card { box-shadow: none !important; }
+  html { scroll-behavior: auto; }
+}
+
+/* Long lists: skip layout and paint for cards that are off-screen. */
+.social-post-card, .event-card, .person-card, .builder-post-card, .profile-history-card {
+  content-visibility: auto; contain-intrinsic-size: auto 280px;
+}
+.social-post-media img, .chat-attachment-image img { max-width: 100%; height: auto; }

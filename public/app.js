@@ -433,7 +433,7 @@ function renderSocialPost(post) {
   const own = post.author_id === currentUser?.uid;
   const vote = post.viewer_vote || null;
   const media = validUrl(post.media_url || "");
-  const mediaMarkup = media && post.media_type === "image" ? `<a class="social-post-media" href="${esc(media)}" target="_blank" rel="noopener noreferrer"><img src="${esc(media)}" alt="Post attachment" loading="lazy"></a>`
+  const mediaMarkup = media && post.media_type === "image" ? `<a class="social-post-media" href="${esc(media)}" target="_blank" rel="noopener noreferrer"><img src="${esc(media)}" alt="Post attachment" loading="lazy" decoding="async"></a>`
     : media && post.media_type === "video" ? `<div class="social-post-media"><video src="${esc(media)}" controls preload="metadata" playsinline></video></div>` : "";
   const hashtags = (post.hashtags || []).slice(0, 12).map(tag => `<span>#${esc(tag)}</span>`).join("");
   const id = esc(post.id);
