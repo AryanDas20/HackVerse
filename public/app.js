@@ -12,9 +12,10 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const CONFIGURED = Boolean(supabaseConfig.url && !String(supabaseConfig.url).startsWith("YOUR_") && supabaseConfig.anonKey && !String(supabaseConfig.anonKey).startsWith("YOUR_"));
 let currentUser = null, authMode = "signin", isAdminUser = false;
-let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [];
+let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [], peopleDirectoryRows = [];
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null, chatReturnRoute = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
+let peopleCursor = null, peopleHasMore = false, peopleLoading = false, peopleSearchKey = "", peopleSearchRequest = 0;
 let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
 let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [], isSendingChatMessage = false;
 let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false, pendingAiUserMessage = "", aiAvailableBuilderUids = [];
@@ -614,6 +615,35 @@ async function toggleSocialComments(postId) {
     } catch (error) { list.querySelector(".empty-note")?.remove(); list.insertAdjacentHTML("afterbegin", `<div class="empty-note">${esc(error.message)}</div>`); }
   }
 }
+async function reconcileLegacyBuilderDirectory() {
+  if (!currentUser) return;
+  const storageKey = "hv-public-directory-reconcile-v19";
+  try {
+    const lastRun = Number(localStorage.getItem(storageKey) || 0);
+    if (Date.now() - lastRun < 24 * 60 * 60 * 1000) return;
+    const token = await currentUser.getIdToken();
+    const response = await fetch("/api/profile-directory-reconcile", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Directory refresh failed (${response.status}).`);
+    localStorage.setItem(storageKey, String(Date.now()));
+    const ownProfile = await getDoc(doc(db, "publicProfiles", currentUser.uid));
+    if (ownProfile.exists()) {
+      publicProfile = ownProfile.data();
+      renderMyProfile();
+    }
+    if (Number(result.restored || 0) > 0) {
+      if (currentRouteName() === "people") void searchPeople();
+      console.info(`Restored ${Number(result.restored)} legacy public Builder profiles.`);
+    }
+  } catch (error) {
+    console.warn("Legacy Builder directory refresh deferred", error);
+  }
+}
+
 async function syncSocialProfile(profile) {
   if (!profile?.username || !currentUser) return;
   try { await socialRequest("sync-profile", { username: profile.username, displayName: profile.displayName, bio: profile.bio, avatarUrl: profile.avatarUrl, website: profile.website || profile.portfolio, coverUrl: profile.coverUrl, location: [profile.city, profile.country].filter(Boolean).join(", "), pronouns: profile.pronouns, githubUrl: profile.github, linkedinUrl: profile.linkedin, portfolioUrl: profile.portfolio, visibility: profile.profileVisibility }); }
@@ -752,6 +782,7 @@ function initSupabase() {
     $("#authButton").textContent = user ? "Sign out" : "Sign in";
     $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
     if (!user) {
+      people = []; peopleDirectoryRows = []; peopleCursor = null; peopleHasMore = false; peopleLoading = false; peopleSearchRequest += 1;
       clearTimeout(profileNudgeTimer); profileNudgeTimer = null; profileStats = null; profileStatsLoading = false; lastBuilderFeedLoadedAt = 0; builderCommentsLoaded.clear(); builderCommentsLoading.clear(); pendingBuilderVotes.clear(); if (voiceRecorder?.state === "recording") voiceRecorder.stop();
       privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[]; pendingChatFile = null; builderPosts=[]; builderPostVotes=[]; builderPostReposts=[]; builderPostComments=[]; builderPostSaves=[]; builderFollows=[]; hackathonHistory=[]; renderPendingChatAttachment(); renderNotificationCenter(); renderBuilderFeed(); renderHackathonHistory(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
       $("#eventModalContent").innerHTML = ""; detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
@@ -927,6 +958,7 @@ async function loadAccountWorkspace() {
     hideModal("profileModal");
     profileIsMandatory = false;
     if (publicProfile?.username) void syncSocialProfile(publicProfile);
+    void reconcileLegacyBuilderDirectory();
     beginInboxListener();
     void loadProjects();
     void loadHackathonHistory();
@@ -934,6 +966,16 @@ async function loadAccountWorkspace() {
   } catch (error) {
     console.error("Could not load account", error); toast(friendlyError(error));
   }
+}
+
+function syncProfileVisibilityChoices(value = "public") {
+  const visibility = ["public", "followers", "private"].includes(value) ? value : "private";
+  const nativeSelect = $("#profileVisibility");
+  if (nativeSelect) nativeSelect.value = visibility;
+  $$('input[name="profileVisibilityChoice"]').forEach(input => {
+    input.checked = input.value === visibility;
+    input.closest(".profile-visibility-option")?.classList.toggle("is-selected", input.checked);
+  });
 }
 
 function openProfileEditor(mandatory = false) {
@@ -951,15 +993,21 @@ function openProfileEditor(mandatory = false) {
   $("#profileAvailability").value = p.availability || "Open to opportunities"; $("#profileMode").value = p.preferredMode || "Any format";
   $("#profileAvatar").value = p.avatarUrl || ""; $("#profileAvatarFile").value = ""; $("#profileAvatarPreviewWrap").hidden = !p.avatarUrl; if(p.avatarUrl) $("#profileAvatarPreview").src = p.avatarUrl; $("#profileGithub").value = p.github || "";
   $("#profileLinkedin").value = p.linkedin || ""; $("#profilePortfolio").value = p.portfolio || "";
-  $("#profilePhone").value = privateProfile?.phone || ""; $("#profilePhoneVisibility").value = privateProfile?.phoneVisibility || "private"; $("#profileEmailVisibility").value = privateProfile?.emailVisibility || "private"; $("#profileVisibility").value = privateProfile?.profileVisibility || p.profileVisibility || "public"; $("#profileLooking").value = String(p.lookingForTeam !== false);
-  $("#profilePublicConsent").checked = Boolean(p.profileConsentAt);
+  $("#profilePhone").value = privateProfile?.phone || ""; $("#profilePhoneVisibility").value = privateProfile?.phoneVisibility || "private"; $("#profileEmailVisibility").value = privateProfile?.emailVisibility || "private"; syncProfileVisibilityChoices(privateProfile?.profileVisibility || p.profileVisibility || "public"); $("#profileLooking").value = String(p.lookingForTeam !== false);
+  const storedProfileData = privateProfile?.profileData || {};
+  const consentFieldExists = Object.prototype.hasOwnProperty.call(p, "profileConsentAt")
+    || Object.prototype.hasOwnProperty.call(storedProfileData, "profileConsentAt");
+  const savedConsentAt = p.profileConsentAt || storedProfileData.profileConsentAt;
+  const legacyPublicChoice = !consentFieldExists && (p.profileVisibility === "public" || privateProfile?.profileVisibility === "public");
+  const existingPublicDirectoryRecord = publicProfile?.uid === currentUser?.uid && publicProfile?.profileVisibility === "public";
+  $("#profilePublicConsent").checked = Boolean(savedConsentAt || legacyPublicChoice || existingPublicDirectoryRecord);
   $("#profileMessage").textContent = "";
   $("#profileModalTitle").textContent = mandatory ? "Complete your builder profile." : "Update your builder profile.";
-  $("#profileModalHint").textContent = "Your profile is optional. Save what you have now, then add education, skills, links or contact details later.";
+  $("#profileModalHint").textContent = "Start with your name and username, then choose who can discover you in Step 02. Save your progress and add other details whenever you are ready.";
   $("#profileModalClose").hidden = false;
   $("#profileSignOutBtn").hidden = true;
   const steps = $$("#profileForm .profile-step");
-  steps.forEach((step, index) => { step.open = index === 0 || index === 3; });
+  steps.forEach((step, index) => { step.open = index === 0 || index === 1; });
   showModal("profileModal");
 }
 
@@ -1016,11 +1064,11 @@ async function saveProfile(event) {
   const publication = evaluateProfilePublication({ visibility, consent, displayName: name, username });
   const canPublish = publication.canPublish;
   if (publication.reason === "consent") {
-    const privacyStep = $("#profilePrivacyStep");
-    if (privacyStep) privacyStep.open = true;
-    message.textContent = "To appear in the Builders directory, confirm ‘Show my builder profile in the public Builders directory’ in Privacy and contact.";
+    const discoveryStep = $("#profileDiscoveryStep");
+    if (discoveryStep) discoveryStep.open = true;
+    message.textContent = "To appear in Builders, open Step 02, choose Public, and tick ‘Show my builder profile in the public Builders directory’.";
     $("#profilePublicConsent")?.focus();
-    privacyStep?.scrollIntoView({ behavior: "smooth", block: "center" });
+    discoveryStep?.scrollIntoView({ behavior: "smooth", block: "center" });
     if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
     return;
   }
@@ -1125,7 +1173,7 @@ async function saveProfile(event) {
       if (currentRouteName() === "people") void searchPeople();
       toast("Your profile is published in the Builders directory.");
     } else {
-      toast("Your profile progress is saved privately. You can publish it from Privacy and contact.");
+      toast("Your profile is saved privately. Choose Public and confirm the directory setting in Step 02 to appear in Builders.");
     }
   } catch (error) {
     console.error(error);
@@ -1646,39 +1694,86 @@ function renderSaved() {
   preview.querySelectorAll("[data-share-opportunity]").forEach(button => button.addEventListener("click", () => shareOpportunity(button.dataset.shareOpportunity)));
 }
 
-function renderPeopleEmpty() { $("#peopleGrid").innerHTML = '<div class="loading-card">Connect Supabase and create a profile to begin discovering teammates.</div>'; }
-async function searchPeople() {
+function renderPeopleEmpty() {
+  $("#peopleGrid").innerHTML = '<div class="loading-card">Connect Supabase and create a profile to begin discovering teammates.</div>';
+  const more = $("#loadMorePeopleBtn"); if (more) more.hidden = true;
+}
+function searchPeople(loadMore = false) {
   clearTimeout(peopleSearchTimer);
+  const term = $("#peopleSearch").value.trim().toLowerCase().replace(/^@/, "");
+  const role = $("#peopleRole").value;
+  const lookingOnly = $("#lookingForTeamOnly").checked;
+  const requestKey = `${term}|${role}|${lookingOnly ? "1" : "0"}`;
+  if (loadMore && (requestKey !== peopleSearchKey || !peopleHasMore || peopleLoading)) return;
+  if (!loadMore) {
+    peopleSearchKey = requestKey;
+    peopleCursor = null;
+    peopleHasMore = false;
+    peopleDirectoryRows = [];
+    people = [];
+  }
+  const requestId = ++peopleSearchRequest;
+  const pageSize = 48;
+  $("#peopleResultCount").textContent = loadMore ? `Loading more builders…` : "Searching public builder profiles…";
+  const moreButton = $("#loadMorePeopleBtn");
+  if (moreButton) { moreButton.hidden = true; moreButton.disabled = true; }
   peopleSearchTimer = setTimeout(async () => {
     if (!db) { renderPeopleEmpty(); return; }
-    const term = $("#peopleSearch").value.trim().toLowerCase().replace(/^@/, "");
-    const role = $("#peopleRole").value; const lookingOnly = $("#lookingForTeamOnly").checked;
-    $("#peopleResultCount").textContent = "Searching public builder profiles…";
+    peopleLoading = true;
     try {
       let snapshots = [];
       if (!term) {
-        snapshots = [await getDocs(query(collection(db, "publicProfiles"), orderBy("updatedAt", "desc"), limit(24)))];
+        const constraints = [orderBy("updatedAt", "desc")];
+        if (loadMore && peopleCursor) constraints.push(startAfter(peopleCursor));
+        constraints.push(limit(pageSize));
+        const page = await getDocs(query(collection(db, "publicProfiles"), ...constraints));
+        snapshots = [page];
+        peopleCursor = page.docs.at(-1) || (loadMore ? peopleCursor : null);
+        peopleHasMore = page.docs.length === pageSize;
       } else {
         const prefixes = ["usernameLower", "nameLower", "collegeLower", "collegeShortLower", "courseLower", "publicEmailLower"];
-        const requests = prefixes.map(field => getDocs(query(collection(db, "publicProfiles"), orderBy(field), startAt(term), endAt(term + "\uf8ff"), limit(18))));
-        requests.push(getDocs(query(collection(db, "publicProfiles"), where("skillsLower", "array-contains", term), limit(18))));
-        requests.push(getDocs(query(collection(db, "publicProfiles"), where("interestsLower", "array-contains", term), limit(18))));
-        const phoneDigits = term.replace(/\D/g, ""); if (phoneDigits.length >= 7) requests.push(getDocs(query(collection(db, "publicProfiles"), orderBy("publicPhoneDigits"), startAt(phoneDigits), endAt(phoneDigits + "\uf8ff"), limit(18))));
+        const requests = prefixes.map(field => getDocs(query(collection(db, "publicProfiles"), orderBy(field), startAt(term), endAt(term + "\uf8ff"), limit(40))));
+        requests.push(getDocs(query(collection(db, "publicProfiles"), where("skillsLower", "array-contains", term), limit(40))));
+        requests.push(getDocs(query(collection(db, "publicProfiles"), where("interestsLower", "array-contains", term), limit(40))));
+        const phoneDigits = term.replace(/\D/g, "");
+        if (phoneDigits.length >= 7) requests.push(getDocs(query(collection(db, "publicProfiles"), orderBy("publicPhoneDigits"), startAt(phoneDigits), endAt(phoneDigits + "\uf8ff"), limit(40))));
         snapshots = await Promise.all(requests);
+        peopleHasMore = false;
+        peopleCursor = null;
       }
-      const dedupe = new Map();
-      snapshots.forEach(snap => snap.docs.forEach(d => dedupe.set(d.id, { uid: d.id, ...d.data() })));
-      people = [...dedupe.values()].filter(p => p.uid !== currentUser?.uid);
-      if (role !== "all") people = people.filter(p => (p.rolesInterested || []).some(r => r.toLowerCase() === role.toLowerCase()));
-      if (lookingOnly) people = people.filter(p => p.lookingForTeam === true);
+      if (requestId !== peopleSearchRequest) return;
+      const incoming = new Map();
+      snapshots.forEach(snap => snap.docs.forEach(d => incoming.set(d.id, { uid: d.id, ...d.data() })));
+      if (!term && loadMore) {
+        const merged = new Map(peopleDirectoryRows.map(profile => [profile.uid, profile]));
+        incoming.forEach((profile, uid) => merged.set(uid, profile));
+        peopleDirectoryRows = [...merged.values()];
+      } else {
+        peopleDirectoryRows = [...incoming.values()];
+      }
+      people = peopleDirectoryRows.filter(profile => profile.uid !== currentUser?.uid);
+      if (role !== "all") people = people.filter(profile => (profile.rolesInterested || []).some(value => String(value).toLowerCase() === role.toLowerCase()));
+      if (lookingOnly) people = people.filter(profile => profile.lookingForTeam === true);
       if (term) {
         const digits = term.replace(/\D/g, "");
-        people = people.filter(p => [p.displayName, p.username, p.college, p.collegeShort, p.course, p.publicEmail, p.publicPhone, p.bio, ...(p.skills || []), ...(p.rolesInterested || []), ...(p.interests || [])].join(" ").toLowerCase().includes(term)
-          || (digits.length >= 7 && String(p.publicPhoneDigits || "").startsWith(digits)));
+        people = people.filter(profile => [profile.displayName, profile.username, profile.college, profile.collegeShort, profile.course, profile.publicEmail, profile.publicPhone, profile.bio, ...(profile.skills || []), ...(profile.rolesInterested || []), ...(profile.interests || [])].join(" ").toLowerCase().includes(term)
+          || (digits.length >= 7 && String(profile.publicPhoneDigits || "").startsWith(digits)));
       }
       renderPeople();
-    } catch (error) { console.error("People search failed", error); $("#peopleResultCount").textContent = "Could not search profiles. Check your Supabase database rules and indexes."; $("#peopleGrid").innerHTML = '<div class="loading-card">Profile search is temporarily unavailable.</div>'; }
-  }, 220);
+      if (moreButton) {
+        moreButton.hidden = Boolean(term) || !peopleHasMore;
+        moreButton.disabled = false;
+      }
+    } catch (error) {
+      if (requestId !== peopleSearchRequest) return;
+      console.error("People search failed", error);
+      $("#peopleResultCount").textContent = "Could not search profiles. Check your Supabase database rules and indexes.";
+      $("#peopleGrid").innerHTML = '<div class="loading-card">Profile search is temporarily unavailable.</div>';
+      if (moreButton) { moreButton.hidden = true; moreButton.disabled = false; }
+    } finally {
+      if (requestId === peopleSearchRequest) peopleLoading = false;
+    }
+  }, loadMore ? 0 : 220);
 }
 function overlapScore(profile) {
   if (!publicProfile) return 0;
@@ -1689,7 +1784,7 @@ function overlapScore(profile) {
 function renderPeople() {
   const grid = $("#peopleGrid"); const role = $("#peopleRole").value; const lookingOnly = $("#lookingForTeamOnly").checked;
   const sorted = [...people].sort((a,b) => overlapScore(b) - overlapScore(a));
-  $("#peopleResultCount").textContent = `${sorted.length} builder${sorted.length === 1 ? "" : "s"} found`;
+  $("#peopleResultCount").textContent = `${sorted.length} builder${sorted.length === 1 ? "" : "s"}${peopleHasMore ? " shown — more available" : " found"}`;
   if (!sorted.length) { grid.innerHTML = '<div class="loading-card">No public profiles match your search yet. Try another skill or keyword.</div>'; return; }
   grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackVerse member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p>${Number(p.hackathonsParticipatedCount || 0) ? `<span class="builder-experience-chip">✦ ${Number(p.hackathonsParticipatedCount)} hackathons</span>` : ""}<div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div class="person-actions"><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Chat</button><button class="save-btn" data-contact-member="${esc(p.uid)}" ${p.publicEmail || p.publicPhone ? "" : "disabled"}>Contact</button></div></div></article>`).join("");
   grid.querySelectorAll("[data-view-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewMember));
@@ -4429,6 +4524,7 @@ function bindUI() {
   $("#authModeToggle").onclick = () => setAuthMode(authMode === "signin" ? "signup" : "signin");
   $("#googleSignIn").onclick = googleSignIn; $("#resetPassword").onclick = resetPassword;
   $("#profileForm").addEventListener("submit", saveProfile);
+  $$('input[name="profileVisibilityChoice"]').forEach(input => input.addEventListener("change", () => syncProfileVisibilityChoices(input.value)));
   $("#profileAvatarFile").addEventListener("change",e=>uploadProfileAvatar(e.target.files?.[0]));
   $("#removeProfileAvatarBtn").onclick=()=>{$("#profileAvatar").value="";$("#profileAvatarFile").value="";$("#profileAvatarPreviewWrap").hidden=true;toast("Profile photo removed from the draft. Save your profile to apply.");};
   $("#profileSignOutBtn").onclick = () => signOut(auth).then(() => { hideModal("profileModal"); profileIsMandatory = false; toast("Signed out."); }).catch(error => toast(friendlyError(error)));
@@ -4442,6 +4538,7 @@ function bindUI() {
   $("#deleteGroupBtn").onclick=deleteCurrentGroup;
   $("#saveGroupInfoBtn").onclick=saveGroupInfo;
   $("#viewMembersBtn").onclick=()=>{const grid=$("#peopleGrid");const open=grid.hidden;grid.hidden=!open;$("#viewMembersBtn").textContent=open?"Hide members":"View members";$("#viewMembersBtn").setAttribute("aria-expanded",String(open));if(open&&currentUser)searchPeople();};
+  $("#loadMorePeopleBtn").onclick=()=>searchPeople(true);
   $("#chatTitle").onclick=openChatIdentity;
   $("#conversationSearch").addEventListener("input",()=>renderConversationList(currentConversations));
   $("#messageSearch").addEventListener("input",()=>renderMessages(currentMessages));
