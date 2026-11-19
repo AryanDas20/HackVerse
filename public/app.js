@@ -6,6 +6,7 @@ import {
   serverTimestamp, addDoc, setDoc, deleteDoc, onSnapshot, updateDoc, runTransaction, writeBatch, httpsCallable
 } from './data-layer.js';
 import { supabaseConfig } from './supabase-config.js';
+import { evaluateProfilePublication } from "./profile-policy.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -897,7 +898,27 @@ async function loadAccountWorkspace() {
       getDoc(doc(db, "publicProfiles", currentUser.uid))
     ]);
     privateProfile = snap.exists() ? snap.data() : null;
-    publicProfile = pubSnap.exists() ? pubSnap.data() : (privateProfile?.profileVisibility && privateProfile.profileVisibility !== "public" ? (privateProfile?.profileData || null) : null);
+    let publicData = pubSnap.exists() ? pubSnap.data() : null;
+    const savedProfile = privateProfile?.profileData || null;
+    const shouldBePublic = evaluateProfilePublication({
+      visibility: savedProfile?.profileVisibility,
+      consent: Boolean(savedProfile?.profileConsentAt),
+      displayName: savedProfile?.displayName,
+      username: savedProfile?.username
+    }).canPublish;
+    // Repair older/partially completed saves where the private user row exists
+    // but the public directory projection was never committed.
+    if (!publicData && shouldBePublic) {
+      try {
+        const repaired = { ...savedProfile, uid: currentUser.uid, profileVisibility: "public" };
+        await setDoc(doc(db, "publicProfiles", currentUser.uid), repaired, { merge: true });
+        const verify = await getDoc(doc(db, "publicProfiles", currentUser.uid));
+        if (verify.exists() && verify.data()?.profileVisibility === "public") publicData = verify.data();
+      } catch (repairError) {
+        console.warn("Public Builder profile recovery deferred", repairError);
+      }
+    }
+    publicProfile = publicData || savedProfile;
     renderMyProfile(); loadSettingsUI(); renderNotificationCenter();
     void loadProfileStats();
     scheduleProfileNudge();
@@ -905,7 +926,7 @@ async function loadAccountWorkspace() {
     void loadSaved();
     hideModal("profileModal");
     profileIsMandatory = false;
-    if (publicProfile?.username && publicProfile?.profileConsentAt) void syncSocialProfile(publicProfile);
+    if (publicProfile?.username) void syncSocialProfile(publicProfile);
     beginInboxListener();
     void loadProjects();
     void loadHackathonHistory();
@@ -938,7 +959,7 @@ function openProfileEditor(mandatory = false) {
   $("#profileModalClose").hidden = false;
   $("#profileSignOutBtn").hidden = true;
   const steps = $$("#profileForm .profile-step");
-  steps.forEach((step, index) => { step.open = index === 0; });
+  steps.forEach((step, index) => { step.open = index === 0 || index === 3; });
   showModal("profileModal");
 }
 
@@ -988,7 +1009,30 @@ async function saveProfile(event) {
   }
   const consent = $("#profilePublicConsent").checked;
   const requestedVisibility = $("#profileVisibility").value || "public";
-  const visibility = consent ? requestedVisibility : "private";
+  // Do not silently turn a user's selected Public profile into a private one.
+  // The directory opt-in is deliberately explicit, but must be visible and the
+  // user must be told exactly what is missing before we save anything.
+  const visibility = requestedVisibility;
+  const publication = evaluateProfilePublication({ visibility, consent, displayName: name, username });
+  const canPublish = publication.canPublish;
+  if (publication.reason === "consent") {
+    const privacyStep = $("#profilePrivacyStep");
+    if (privacyStep) privacyStep.open = true;
+    message.textContent = "To appear in the Builders directory, confirm ‘Show my builder profile in the public Builders directory’ in Privacy and contact.";
+    $("#profilePublicConsent")?.focus();
+    privacyStep?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+    return;
+  }
+  if (publication.reason === "identity") {
+    const basicsStep = $$("#profileForm .profile-step")[0];
+    if (basicsStep) basicsStep.open = true;
+    message.textContent = "Add your full name and a valid 3–24 character username to publish your profile in Builders.";
+    $("#profileName")?.focus();
+    basicsStep?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+    return;
+  }
   const skills = listFrom($("#profileSkills").value);
   const college = $("#profileCollege").value.trim();
   const course = $("#profileCourse").value.trim();
@@ -1019,7 +1063,6 @@ async function saveProfile(event) {
     profileConsentAt: consent ? (privateProfile?.profileConsentAt || serverTimestamp()) : null,
     updatedAt: serverTimestamp()
   };
-  const canPublish = Boolean(consent && name && usernameLower && visibility === "public");
   const privateData = {
     email: currentUser.email || "", phone,
     profileVisibility: visibility, profileData: profile,
@@ -1032,14 +1075,13 @@ async function saveProfile(event) {
     ...(privateProfile ? {} : { role: "participant", createdAt: serverTimestamp() })
   };
   try {
+    const publicRef = doc(db, "publicProfiles", uid);
     await runTransaction(db, async transaction => {
       const userRef = doc(db, "users", uid);
-      const publicRef = doc(db, "publicProfiles", uid);
       const userSnap = await transaction.get(userRef);
-      let usernameSnap = null;
       if (usernameLower) {
         const usernameRef = doc(db, "usernames", usernameLower);
-        usernameSnap = await transaction.get(usernameRef);
+        const usernameSnap = await transaction.get(usernameRef);
         if (usernameSnap.exists() && usernameSnap.data().uid !== uid) throw new Error("USERNAME_TAKEN");
         if (!usernameSnap.exists()) transaction.set(usernameRef, { uid, createdAt: serverTimestamp() });
       }
@@ -1049,12 +1091,22 @@ async function saveProfile(event) {
       if (canPublish) transaction.set(publicRef, profile, { merge: true });
       else transaction.delete(publicRef);
     });
+    // Verify the public directory projection before reporting a successful
+    // public save. This catches RLS/schema problems instead of silently hiding
+    // the member after the private account record has been saved.
+    if (canPublish) {
+      const publishedSnap = await getDoc(publicRef);
+      const published = publishedSnap.exists() ? publishedSnap.data() : null;
+      if (!published || published.uid !== uid || published.profileVisibility !== "public") {
+        throw new Error("Your account details were saved, but your public Builder profile could not be confirmed. Check the publicProfiles database permissions and try again.");
+      }
+    }
     const authUpdates = {};
     if (name) authUpdates.displayName = name;
     if (profile.avatarUrl) authUpdates.photoURL = profile.avatarUrl;
     if (Object.keys(authUpdates).length) await updateAuthProfile(currentUser, authUpdates).catch(() => {});
     privateProfile = { ...(privateProfile || {}), ...privateData, profileComplete: Boolean(name && usernameLower) };
-    publicProfile = name || usernameLower ? profile : null;
+    publicProfile = profile;
     profileIsMandatory = false;
     clearTimeout(profileNudgeTimer);
     if (currentUser) sessionStorage.setItem(`hv-profile-nudge-${currentUser.uid}`, "saved");
@@ -1064,11 +1116,17 @@ async function saveProfile(event) {
     beginInboxListener();
     void loadProjects();
     void loadHackathonHistory();
-    if (consent && name && usernameLower) {
-      void syncSocialProfile(profile);
-      if (visibility === "public") void searchPeople();
+    // Sync visibility to the social profile table for both public and private
+    // changes; otherwise an older public social record could remain discoverable.
+    if (username) await syncSocialProfile(profile);
+    if (canPublish) {
+      // Refresh the directory immediately if it is open; also warm the list so
+      // it is current when the member navigates there next.
+      if (currentRouteName() === "people") void searchPeople();
+      toast("Your profile is published in the Builders directory.");
+    } else {
+      toast("Your profile progress is saved privately. You can publish it from Privacy and contact.");
     }
-    toast(canPublish ? "Your public builder profile is saved." : "Progress saved privately. You can publish your profile whenever you are ready.");
   } catch (error) {
     console.error(error);
     message.textContent = friendlyError(error);
@@ -4213,15 +4271,23 @@ function initAdvancedUI(){
     if(!requireAccount())return;
     const base=publicProfile||privateProfile?.profileData;
     if(!base){toast("Complete your profile first.");return;}
-    if(e.target.value!=="private"&&!base.profileConsentAt){e.target.value="private";toast("Open your profile editor and opt in to community visibility before making your profile discoverable.");return;}
-    const next={...base,profileVisibility:e.target.value};
+    const nextVisibility=e.target.value;
+    const publication=evaluateProfilePublication({visibility:nextVisibility,consent:Boolean(base.profileConsentAt),displayName:base.displayName,username:base.username});
+    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Open Edit profile and confirm the public Builders directory setting. Your name and username must also be complete.");return;}
+    const next={...base,profileVisibility:nextVisibility};
     try{
-      await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:e.target.value,profileData:next,updatedAt:serverTimestamp()},{merge:true});
+      await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:nextVisibility,profileData:next,updatedAt:serverTimestamp()},{merge:true});
       const publicRef=doc(db,"publicProfiles",currentUser.uid);
-      if(e.target.value==="public")await setDoc(publicRef,next,{merge:true});else await deleteDoc(publicRef);
-      privateProfile={...(privateProfile||{}),profileVisibility:e.target.value,profileData:next};
-      publicProfile=next; await syncSocialProfile(next); renderMyProfile(); searchPeople(); toast("Profile visibility updated.");
-    }catch(error){e.target.value=base.profileVisibility||"public";toast(friendlyError(error));}
+      if(nextVisibility==="public"){
+        await setDoc(publicRef,next,{merge:true});
+        const verify=await getDoc(publicRef);
+        if(!verify.exists()||verify.data()?.profileVisibility!=="public")throw new Error("The public Builder profile could not be confirmed. Check publicProfiles database permissions.");
+      }else await deleteDoc(publicRef);
+      privateProfile={...(privateProfile||{}),profileVisibility:nextVisibility,profileData:next};
+      publicProfile=next;
+      await syncSocialProfile(next);
+      renderMyProfile(); searchPeople(); toast("Profile visibility updated.");
+    }catch(error){e.target.value=base.profileVisibility||"private";toast(friendlyError(error));}
   });
   $$('[data-settings-tab]').forEach(b=>b.onclick=()=>showSettingsTab(b.dataset.settingsTab));
   $("#navTourBtn").onclick=()=>{ $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); startWebsiteTour(); };$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);

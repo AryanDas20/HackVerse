@@ -120,6 +120,14 @@ async function requireSession() {
   return session;
 }
 
+function applyArrayContainsFilter(request, field, value) {
+  // `participants` has a dedicated indexed SQL column; profile skills and
+  // interests live inside the JSONB document payload.
+  return field === "participants"
+    ? request.contains("participants", [value])
+    : request.contains("data", { [field]: [value] });
+}
+
 async function fetchRows(collectionRef, constraints = []) {
   await requireSession();
 
@@ -146,7 +154,7 @@ async function fetchRows(collectionRef, constraints = []) {
       case ">=": request = request.gte(scalarColumn, String(constraint.value)); break;
       case "<": request = request.lt(scalarColumn, String(constraint.value)); break;
       case "<=": request = request.lte(scalarColumn, String(constraint.value)); break;
-      case "array-contains": request = request.contains("participants", [constraint.value]); break;
+      case "array-contains": request = applyArrayContainsFilter(request, field, constraint.value); break;
       case "in":
         if (Array.isArray(constraint.value) && constraint.value.length) request = request.in(scalarColumn, constraint.value.map(String));
         break;
