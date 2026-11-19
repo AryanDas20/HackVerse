@@ -7,59 +7,7 @@
   },
   "rewrites": [
     {
-      "source": "/@:username",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/post/:postId",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/home",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/posts",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/feed",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/opportunities",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/people",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/messages",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/aiwish",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/profile",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/saved",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/reports",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/notifications",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/settings",
+      "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
   ]

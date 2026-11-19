@@ -3,16 +3,27 @@ const { plainText, safeHttpUrl, validatePost, validateReport, USERNAME_RE } = re
 
 const noStore = res => { res.setHeader("Cache-Control", "no-store"); res.setHeader("Vary", "Authorization"); };
 const fail = (res, status, error) => res.status(status).json({ error });
+let cachedClient = null;
 function clients() {
+  if (cachedClient) return cachedClient;
   const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw Object.assign(new Error("Social features are not configured. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to Vercel."), { status: 503 });
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  cachedClient = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  return cachedClient;
 }
+// Warm serverless instances reuse verified tokens for a short time, which removes
+// one Supabase Auth round-trip from almost every request.
+const AUTH_TTL_MS = 30 * 1000;
+const authCache = new Map();
 async function authenticate(client, req) {
   const token = String(req.headers.authorization || "").match(/^Bearer\s+(.+)$/i)?.[1];
   if (!token) throw Object.assign(new Error("Sign in to use the community."), { status: 401 });
+  const hit = authCache.get(token);
+  if (hit && hit.expires > Date.now()) return hit.user;
   const { data, error } = await client.auth.getUser(token);
-  if (error || !data?.user) throw Object.assign(new Error("Your session has expired. Sign in again."), { status: 401 });
+  if (error || !data?.user) { authCache.delete(token); throw Object.assign(new Error("Your session has expired. Sign in again."), { status: 401 }); }
+  if (authCache.size > 500) authCache.clear();
+  authCache.set(token, { user: data.user, expires: Date.now() + AUTH_TTL_MS });
   return data.user;
 }
 async function rateLimit(client, user, action, max = 20, seconds = 60) {
@@ -40,24 +51,39 @@ async function canViewProfile(client, viewerId, profile) {
   return Boolean(data);
 }
 
-async function visiblePost(client, postId, viewerId) {
-  const { data, error } = await client.from("posts").select("*").eq("id", postId).eq("is_deleted", false).maybeSingle();
+// Loads a post and runs every visibility check in parallel (2 round-trips instead of up to 5).
+// Returns the post plus the author profile so callers don't have to fetch it again.
+async function loadVisiblePost(client, postId, viewerId, { withVote = false } = {}) {
+  const id = String(postId || "");
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw Object.assign(new Error("This post is no longer available."), { status: 404 });
+  const { data, error } = await client.from("posts").select("*").eq("id", id).eq("is_deleted", false).maybeSingle();
   if (error) throw error;
   if (!data) throw Object.assign(new Error("This post is no longer available."), { status: 404 });
-  if (data.author_id === viewerId) return data;
-  const { data: blockRows, error: blockError } = await client.from("user_blocks").select("blocker_id").or(`and(blocker_id.eq.${viewerId},blocked_id.eq.${data.author_id}),and(blocker_id.eq.${data.author_id},blocked_id.eq.${viewerId})`).limit(1);
-  if (blockError) throw blockError;
-  if (blockRows?.length) throw Object.assign(new Error("This content is unavailable."), { status: 404 });
-  const { data: author, error: authorError } = await client.from("profiles").select("profile_visibility,is_private").eq("id", data.author_id).maybeSingle();
-  if (authorError) throw authorError;
-  const profileVisibility = author?.profile_visibility || (author?.is_private ? "private" : "public");
-  if (data.visibility === "public" && profileVisibility === "public") return data;
-  if (profileVisibility !== "public" || data.visibility === "followers") {
-    const { data: follow, error: followError } = await client.from("follows").select("id").eq("follower_id", viewerId).eq("following_id", data.author_id).eq("status", "active").maybeSingle();
-    if (followError) throw followError;
-    if (follow && data.visibility !== "private") return data;
+  const ownVotePromise = withVote ? client.from("votes").select("value").eq("user_id", viewerId).eq("post_id", data.id).maybeSingle() : null;
+  const authorPromise = client.from("profiles").select("id,username,display_name,avatar_url,is_verified,is_private,profile_visibility").eq("id", data.author_id).maybeSingle();
+  if (data.author_id === viewerId) {
+    const [{ data: author }, vote] = await Promise.all([authorPromise, ownVotePromise || Promise.resolve({ data: null })]);
+    return { post: data, author: author || null, viewerVote: vote?.data?.value || null };
   }
+  const [blocks, authorResult, follows, vote] = await Promise.all([
+    client.from("user_blocks").select("blocker_id").or(`and(blocker_id.eq.${viewerId},blocked_id.eq.${data.author_id}),and(blocker_id.eq.${data.author_id},blocked_id.eq.${viewerId})`).limit(1),
+    authorPromise,
+    client.from("follows").select("id").eq("follower_id", viewerId).eq("following_id", data.author_id).eq("status", "active").maybeSingle(),
+    ownVotePromise || Promise.resolve({ data: null })
+  ]);
+  if (blocks.error) throw blocks.error;
+  if (authorResult.error) throw authorResult.error;
+  if (follows.error) throw follows.error;
+  if (blocks.data?.length) throw Object.assign(new Error("This content is unavailable."), { status: 404 });
+  const author = authorResult.data;
+  const profileVisibility = author?.profile_visibility || (author?.is_private ? "private" : "public");
+  const viewerVote = vote?.data?.value || null;
+  if (data.visibility === "public" && profileVisibility === "public") return { post: data, author, viewerVote };
+  if ((profileVisibility !== "public" || data.visibility === "followers") && follows.data && data.visibility !== "private") return { post: data, author, viewerVote };
   throw Object.assign(new Error("You don't have permission to view this post."), { status: 403 });
+}
+async function visiblePost(client, postId, viewerId) {
+  return (await loadVisiblePost(client, postId, viewerId)).post;
 }
 function parseCursor(body) {
   if (!body.cursor) return null;
@@ -79,19 +105,19 @@ async function getPosts(client, query, userId) {
   const posts = data || [];
   if (!posts.length) return [];
   const postIds = posts.map(post => post.id);
-  const { data: ownVotes, error: voteError } = await client.from("votes").select("post_id,value").eq("user_id", userId).in("post_id", postIds);
-  if (voteError) throw voteError;
-  const voteMap = new Map((ownVotes || []).map(v => [v.post_id, v.value]));
   const authors = [...new Set(posts.map(p => p.author_id))];
-  const { data: profiles, error: profileError } = await client.from("profiles").select("id,username,display_name,avatar_url,is_verified,is_private").in("id", authors);
-  if (profileError) throw profileError;
-  const profileMap = new Map((profiles || []).map(p => [p.id, p]));
-  const { data: followRows, error: followError } = await client.from("follows").select("following_id").eq("follower_id", userId).eq("status", "active").limit(1000);
-  if (followError) throw followError;
-  const followed = new Set((followRows || []).map(row => row.following_id));
-  const { data: blockRows, error: blockError } = await client.from("user_blocks").select("blocker_id,blocked_id").or(`blocker_id.eq.${userId},blocked_id.eq.${userId}`).limit(1000);
-  if (blockError) throw blockError;
-  const blocked = new Set((blockRows || []).map(row => row.blocker_id === userId ? row.blocked_id : row.blocker_id));
+  // All four lookups are independent, so they run together instead of one after another.
+  const [votes, profiles, follows, blocks] = await Promise.all([
+    client.from("votes").select("post_id,value").eq("user_id", userId).in("post_id", postIds),
+    client.from("profiles").select("id,username,display_name,avatar_url,is_verified,is_private,profile_visibility").in("id", authors),
+    client.from("follows").select("following_id").eq("follower_id", userId).eq("status", "active").in("following_id", authors),
+    client.from("user_blocks").select("blocker_id,blocked_id").or(`blocker_id.eq.${userId},blocked_id.eq.${userId}`).limit(1000)
+  ]);
+  for (const result of [votes, profiles, follows, blocks]) if (result.error) throw result.error;
+  const voteMap = new Map((votes.data || []).map(v => [v.post_id, v.value]));
+  const profileMap = new Map((profiles.data || []).map(p => [p.id, p]));
+  const followed = new Set((follows.data || []).map(row => row.following_id));
+  const blocked = new Set((blocks.data || []).map(row => row.blocker_id === userId ? row.blocked_id : row.blocker_id));
   const allowed = [];
   for (const post of posts) {
     const author = profileMap.get(post.author_id);
@@ -114,7 +140,14 @@ async function handler(req, res) {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const action = String(body.action || "");
     const readActions = new Set(["feed","profile","profile-tab","post-detail","comments","my-reports","preferences","blocked-users"]);
-    if (!readActions.has(action)) await rateLimit(client, user, action || "unknown", action === "create-post" ? 5 : action === "vote" ? 40 : action === "follow" ? 25 : action === "report" ? 4 : 20, 60);
+    // Hot interaction paths run the rate-limit check alongside their reads; every write awaits it first.
+    const deferredLimit = new Set(["vote","comment","repost","unrepost"]);
+    let limitCheck = Promise.resolve();
+    if (!readActions.has(action)) {
+      const max = action === "create-post" ? 5 : action === "vote" ? 40 : action === "follow" ? 25 : action === "report" ? 4 : 20;
+      limitCheck = rateLimit(client, user, action || "unknown", max, 60);
+      if (deferredLimit.has(action)) limitCheck.catch(() => {}); else await limitCheck;
+    }
 
     if (action === "sync-profile") {
       const username = plainText(body.username, 24).replace(/^@/, "");
@@ -174,12 +207,8 @@ async function handler(req, res) {
     }
 
     if (action === "post-detail") {
-      const post = await visiblePost(client, body.postId, user.id);
-      const { data, error } = await client.from("posts").select("*").eq("id", post.id).eq("is_deleted", false).limit(1);
-      if (error) throw error;
-      const decorated = await getPosts(client, Promise.resolve({ data: data || [], error: null }), user.id);
-      if (!decorated.length) return fail(res, 404, "This post is unavailable.");
-      return res.status(200).json({ post: decorated[0] });
+      const { post, author, viewerVote } = await loadVisiblePost(client, body.postId, user.id, { withVote: true });
+      return res.status(200).json({ post: { ...post, viewer_vote: viewerVote, author } });
     }
 
     if (action === "profile") {
@@ -256,26 +285,46 @@ async function handler(req, res) {
     }
 
     if (action === "vote") {
-      const post = await visiblePost(client,body.postId,user.id);
-      if (post.author_id === user.id) return fail(res,400,"You cannot vote on your own post.");
       if (!["upvote","downvote"].includes(body.value)) return fail(res,400,"Choose an upvote or downvote.");
-      const { data: current, error: readError } = await client.from("votes").select("id,value").eq("user_id",user.id).eq("post_id",post.id).maybeSingle();
-      if(readError)throw readError;
-      if(current?.value===body.value){const {error}=await client.from("votes").delete().eq("id",current.id);if(error)throw error;return res.status(200).json({vote:null});}
-      if(current){const {data,error}=await client.from("votes").update({value:body.value,updated_at:new Date().toISOString()}).eq("id",current.id).select("value").single();if(error)throw error;return res.status(200).json({vote:data.value});}
-      const {data,error}=await client.from("votes").insert({user_id:user.id,post_id:post.id,value:body.value}).select("value").single();if(error)throw error;
-      if(post.author_id!==user.id)await client.from("notifications").insert({recipient_id:post.author_id,actor_id:user.id,type:body.value,post_id:post.id});
-      return res.status(200).json({vote:data.value});
+      const postId = String(body.postId || "");
+      const [post, currentResult] = await Promise.all([
+        visiblePost(client,postId,user.id),
+        client.from("votes").select("id,value").eq("user_id",user.id).eq("post_id",/^[0-9a-f-]{36}$/i.test(postId)?postId:"00000000-0000-0000-0000-000000000000").maybeSingle()
+      ]);
+      if (post.author_id === user.id) return fail(res,400,"You cannot vote on your own post.");
+      if (currentResult.error) throw currentResult.error;
+      await limitCheck;
+      const current = currentResult.data;
+      let vote = body.value, notify = false;
+      if (current?.value === body.value) { const {error}=await client.from("votes").delete().eq("id",current.id); if(error)throw error; vote = null; }
+      else if (current) { const {error}=await client.from("votes").update({value:body.value,updated_at:new Date().toISOString()}).eq("id",current.id); if(error)throw error; }
+      else { const {error}=await client.from("votes").insert({user_id:user.id,post_id:post.id,value:body.value}); if(error)throw error; notify = true; }
+      // Counters are maintained by triggers inside the write, so one small read returns the authoritative totals.
+      const [counts] = await Promise.all([
+        client.from("posts").select("upvote_count,downvote_count").eq("id",post.id).maybeSingle(),
+        notify ? client.from("notifications").insert({recipient_id:post.author_id,actor_id:user.id,type:body.value,post_id:post.id}) : Promise.resolve()
+      ]);
+      return res.status(200).json({ vote, upvote_count: counts.data?.upvote_count ?? null, downvote_count: counts.data?.downvote_count ?? null });
     }
 
     if (action === "comment") {
-      const post = await visiblePost(client,body.postId,user.id);
       const content = plainText(body.content,1200);
       if(!content)return fail(res,400,"Write a comment first.");
-      const {data,error}=await client.from("comments").insert({post_id:post.id,author_id:user.id,content,parent_comment_id:body.parentCommentId||null}).select("*").single();
-      if(error)throw error;
-      if(post.author_id!==user.id)await client.from("notifications").insert({recipient_id:post.author_id,actor_id:user.id,type:"comment",post_id:post.id,comment_id:data.id});
-      return res.status(201).json({comment:data});
+      const post = await visiblePost(client,body.postId,user.id);
+      await limitCheck;
+      const parentId = /^[0-9a-f-]{36}$/i.test(String(body.parentCommentId||"")) ? body.parentCommentId : null;
+      const [inserted, authorResult] = await Promise.all([
+        client.from("comments").insert({post_id:post.id,author_id:user.id,content,parent_comment_id:parentId}).select("*").single(),
+        client.from("profiles").select("id,username,display_name,avatar_url").eq("id",user.id).maybeSingle()
+      ]);
+      if(inserted.error)throw inserted.error;
+      const data = inserted.data;
+      if(post.author_id!==user.id) {
+        // The comment is already saved; a failed notification must not fail the request.
+        const {error:notifyError}=await client.from("notifications").insert({recipient_id:post.author_id,actor_id:user.id,type:"comment",post_id:post.id,comment_id:data.id});
+        if(notifyError)console.warn("Comment notification failed",notifyError.message);
+      }
+      return res.status(201).json({comment:{...data,author:authorResult.data||null}});
     }
 
     if (action === "delete-comment") {
@@ -288,9 +337,13 @@ async function handler(req, res) {
     }
 
     if (action === "comments") {
-      const post = await visiblePost(client,body.postId,user.id);
-      const {data,error}=await client.from("comments").select("id,author_id,content,parent_comment_id,created_at").eq("post_id",post.id).eq("is_deleted",false).order("created_at",{ascending:true}).limit(100);
-      if(error)throw error;
+      const postId = String(body.postId || "");
+      const [post, commentResult] = await Promise.all([
+        visiblePost(client,postId,user.id),
+        client.from("comments").select("id,author_id,content,parent_comment_id,created_at").eq("post_id",/^[0-9a-f-]{36}$/i.test(postId)?postId:"00000000-0000-0000-0000-000000000000").eq("is_deleted",false).order("created_at",{ascending:true}).limit(100)
+      ]);
+      if(commentResult.error)throw commentResult.error;
+      const data = commentResult.data;
       const authors=[...new Set((data||[]).map(x=>x.author_id))]; const {data:profiles}=authors.length?await client.from("profiles").select("id,username,display_name,avatar_url").in("id",authors):{data:[]};
       const map=new Map((profiles||[]).map(p=>[p.id,p]));
       return res.status(200).json({comments:(data||[]).map(c=>({...c,author:map.get(c.author_id)||null}))});
@@ -359,6 +412,7 @@ async function handler(req, res) {
 
     if (action === "repost" || action === "unrepost") {
       const post = await visiblePost(client, body.postId, user.id);
+      await limitCheck;
       if (action === "unrepost") {
         const { error } = await client.from("reposts").delete().eq("user_id", user.id).eq("post_id", post.id);
         if (error) throw error;

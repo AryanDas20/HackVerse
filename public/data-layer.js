@@ -364,7 +364,7 @@ export const auth = {
     const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password }); if (error) throw error; return { user: adaptUser(data.user) };
   },
   async createUserWithEmailAndPassword(email, password) {
-    const { data, error } = await supabaseClient.auth.signUp({ email, password }); if (error) throw error; return { user: adaptUser(data.user) };
+    const { data, error } = await supabaseClient.auth.signUp({ email, password, options: { emailRedirectTo: `${location.origin}/` } }); if (error) throw error; return { user: adaptUser(data.user) };
   },
   async signOut() { const { error } = await supabaseClient.auth.signOut(); if (error) throw error; },
   async sendPasswordResetEmail(email) { const { error } = await supabaseClient.auth.resetPasswordForEmail(email, { redirectTo: `${location.origin}/` }); if (error) throw error; },

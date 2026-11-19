@@ -48,12 +48,30 @@ function isAppRoutePath(pathname) {
   if (path === "/" || /^\/@[A-Za-z0-9_]{3,24}$/i.test(path) || /^\/post\/[0-9a-f-]{36}$/i.test(path)) return true;
   return APP_ROUTE_NAMES.has(decodeURIComponent(path.slice(1)).toLowerCase());
 }
+let hasInAppHistory = false;
 function navigateToRoute(route, { replace = false } = {}) {
   const path = routePath(route);
   const method = replace ? "replaceState" : "pushState";
-  if (location.pathname !== path || location.search) history[method]({}, "", path);
-  handleRoute();
+  if (location.pathname !== path || location.search || location.hash) { history[method]({}, "", path); if (!replace) hasInAppHistory = true; }
+  handleRoute({ force: true });
 }
+function goBackOr(fallback) {
+  if (hasInAppHistory && history.length > 1) history.back();
+  else navigateToRoute(fallback);
+}
+// Older links and bookmarks used hash URLs such as "/#/posts" or "#post/<id>".
+// Convert them once to clean path URLs. Auth callback fragments (#access_token=…) are left alone.
+function migrateLegacyHashUrl() {
+  const raw = location.hash;
+  if (!raw || raw === "#") return;
+  const legacy = raw.replace(/^#!?\/?/, "");
+  const [pathPart, query = ""] = legacy.split("?");
+  const clean = pathPart.replace(/\/+$/, "");
+  const known = /^@[A-Za-z0-9_]{3,24}$/.test(clean) || /^post\/[0-9a-f-]{36}$/i.test(clean) || APP_ROUTE_NAMES.has(clean.toLowerCase());
+  if (!known) { if (!/[=&]/.test(raw)) history.replaceState({}, "", location.pathname + location.search); return; }
+  history.replaceState({}, "", `/${clean}${query ? `?${query}` : ""}`);
+}
+migrateLegacyHashUrl();
 
 const initials = name => String(name || "HV").trim().split(/\s+/).slice(0, 2).map(x => x[0] || "").join("").toUpperCase() || "HV";
 const toast = message => { const el = $("#toast"); el.textContent = message; el.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove("show"), 3000); };
@@ -118,8 +136,7 @@ async function socialRequest(action, payload = {}) {
 function navigateToProfile(username) {
   const clean = String(username || "").replace(/^@/, "").trim();
   if (!/^[A-Za-z0-9_]{3,24}$/.test(clean)) { toast("This builder does not have a valid public username yet."); return; }
-  history.pushState({}, "", `/@${encodeURIComponent(clean)}`);
-  handleRoute();
+  navigateToRoute(`/@${encodeURIComponent(clean)}`);
 }
 function socialTime(value) {
   const date = value ? new Date(value) : new Date();
@@ -378,7 +395,40 @@ function openShareMenu(item) {
     catch { toast("Clipboard access was blocked by your browser."); }
   });
 }
+// In-memory copy of every post currently on screen. Votes, comments and edits patch this copy and
+// the visible cards directly, so interactions feel instant and never need a full feed reload.
+const socialPostCache = new Map();
+const pendingVotes = new Set();
+const renderPostCounts = post => `<span>▲ ${Number(post.upvote_count || 0)} upvotes</span><span>▼ ${Number(post.downvote_count || 0)} downvotes</span><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span>`;
+const socialFeedCacheKey = () => currentUser ? `hv-social-feed-v2:${currentUser.uid}:${socialFeedType}` : "";
+function patchFeedCache(postId, patch, { remove = false } = {}) {
+  const key = socialFeedCacheKey(); if (!key) return;
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(key) || "null"); if (!cached?.posts) return;
+    cached.posts = remove ? cached.posts.filter(p => p.id !== postId) : cached.posts.map(p => p.id === postId ? { ...p, ...patch } : p);
+    sessionStorage.setItem(key, JSON.stringify(cached));
+  } catch {}
+}
+function updatePostCards(postId, patch) {
+  const post = socialPostCache.get(postId) || { id: postId };
+  Object.assign(post, patch); socialPostCache.set(postId, post);
+  document.querySelectorAll(`[data-social-post="${CSS.escape(postId)}"]`).forEach(card => {
+    const counts = card.querySelector(".social-post-counts"); if (counts) counts.innerHTML = renderPostCounts(post);
+    card.querySelectorAll("[data-social-vote]").forEach(b => b.setAttribute("aria-pressed", String((post.viewer_vote || null) === b.dataset.socialVote)));
+    if ("content" in patch) { const text = card.querySelector(".social-post-text"); if (text) text.textContent = post.content; }
+  });
+  patchFeedCache(postId, patch);
+}
+function nextVoteState(post, value) {
+  const prev = post.viewer_vote || null;
+  let up = Number(post.upvote_count || 0), down = Number(post.downvote_count || 0);
+  if (prev === "upvote") up--; if (prev === "downvote") down--;
+  const vote = prev === value ? null : value;
+  if (vote === "upvote") up++; if (vote === "downvote") down++;
+  return { viewer_vote: vote, upvote_count: Math.max(0, up), downvote_count: Math.max(0, down) };
+}
 function renderSocialPost(post) {
+  socialPostCache.set(post.id, post);
   const author = post.author || {};
   const own = post.author_id === currentUser?.uid;
   const vote = post.viewer_vote || null;
@@ -390,7 +440,7 @@ function renderSocialPost(post) {
   return `<article class="social-post-card" data-social-post="${id}">
     <header class="social-post-author">${socialAvatar(author)}<div class="social-author-copy"><button type="button" data-social-profile="${esc(author.username || "")}">${esc(author.display_name || "HackVerse builder")}${author.is_verified ? " ✓" : ""}</button><small>@${esc(author.username || "builder")} · <span class="social-post-time">${esc(socialTime(post.created_at))}</span>${post.edited_at ? " · edited" : ""}</small></div><span class="social-post-visibility">${esc(post.visibility || "public")}</span></header>
     <p class="social-post-text">${esc(post.content || "")}</p>${mediaMarkup}${hashtags ? `<div class="social-post-tags">${hashtags}</div>` : ""}
-    <div class="social-post-counts"><span>▲ ${Number(post.upvote_count || 0)} upvotes</span><span>▼ ${Number(post.downvote_count || 0)} downvotes</span><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span></div>
+    <div class="social-post-counts">${renderPostCounts(post)}</div>
     <div class="social-post-actions"><button type="button" data-social-vote="upvote" data-post-id="${id}" aria-pressed="${vote === "upvote"}">▲ Upvote</button><button type="button" data-social-vote="downvote" data-post-id="${id}" aria-pressed="${vote === "downvote"}">▼ Downvote</button><button type="button" data-social-detail="${id}">Open post</button><button type="button" data-social-comments="${id}">Comment</button><button type="button" data-social-repost="${id}">↻ Repost</button><button type="button" data-social-share="${id}">↗ Share</button>${own ? `<button type="button" data-social-edit="${id}">Edit</button><button type="button" data-social-delete="${id}">Delete</button>` : `<button type="button" data-social-report="${id}">Report</button>`}</div>
     <div class="social-comment-panel" data-social-comment-panel="${id}" hidden></div>
   </article>`;
@@ -404,13 +454,29 @@ function bindSocialPostActions(root) {
   bind("[data-social-profile]", button => navigateToProfile(button.dataset.socialProfile));
   bind("[data-social-detail]", button => navigateToPost(button.dataset.socialDetail));
   bind("[data-social-vote]", async button => {
-    try { button.disabled = true; await socialRequest("vote", { postId: button.dataset.postId, value: button.dataset.socialVote }); await loadSocialFeed({ reset: true }); }
-    catch (error) { toast(error.message); } finally { button.disabled = false; }
+    const postId = button.dataset.postId, value = button.dataset.socialVote;
+    const post = socialPostCache.get(postId);
+    if (!post) return;
+    if (post.author_id && post.author_id === currentUser?.uid) { toast("You cannot vote on your own post."); return; }
+    if (pendingVotes.has(postId)) return;
+    pendingVotes.add(postId);
+    const previous = { viewer_vote: post.viewer_vote || null, upvote_count: post.upvote_count, downvote_count: post.downvote_count };
+    updatePostCards(postId, nextVoteState(post, value)); // instant feedback
+    try {
+      const result = await socialRequest("vote", { postId, value });
+      const confirmed = { viewer_vote: result.vote || null };
+      if (result.upvote_count != null) { confirmed.upvote_count = result.upvote_count; confirmed.downvote_count = result.downvote_count; }
+      updatePostCards(postId, confirmed);
+    } catch (error) { updatePostCards(postId, previous); toast(error.message); }
+    finally { pendingVotes.delete(postId); }
   });
   bind("[data-social-comments]", button => toggleSocialComments(button.dataset.socialComments));
   bind("[data-social-repost]", async button => {
-    try { await socialRequest("repost", { postId: button.dataset.socialRepost }); toast("Reposted to your network."); await loadSocialFeed({ reset: true }); }
-    catch (error) { toast(error.message); }
+    if (button.dataset.busy === "1") return;
+    button.dataset.busy = "1"; const label = button.textContent; button.textContent = "↻ Reposted";
+    try { await socialRequest("repost", { postId: button.dataset.socialRepost }); toast("Reposted to your network."); }
+    catch (error) { button.textContent = label; toast(error.message); }
+    finally { button.dataset.busy = "0"; }
   });
   bind("[data-social-share]", button => {
     const postId = button.dataset.socialShare;
@@ -425,37 +491,47 @@ function bindSocialPostActions(root) {
   });
   bind("[data-social-delete]", async button => {
     if (!(await confirmInApp("Delete this post? It will be soft-deleted and removed from public feeds.", "Delete post"))) return;
-    try { await socialRequest("delete-post", { postId: button.dataset.socialDelete }); await loadSocialFeed({ reset: true }); toast("Post deleted."); }
-    catch (error) { toast(error.message); }
+    const postId = button.dataset.socialDelete;
+    try {
+      await socialRequest("delete-post", { postId });
+      document.querySelectorAll(`[data-social-post="${CSS.escape(postId)}"]`).forEach(card => card.remove());
+      socialPostCache.delete(postId); patchFeedCache(postId, {}, { remove: true });
+      toast("Post deleted.");
+      if (currentRouteName() === "post-detail") navigateToRoute("posts");
+    } catch (error) { toast(error.message); }
   });
   bind("[data-social-edit]", async button => {
     const card = button.closest("[data-social-post]"); const current = card?.querySelector(".social-post-text")?.textContent || "";
     const updated = await promptInApp("Edit your post", "Update the text of your post (up to 3,000 characters).", current, "Post text");
     if (updated === null) return;
-    try { await socialRequest("edit-post", { postId: button.dataset.socialEdit, content: updated }); await loadSocialFeed({ reset: true }); toast("Post updated."); }
+    try { const result = await socialRequest("edit-post", { postId: button.dataset.socialEdit, content: updated }); updatePostCards(button.dataset.socialEdit, { content: result.post?.content ?? updated, hashtags: result.post?.hashtags }); toast("Post updated."); }
     catch (error) { toast(error.message); }
   });
 }
 
 function navigateToPost(postId) {
   if (!postId) return;
-  history.pushState({}, "", `/post/${encodeURIComponent(postId)}`);
-  handleRoute();
+  navigateToRoute(`/post/${encodeURIComponent(postId)}`);
 }
 async function loadSocialPostDetail(postId) {
   const host = $("#socialPostDetail"); if (!host || !postId) return;
-  host.innerHTML = '<div class="loading-card">Loading post…</div>';
+  // Opening a post from the feed already has its data, so show it immediately and refresh in the background.
+  const known = socialPostCache.get(postId);
+  if (known?.author) { host.innerHTML = renderSocialPost(known); bindSocialPostActions(host); }
+  else host.innerHTML = '<div class="loading-card">Loading post…</div>';
   try {
     const data = await socialRequest("post-detail", { postId });
-    host.innerHTML = data.post ? renderSocialPost(data.post) : '<div class="empty-note">This post is unavailable.</div>';
-    bindSocialPostActions(host);
-  } catch (error) { host.innerHTML = `<div class="empty-note">${esc(error.message)}</div>`; }
+    if (currentRouteName() !== "post-detail" || !location.pathname.includes(postId)) return;
+    if (!data.post) { host.innerHTML = '<div class="empty-note">This post is unavailable.</div>'; return; }
+    if (known?.author && host.querySelector(`[data-social-post="${CSS.escape(postId)}"]`)) updatePostCards(postId, data.post);
+    else { host.innerHTML = renderSocialPost(data.post); bindSocialPostActions(host); }
+  } catch (error) { if (!known?.author) host.innerHTML = `<div class="empty-note">${esc(error.message)}</div>`; }
 }
 
 async function loadSocialFeed({ reset = false } = {}) {
   const host = $("#socialPostList"); if (!host || socialFeedLoading) return;
   if (!currentUser) { host.innerHTML = '<div class="empty-note">Sign in to explore community posts.</div>'; return; }
-  const cacheKey = `hv-social-feed-v2:${currentUser.uid}:${socialFeedType}`;
+  const cacheKey = socialFeedCacheKey();
   if (reset) {
     socialFeedCursor = null;
     try {
@@ -482,21 +558,43 @@ async function loadSocialFeed({ reset = false } = {}) {
   } catch (error) { if (reset && !host.querySelector("[data-social-post]")) host.innerHTML = `<div class="empty-note">Could not load posts. ${esc(error.message)}</div>`; else if (!reset) toast(error.message); }
   finally { socialFeedLoading = false; }
 }
+const renderCommentRow = (comment, { pending = false } = {}) => `<div class="social-comment-row${pending ? " is-pending" : ""}" ${comment.id ? `data-comment-id="${esc(comment.id)}"` : ""}>${socialAvatar(comment.author)}<div><b>${esc(comment.author?.display_name || "Builder")}</b><p>${esc(comment.content)}</p><small>${pending ? "Sending…" : esc(socialTime(comment.created_at))}</small></div></div>`;
 async function toggleSocialComments(postId) {
   const panel = document.querySelector(`[data-social-comment-panel="${CSS.escape(postId)}"]`);
   if (!panel) return;
   if (!panel.hidden) { panel.hidden = true; return; }
-  panel.hidden = false; panel.innerHTML = '<div class="empty-note">Loading comments…</div>';
-  try {
-    const data = await socialRequest("comments", { postId });
-    const comments = data.comments || [];
-    panel.innerHTML = `${comments.map(comment => `<div class="social-comment-row">${socialAvatar(comment.author)}<div><b>${esc(comment.author?.display_name || "Builder")}</b><p>${esc(comment.content)}</p><small>${esc(socialTime(comment.created_at))}</small></div></div>`).join("") || '<div class="empty-note">No comments yet. Start a constructive conversation.</div>'}<form class="social-comment-form"><input maxlength="1200" required placeholder="Write a thoughtful comment…"><button class="btn btn-primary btn-small" type="submit">Send</button></form>`;
-    panel.querySelector("form").addEventListener("submit", async event => {
-      event.preventDefault(); const input = event.currentTarget.querySelector("input"); if (!input.value.trim()) return;
-      try { await socialRequest("comment", { postId, content: input.value }); await loadSocialFeed({ reset: true }); toast("Comment posted."); }
-      catch (error) { toast(error.message); }
+  panel.hidden = false;
+  // The form is available immediately; the existing comments stream in underneath it.
+  if (!panel.querySelector("form")) {
+    panel.innerHTML = '<div class="social-comment-list"><div class="empty-note">Loading comments…</div></div><form class="social-comment-form"><input maxlength="1200" required placeholder="Write a thoughtful comment…"><button class="btn btn-primary btn-small" type="submit">Send</button></form>';
+    const list = panel.querySelector(".social-comment-list");
+    const form = panel.querySelector("form");
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const input = form.querySelector("input"); const content = input.value.trim(); if (!content) return;
+      if (!requireAccount()) return;
+      input.value = "";
+      list.querySelector(".empty-note")?.remove();
+      const me = { display_name: publicProfile?.displayName || currentUser.displayName || "You", avatar_url: publicProfile?.avatarUrl || currentUser.photoURL || "" };
+      list.insertAdjacentHTML("beforeend", renderCommentRow({ author: me, content }, { pending: true }));
+      const row = list.lastElementChild;
+      try {
+        const { comment } = await socialRequest("comment", { postId, content });
+        row.outerHTML = renderCommentRow({ ...comment, author: comment.author || me });
+        const post = socialPostCache.get(postId);
+        updatePostCards(postId, { comment_count: Number(post?.comment_count || 0) + 1 });
+      } catch (error) { row.remove(); input.value = content; toast(error.message); }
     });
-  } catch (error) { panel.innerHTML = `<div class="empty-note">${esc(error.message)}</div>`; }
+    try {
+      const data = await socialRequest("comments", { postId });
+      const comments = data.comments || [];
+      // Keep any comment the user already sent while this list was loading (its row is still referenced by the submit handler).
+      [...list.children].filter(el => !el.classList.contains("is-pending")).forEach(el => el.remove());
+      const hasPending = Boolean(list.querySelector(".is-pending"));
+      const shown = new Set([...list.querySelectorAll("[data-comment-id]")].map(el => el.dataset.commentId));
+      list.insertAdjacentHTML("afterbegin", comments.filter(c => !shown.has(c.id)).map(c => renderCommentRow(c)).join("") || (hasPending ? "" : '<div class="empty-note">No comments yet. Start a constructive conversation.</div>'));
+    } catch (error) { list.querySelector(".empty-note")?.remove(); list.insertAdjacentHTML("afterbegin", `<div class="empty-note">${esc(error.message)}</div>`); }
+  }
 }
 async function syncSocialProfile(profile) {
   if (!profile?.username || !currentUser) return;
@@ -3917,7 +4015,10 @@ function initAdvancedUI(){
   });
 }
 
-function handleRoute() {
+let lastRouteKey = "";
+function handleRoute({ force = false } = {}) {
+  // Unknown paths fall back to home with a clean URL instead of staying on a broken address.
+  if (!isAppRoutePath(location.pathname)) history.replaceState({}, "", "/");
   const pathname = location.pathname.replace(/\/+$/, "") || "/";
   const profileMatch = pathname.match(/^\/@([A-Za-z0-9_]{3,24})$/);
   const postMatch = pathname.match(/^\/post\/([0-9a-f-]{36})$/i);
@@ -3940,13 +4041,18 @@ function handleRoute() {
     if (stopTypingListener) { stopTypingListener(); stopTypingListener = null; }
   } else if (activeConversation && activeConversationId && !stopMessageListener) selectConversation(activeConversation);
 
+  // Auth events call handleRoute several times for the same page. Only the first call for a
+  // page/user combination reloads data, animates and scrolls; later calls just sync visibility.
+  const routeKey = `${pathname}|${currentUser?.uid || ""}`;
+  const freshRoute = force || routeKey !== lastRouteKey;
+  lastRouteKey = routeKey;
   const requiresMember = view !== "home";
   const blocked = requiresMember && !currentUser;
   $("#routeAccessGate").hidden = !blocked;
   $$('[data-view]').forEach(el => {
     if (el.id === "discoveryAdminPanel") { el.hidden = blocked || !(view === "home" && isAdminUser); return; }
     el.hidden = blocked || el.dataset.view !== view;
-    if (!el.hidden) {
+    if (!el.hidden && freshRoute) {
       el.classList.remove("hv-route-enter");
       requestAnimationFrame(() => {
         if (!el.hidden) {
@@ -3961,8 +4067,8 @@ function handleRoute() {
   document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
   const titles = { home: "HackVerse", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
   document.title = `${titles[view] || "HackVerse"} — HackVerse`;
-  window.scrollTo({ top: 0, behavior: "auto" });
-  if (blocked) return;
+  if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
+  if (blocked || !freshRoute) return;
   if (view === "opportunities") { updateEventAccessUI(); if (currentUser) renderEvents(); }
   if (view === "feed") void loadBuilderFeed();
   if (view === "posts") void loadSocialFeed({ reset: true });
@@ -4050,6 +4156,8 @@ function bindUI() {
     renderConversationList(currentConversations);
   };
   $("#chatMobileBackBtn").onclick=backToChatList;
+  $("#postDetailBack")?.addEventListener("click",()=>goBackOr("posts"));
+  $("#publicProfileBack")?.addEventListener("click",()=>goBackOr("posts"));
   $("#socialPostForm").addEventListener("submit",createSocialPost);
   $("#focusPostComposer").onclick=()=>{if(!requireAccount())return;const form=$("#socialPostForm");form.hidden=false;$("#focusPostComposer").setAttribute("aria-expanded","true");form.scrollIntoView({behavior:"smooth",block:"nearest"});$("#socialPostContent").focus({preventScroll:true});};
   $("#cancelSocialPost").onclick=()=>{$("#socialPostForm").hidden=true;$("#focusPostComposer").setAttribute("aria-expanded","false");};
@@ -4125,6 +4233,6 @@ function bindUI() {
 }
 function runHeroSearch() { if (!requireAccount()) return; $("#eventSearch").value = $("#heroSearch").value; renderEvents(); navigateToRoute("opportunities"); }
 
-window.addEventListener("popstate", handleRoute);
+window.addEventListener("popstate", () => handleRoute({ force: true }));
 bindUI();
 initSupabase();
