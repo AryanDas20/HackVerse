@@ -139,7 +139,7 @@ async function handler(req, res) {
     client = clients(); user = await authenticate(client, req);
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const action = String(body.action || "");
-    const readActions = new Set(["feed","profile","profile-tab","post-detail","comments","my-reports","preferences","blocked-users"]);
+    const readActions = new Set(["feed","profile","profile-stats","profile-tab","post-detail","comments","my-reports","preferences","blocked-users"]);
     // Hot interaction paths run the rate-limit check alongside their reads; every write awaits it first.
     const deferredLimit = new Set(["vote","comment","repost","unrepost"]);
     let limitCheck = Promise.resolve();
@@ -209,6 +209,65 @@ async function handler(req, res) {
     if (action === "post-detail") {
       const { post, author, viewerVote } = await loadVisiblePost(client, body.postId, user.id, { withVote: true });
       return res.status(200).json({ post: { ...post, viewer_vote: viewerVote, author } });
+    }
+
+    if (action === "profile-stats") {
+      // This endpoint is account-scoped: it only returns the authenticated
+      // member's own activity, including private hackathon participation.
+      const [profileResult, buildResult, projectResult, historyResult, socialPostResult] = await Promise.all([
+        client.from("profiles").select("post_count,upvote_count,follower_count,following_count").eq("id", user.id).maybeSingle(),
+        client.from("documents").select("doc_id,data").eq("collection_path", "builderPosts").eq("owner_uid", user.id).limit(1000),
+        client.from("documents").select("doc_id").eq("collection_path", "projects").eq("owner_uid", user.id).limit(1000),
+        client.from("documents").select("doc_id,data").eq("collection_path", "hackathonHistory").eq("owner_uid", user.id).limit(1000),
+        client.from("posts").select("id,upvote_count,comment_count").eq("author_id", user.id).eq("is_deleted", false).limit(1000)
+      ]);
+      for (const result of [profileResult, buildResult, projectResult, historyResult, socialPostResult]) {
+        if (result.error) throw result.error;
+      }
+      const buildRows = buildResult.data || [];
+      const buildIds = buildRows.map(row => row.doc_id).filter(Boolean);
+      let legacyVotes = [], legacyComments = [];
+      if (buildIds.length) {
+        const [votesResult, commentsResult] = await Promise.all([
+          client.from("documents").select("doc_id").eq("collection_path", "builderPostVotes").in("data->>postId", buildIds).limit(10000),
+          client.from("documents").select("doc_id").eq("collection_path", "builderPostComments").in("data->>postId", buildIds).limit(10000)
+        ]);
+        if (votesResult.error) throw votesResult.error;
+        if (commentsResult.error) throw commentsResult.error;
+        legacyVotes = votesResult.data || [];
+        legacyComments = commentsResult.data || [];
+      }
+      const socialPosts = socialPostResult.data || [];
+      const history = (historyResult.data || []).map(row => row.data || {});
+      const profile = profileResult.data || {};
+      const builds = buildRows.length;
+      const projects = (projectResult.data || []).length;
+      const posts = Number(profile.post_count || 0);
+      const socialLikes = profile.upvote_count != null
+        ? Number(profile.upvote_count)
+        : socialPosts.reduce((sum, row) => sum + Number(row.upvote_count || 0), 0);
+      const socialComments = socialPosts.reduce((sum, row) => sum + Number(row.comment_count || 0), 0);
+      const likesReceived = socialLikes + legacyVotes.length;
+      const commentsReceived = socialComments + legacyComments.length;
+      const winnerCount = history.filter(row => /winner|1st place|first place/i.test(String(row.outcome || ""))).length;
+      const finalistCount = history.filter(row => /runner.?up|finalist|2nd place|second place/i.test(String(row.outcome || ""))).length;
+      const recognitionCount = history.filter(row => /top\s*10|special mention|honou?rable mention/i.test(String(row.outcome || ""))).length;
+      const pointsBreakdown = {
+        builds: builds * 100,
+        projects: projects * 60,
+        posts: posts * 20,
+        likes: likesReceived * 5,
+        hackathons: history.length * 50,
+        achievements: winnerCount * 100 + finalistCount * 50 + recognitionCount * 25
+      };
+      const points = Object.values(pointsBreakdown).reduce((sum, value) => sum + value, 0);
+      return res.status(200).json({
+        stats: {
+          builds, projects, posts, likesReceived, commentsReceived, hackathons: history.length,
+          followers: Number(profile.follower_count || 0), following: Number(profile.following_count || 0),
+          points, pointsBreakdown, achievements: { winners: winnerCount, finalists: finalistCount, otherRecognition: recognitionCount }
+        }
+      });
     }
 
     if (action === "profile") {

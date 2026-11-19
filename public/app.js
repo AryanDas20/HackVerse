@@ -19,7 +19,10 @@ let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voi
 let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false, pendingAiUserMessage = "", aiAvailableBuilderUids = [];
 let emailVerificationGuard = false, pendingChatFile = null;
 let builderPosts = [], builderPostVotes = [], builderPostReposts = [], builderPostComments = [], builderPostSaves = [], builderFollows = [], hackathonHistory = [];
-let builderFeedFilter = "latest", feedLoadInProgress = false;
+let builderFeedFilter = "latest", feedLoadInProgress = false, lastBuilderFeedLoadedAt = 0;
+let builderCommentsLoading = new Set(), builderCommentsLoaded = new Set(), pendingBuilderVotes = new Set();
+let profileStats = null, profileStatsLoading = false, profileNudgeTimer = null;
+let pendingAudioObjectUrl = "", pendingAudioObjectFile = null;
 let socialFeedType = "explore", socialFeedCursor = null, socialFeedLoading = false, publicProfilePageData = null, publicProfileTab = "posts", publicProfileTabCursor = null, publicProfileTabLoading = false;
 let dialogResolver = null;
 
@@ -193,15 +196,26 @@ function makeShareCardBlob(item) {
       const type = String(item.type || "update").toUpperCase();
       ctx.fillStyle = "#ff647f"; rounded(112, 278, Math.min(300, Math.max(178, 30 + type.length * 15)), 54, 27); ctx.fill();
       ctx.fillStyle = "#201722"; ctx.font = "800 20px Arial, sans-serif"; ctx.fillText(type, 138, 313);
-      ctx.fillStyle = "#fffaf8"; ctx.font = "800 58px Arial, sans-serif";
-      const titleLines = shareCanvasText(ctx, item.title || "A new idea from HackVerse", 112, 430, 820, 72, 3);
-      const descY = 430 + Math.max(1, titleLines) * 72 + 46;
-      ctx.fillStyle = "rgba(255,250,248,.78)"; ctx.font = "400 29px Arial, sans-serif";
-      shareCanvasText(ctx, item.description || "Explore this update and connect with the builder community.", 112, descY, 820, 42, 2);
-      ctx.fillStyle = "rgba(255,255,255,.10)"; rounded(112, 820, 820, 112, 24); ctx.fill();
-      ctx.fillStyle = "#ffcf82"; ctx.font = "700 20px Arial, sans-serif"; ctx.fillText("OPEN THE LINK", 144, 860);
-      ctx.fillStyle = "#fffaf8"; ctx.font = "500 19px Arial, sans-serif";
-      shareCanvasText(ctx, item.url || location.origin, 144, 899, 750, 25, 2);
+      ctx.fillStyle = "#fffaf8"; ctx.font = "800 52px Arial, sans-serif";
+      const titleLines = shareCanvasText(ctx, item.title || "A new idea from HackVerse", 112, 420, 820, 64, 2);
+      const descY = 420 + Math.max(1, titleLines) * 64 + 34;
+      ctx.fillStyle = "rgba(255,250,248,.78)"; ctx.font = "400 26px Arial, sans-serif";
+      shareCanvasText(ctx, item.description || "Explore this update and connect with the builder community.", 112, descY, 820, 38, 2);
+      const details = Array.isArray(item.details) ? item.details.filter(row => row?.label && row?.value).slice(0,4) : [];
+      if (details.length) {
+        ctx.fillStyle = "rgba(255,255,255,.075)"; rounded(112, 700, 820, 112, 20); ctx.fill();
+        details.forEach((detail, index) => {
+          const col = index % 2, row = Math.floor(index / 2), x = 140 + col * 400, y = 744 + row * 48;
+          ctx.fillStyle = "#ffcf82"; ctx.font = "700 14px Arial, sans-serif";
+          ctx.fillText(String(detail.label).toUpperCase().slice(0,22), x, y);
+          ctx.fillStyle = "#fffaf8"; ctx.font = "500 18px Arial, sans-serif";
+          shareCanvasText(ctx, String(detail.value), x + 118, y, 250, 22, 1);
+        });
+      }
+      ctx.fillStyle = "rgba(255,255,255,.10)"; rounded(112, 840, 820, 96, 22); ctx.fill();
+      ctx.fillStyle = "#ffcf82"; ctx.font = "700 19px Arial, sans-serif"; ctx.fillText("OPEN THE LINK", 144, 878);
+      ctx.fillStyle = "#fffaf8"; ctx.font = "500 17px Arial, sans-serif";
+      shareCanvasText(ctx, item.url || location.origin, 144, 910, 750, 22, 1);
       ctx.fillStyle = "rgba(255,255,255,.58)"; ctx.font = "500 18px Arial, sans-serif"; ctx.fillText("Built for people who build.", 112, 978);
       canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Could not create the share image.")), "image/png");
     } catch (error) { reject(error); }
@@ -221,7 +235,7 @@ async function shareExternally(item) {
   const normalized = { ...item, url };
   const payload = {
     title: normalized.title || "HackVerse",
-    text: `${normalized.description || "Explore this on HackVerse."}\n${url}`,
+    text: shareTextForItem(normalized),
     url
   };
   // Invoke the platform share sheet before awaiting any image generation so mobile browsers
@@ -249,12 +263,13 @@ async function sendSharedItemToConversation(item, conversationId, forwarded = fa
   if (!currentUser || !db || !conversationId) throw new Error("Choose a chat before sharing.");
   const title = String(item.title || "HackVerse update").slice(0, 180);
   const description = String(item.description || "").slice(0, 600);
+  const details = Array.isArray(item.details) ? item.details.slice(0, 6).map(row => ({ label: String(row?.label || "").slice(0, 40), value: String(row?.value || "").slice(0, 100) })).filter(row => row.label && row.value) : [];
   const url = validUrl(item.url) || `${location.origin}/`;
-  const text = `${forwarded ? "Forwarded" : "Shared"} ${item.type || "update"}: ${title}\n${description}\n${url}`.slice(0, 2000);
+  const text = `${forwarded ? "Forwarded" : "Shared"} ${item.type || "update"}:\n${shareTextForItem({ ...item, title, description, details, url })}`.slice(0, 2000);
   await addDoc(collection(db, "conversations", conversationId, "messages"), {
     authorUid: currentUser.uid,
     authorName: publicProfile?.displayName || currentUser.displayName || "Member",
-    text, kind: "share", forwarded: Boolean(forwarded), sharedItem: { type: item.type || "update", title, description, url, sourceId: String(item.sourceId || "").slice(0, 120) },
+    text, kind: "share", forwarded: Boolean(forwarded), sharedItem: { type: item.type || "update", title, description, details, url, sourceId: String(item.sourceId || "").slice(0, 120) },
     createdAt: serverTimestamp()
   });
   await updateDoc(doc(db, "conversations", conversationId), {
@@ -265,8 +280,9 @@ async function sendSharedItemToConversation(item, conversationId, forwarded = fa
 function shareTextForItem(item) {
   const title = String(item.title || "HackVerse update");
   const description = String(item.description || "See this update on HackVerse.");
+  const details = Array.isArray(item.details) ? item.details.slice(0, 6).map(row => `${String(row?.label || "")}: ${String(row?.value || "")}`).filter(line => !line.startsWith(": ")) : [];
   const url = validUrl(item.url) || `${location.origin}/`;
-  return `${title}\n${description}\n${url}`.slice(0, 1800);
+  return [title, description, ...details, url].filter(Boolean).join("\n").slice(0, 1800);
 }
 function closeShareContactPicker() {
   const picker = $("#shareContactPicker");
@@ -376,6 +392,7 @@ function openShareMenu(item) {
     <button class="modal-close" type="button" data-share-action-close aria-label="Close">×</button>
     <div class="eyebrow">SHARE WITH YOUR NETWORK</div><h2 id="shareActionTitle">Share this update</h2>
     <p class="muted">Choose a contact in WhatsApp, your device share sheet, or a HackVerse conversation.</p>
+    ${Array.isArray(item.details) && item.details.length ? `<div class="share-opportunity-preview">${item.details.slice(0,4).map(row => `<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>` : ""}
     <div class="share-action-list">
       <a class="share-action-option" href="${esc(whatsappUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-action-icon">↗</span><span><b>WhatsApp</b><small>Choose a contact in WhatsApp</small></span><span class="share-action-arrow">→</span></a>
       <button class="share-action-option" type="button" data-share-native><span class="share-action-icon">⇧</span><span><b>More apps and contacts</b><small>Open your device share sheet</small></span><span class="share-action-arrow">→</span></button>
@@ -623,7 +640,7 @@ async function createSocialPost(event) {
       mediaUrl=prepared.publicUrl; mediaType="image";
     }
     await socialRequest("create-post", { content, mediaUrl, mediaType, visibility: $("#socialPostVisibility").value });
-    $("#socialPostForm").reset(); message.textContent = "Post published."; $("#socialPostForm").hidden = true; $("#focusPostComposer").setAttribute("aria-expanded", "false"); toast("Post published."); await loadSocialFeed({ reset: true });
+    $("#socialPostForm").reset(); message.textContent = "Post published."; $("#socialPostForm").hidden = true; $("#focusPostComposer").setAttribute("aria-expanded", "false"); toast("Post published."); void loadProfileStats(); await loadSocialFeed({ reset: true });
   } catch (error) { message.textContent = error.message; }
   finally { button.disabled = false; }
 }
@@ -734,6 +751,7 @@ function initSupabase() {
     $("#authButton").textContent = user ? "Sign out" : "Sign in";
     $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
     if (!user) {
+      clearTimeout(profileNudgeTimer); profileNudgeTimer = null; profileStats = null; profileStatsLoading = false; lastBuilderFeedLoadedAt = 0; builderCommentsLoaded.clear(); builderCommentsLoading.clear(); pendingBuilderVotes.clear(); if (voiceRecorder?.state === "recording") voiceRecorder.stop();
       privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[]; pendingChatFile = null; builderPosts=[]; builderPostVotes=[]; builderPostReposts=[]; builderPostComments=[]; builderPostSaves=[]; builderFollows=[]; hackathonHistory=[]; renderPendingChatAttachment(); renderNotificationCenter(); renderBuilderFeed(); renderHackathonHistory(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
       $("#eventModalContent").innerHTML = ""; detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
       $("#chatPlaceholder").hidden = false; $("#chatActive").hidden = true; activeAiConversationId = null; currentAiMessages = []; pendingAiActions = []; updateAiAccessUI(); renderAiMessages();
@@ -826,6 +844,52 @@ async function resetPassword() {
   catch (error) { $("#authMessage").textContent = friendlyError(error); }
 }
 
+function profileMissingEssentials(profile = publicProfile || privateProfile || {}) {
+  profile = { ...(profile?.profileData || {}), ...(profile || {}) };
+  const missing = [];
+  if (!String(profile.displayName || currentUser?.displayName || "").trim()) missing.push("your name");
+  if (!/^[A-Za-z0-9_]{3,24}$/.test(String(profile.username || "").replace(/^@/, ""))) missing.push("a username");
+  if (String(profile.bio || "").trim().length < 20) missing.push("a short introduction (20+ characters)");
+  const skills = Array.isArray(profile.skills) ? profile.skills : listFrom(profile.skills || "");
+  if (!skills.length) missing.push("at least one skill");
+  return missing;
+}
+function scheduleProfileNudge() {
+  clearTimeout(profileNudgeTimer);
+  if (!currentUser) return;
+  const key = `hv-profile-nudge-${currentUser.uid}`;
+  if (sessionStorage.getItem(key)) return;
+  const missing = profileMissingEssentials();
+  if (!missing.length) return;
+  profileNudgeTimer = window.setTimeout(async () => {
+    if (!currentUser || document.hidden || !profileMissingEssentials().length || !$("#appDialog")?.hidden) {
+      if (currentUser && document.hidden) scheduleProfileNudge();
+      return;
+    }
+    const stillMissing = profileMissingEssentials();
+    const choice = await chooseInApp(
+      "Finish the essentials on your profile",
+      `A few details help teammates understand and find you: ${stillMissing.join(", ")}. You can add everything else later.`,
+      [{ value: "later", label: "Not now", variant: "outline" }, { value: "complete", label: "Complete profile", variant: "primary" }]
+    );
+    sessionStorage.setItem(key, "shown");
+    if (choice === "complete") openProfileEditor(false);
+  }, 60_000);
+}
+async function loadProfileStats() {
+  if (!currentUser || profileStatsLoading) return;
+  profileStatsLoading = true;
+  try {
+    const result = await socialRequest("profile-stats");
+    profileStats = result.stats || null;
+    if (currentRouteName() === "profile") renderMyProfile();
+  } catch (error) {
+    console.warn("Profile activity stats unavailable", error);
+    profileStats = profileStats || null;
+    if (currentRouteName() === "profile") renderMyProfile();
+  } finally { profileStatsLoading = false; }
+}
+
 async function loadAccountWorkspace() {
   try {
     const [snap, pubSnap] = await Promise.all([
@@ -835,6 +899,8 @@ async function loadAccountWorkspace() {
     privateProfile = snap.exists() ? snap.data() : null;
     publicProfile = pubSnap.exists() ? pubSnap.data() : (privateProfile?.profileVisibility && privateProfile.profileVisibility !== "public" ? (privateProfile?.profileData || null) : null);
     renderMyProfile(); loadSettingsUI(); renderNotificationCenter();
+    void loadProfileStats();
+    scheduleProfileNudge();
     // Saved items and projects are not required to render the first screen.
     void loadSaved();
     hideModal("profileModal");
@@ -990,8 +1056,11 @@ async function saveProfile(event) {
     privateProfile = { ...(privateProfile || {}), ...privateData, profileComplete: Boolean(name && usernameLower) };
     publicProfile = name || usernameLower ? profile : null;
     profileIsMandatory = false;
+    clearTimeout(profileNudgeTimer);
+    if (currentUser) sessionStorage.setItem(`hv-profile-nudge-${currentUser.uid}`, "saved");
     hideModal("profileModal");
     renderMyProfile();
+    void loadProfileStats();
     beginInboxListener();
     void loadProjects();
     void loadHackathonHistory();
@@ -1106,9 +1175,21 @@ function opportunityQualityScore(event) {
 }
 function deduplicateVisibleOpportunities(records) {
   const sorted = [...records].sort((a,b) => opportunityQualityScore(b) - opportunityQualityScore(a));
-  const unique = [];
+  const unique = [], byUrl = new Map(), byTitle = new Map();
   for (const record of sorted) {
-    if (!unique.some(existing => sameOpportunityIdentity(record, existing))) unique.push(record);
+    const urls = [record.sourceUrl, record.officialEventUrl, record.officialRegistrationUrl].map(canonicalOpportunityUrl).filter(Boolean);
+    const titleKey = `${eventCategoryValue(record)}|${normalizeOpportunityText(record.title)}`;
+    const urlDuplicate = urls.some(url => {
+      const existing = byUrl.get(url);
+      return existing && eventCategoryValue(existing) === eventCategoryValue(record);
+    });
+    const titleCandidates = byTitle.get(titleKey) || [];
+    const titleDuplicate = titleCandidates.some(existing => sameOpportunityIdentity(record, existing));
+    if (urlDuplicate || titleDuplicate) continue;
+    unique.push(record);
+    urls.forEach(url => byUrl.set(url, record));
+    if (!byTitle.has(titleKey)) byTitle.set(titleKey, []);
+    byTitle.get(titleKey).push(record);
   }
   return unique;
 }
@@ -1150,31 +1231,31 @@ async function loadEvents({ forceRefresh = false } = {}) {
     return;
   }
   updateEventAccessUI();
+  let renderedCache = false;
   if (!forceRefresh) {
     const cached = readOpportunityCache();
-    // Render cached data immediately for responsiveness, but still refresh from
-    // Supabase database. The previous early return could leave the dashboard showing an
-    // older opportunity count for up to 30 minutes after a discovery run.
-    if (cached) displayOpportunityRecords(cached);
+    // Render cached data immediately while the first live page refreshes.
+    if (cached) { displayOpportunityRecords(cached); renderedCache = true; }
   }
-  grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
+  if (!renderedCache) grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
-    // Read public listings in bounded pages rather than silently stopping at 500.
+    // Render the first page immediately; hydrate later pages in the background
+    // so the homepage does not wait for every directory record.
     const loadedDocs = [];
     let cursor = null;
-    // Three bounded pages are enough for a useful first load without letting a
-    // very large directory trigger dozens of sequential network round-trips.
-    for (let page = 0; page < 3; page++) {
-      const constraints = [where("visibility", "==", "public"), limit(500)];
-      if (cursor) constraints.push(startAfter(cursor));
-      const snapshot = await getDocs(query(collection(db, "hackathons"), ...constraints));
-      loadedDocs.push(...snapshot.docs);
-      if (snapshot.docs.length < 500) break;
-      cursor = snapshot.docs[snapshot.docs.length - 1];
-    }
-    const records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
-    writeOpportunityCache(records);
+    const firstSnapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(500)));
+    loadedDocs.push(...firstSnapshot.docs);
+    let records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
     displayOpportunityRecords(records);
+    cursor = firstSnapshot.docs.length === 500 ? firstSnapshot.docs[firstSnapshot.docs.length - 1] : null;
+    for (let page = 1; cursor && page < 3; page++) {
+      const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), startAfter(cursor), limit(500)));
+      loadedDocs.push(...snapshot.docs);
+      records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
+      displayOpportunityRecords(records);
+      cursor = snapshot.docs.length === 500 ? snapshot.docs[snapshot.docs.length - 1] : null;
+    }
+    writeOpportunityCache(records);
   } catch (error) {
     console.error("Opportunity feed read failed", error);
     const stale = (() => { try { const cached = JSON.parse(localStorage.getItem(OPPORTUNITY_CACHE_KEY) || "null"); return Array.isArray(cached?.records) ? cached.records : null; } catch { return null; } })();
@@ -1423,9 +1504,9 @@ function renderEvents() {
   renderLearningCatalog();
   const preview = $("#eventGrid"); const full = $("#eventGridAll");
   if (preview) {
+    const homeList = events.filter(event => event.status !== "expired").slice(0, 6);
     $("#homeOpportunityCount").textContent = `${events.length} unique active opportunities · ${list.length} match current filters`;
-    const top = list.slice(0,6);
-    preview.innerHTML = top.length ? top.map(opportunityCard).join("") : `<div class="loading-card">${db ? (events.length ? "No opportunities match this selection. Explore all opportunities and adjust filters." : "No opportunities have been published yet. New discoveries will appear here automatically.") : "Connect Supabase to load the live opportunity feed."}</div>`;
+    preview.innerHTML = homeList.length ? homeList.map(opportunityCard).join("") : `<div class="loading-card">${db ? (events.length ? "No active opportunities are available right now. Explore the full directory for more." : "No opportunities have been published yet. New discoveries will appear here automatically.") : "Connect Supabase to load the live opportunity feed."}</div>`;
   }
   if (full) {
     $("#allOpportunityCount").textContent = `${list.length} opportunit${list.length === 1 ? "y" : "ies"} found`;
@@ -1443,8 +1524,16 @@ function renderEvents() {
 function shareOpportunity(eventId) {
   const event = events.find(row => row.id === eventId); if (!event) return;
   const url = validUrl(event.officialRegistrationUrl || event.officialEventUrl || event.sourceUrl) || `${location.origin}/opportunities`;
-  const desc = [event.organizer || event.sourceName, event.summary || event.description, event.registrationDeadline ? `Deadline: ${dateLabel(event.registrationDeadline)}` : ""].filter(Boolean).join(" · ").slice(0, 500);
-  openShareMenu({ type: "opportunity", title: event.title || "HackVerse opportunity", description: desc, url, sourceId: event.id, visibility: "public" });
+  const place = event.location || [event.city,event.region || event.state,event.country].filter(Boolean).join(", ");
+  const prize = event.prize || (Number(event.prizePool) > 0 ? `${event.currency || ""} ${event.prizePool}`.trim() : "");
+  const details = [
+    ["Organiser", event.organizer || event.sourceName], ["Type", eventCategoryValue(event).replace(/-/g," ")],
+    ["Format", eventModeValue(event)], ["Location", place], ["Deadline", event.registrationDeadline ? dateLabel(event.registrationDeadline) : ""],
+    ["Starts", event.startAt ? dateLabel(event.startAt) : ""], ["Prize", prize],
+    ["Tracks", (event.tracks || event.tags || []).slice(0,4).join(", ")], ["Eligibility", event.eligibility]
+  ].filter(([,value]) => value && String(value).trim() && String(value) !== "Not specified").slice(0, 6).map(([label,value]) => ({ label, value: String(value).slice(0,100) }));
+  const desc = String(event.summary || event.description || "Explore the official opportunity details on HackVerse.").slice(0, 500);
+  openShareMenu({ type: "opportunity", title: event.title || "HackVerse opportunity", description: desc, details, url, sourceId: event.id, visibility: "public" });
 }
 function viewEvent(eventId) {
   if (!requireAccount()) return;
@@ -1571,12 +1660,27 @@ function detachRealtimeListeners() {
   if (stopInboxListener) stopInboxListener(); if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
   stopInboxListener = null; stopMessageListener = null; stopTypingListener = null; activeConversationId = null; activeConversation = null;
 }
+function inboxCacheKey(uid = currentUser?.uid) { return uid ? `hv-inbox-cache-v1:${uid}` : ""; }
+function messagesCacheKey(conversationId, uid = currentUser?.uid) { return uid && conversationId ? `hv-messages-cache-v1:${uid}:${conversationId}` : ""; }
+function cacheConversationMessages(conversationId = activeConversationId) {
+  const key = messagesCacheKey(conversationId);
+  if (!key || !Array.isArray(currentMessages)) return;
+  try { sessionStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), messages: currentMessages })); } catch {}
+}
 function beginInboxListener() {
   if (!currentUser || !db) return;
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(inboxCacheKey()) || "null");
+    if (cached?.savedAt && Date.now() - cached.savedAt < 24 * 60 * 60 * 1000 && Array.isArray(cached.conversations)) {
+      currentConversations = cached.conversations;
+      renderConversationList(currentConversations);
+    }
+  } catch {}
   if (stopInboxListener) stopInboxListener();
   const inboxQuery = query(collection(db, "conversations"), where("participants", "array-contains", currentUser.uid), limit(100));
   stopInboxListener = onSnapshot(inboxQuery, snapshot => {
     currentConversations = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(c => !c.deleted).sort((a,b) => tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
+    try { sessionStorage.setItem(inboxCacheKey(), JSON.stringify({ savedAt: Date.now(), conversations: currentConversations })); } catch {}
     renderConversationList(currentConversations);
     if (currentRouteName() === "notifications") renderNotificationCenter();
     const notificationBaselineKey=`hv-inbox-baseline-${currentUser.uid}`;
@@ -1674,8 +1778,18 @@ function selectConversation(conversation) {
     renderPendingChatAttachment();
   }
   activeConversation = conversation; activeConversationId = conversation.id; replyingToMessageId = null; currentMessages = [];
-  $("#messageList").innerHTML = '<div class="loading-card">Loading conversation…</div>';
+  let restoredMessages = false;
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(messagesCacheKey(conversation.id)) || "null");
+    if (cached?.savedAt && Date.now() - cached.savedAt < 24 * 60 * 60 * 1000 && Array.isArray(cached.messages)) {
+      currentMessages = cached.messages;
+      restoredMessages = true;
+    }
+  } catch {}
+  $("#messageList").innerHTML = restoredMessages ? "" : '<div class="loading-card">Loading conversation…</div>';
+  if (restoredMessages) renderMessages(currentMessages, { forceBottom: true });
   $("#chatPlaceholder").hidden = true; $("#chatActive").hidden = false; $(".chat-workspace")?.classList.add("has-active-chat"); renderChatHeading(); updateReplyPreview();
+  if (restoredMessages && currentMessages.some(message => message.attachment?.storagePath)) void hydrateChatAttachmentUrls(conversation.id, currentMessages);
   if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
   lastTypingPublishedAt = 0;
   const conversationId = conversation.id;
@@ -1703,6 +1817,7 @@ function selectConversation(conversation) {
       const arrivingIds = new Set(firstMessagesSnapshot ? [] : nextMessages.filter(message => !oldIds.has(message.id)).map(message => message.id));
       const addedAttachments = nextMessages.filter(message => message.attachment?.storagePath && !message.attachment?.url);
       currentMessages = nextMessages;
+      cacheConversationMessages(conversationId);
       renderMessages(currentMessages, { animateIds: arrivingIds, forceBottom: firstMessagesSnapshot });
       firstMessagesSnapshot = false;
       if (addedAttachments.length) hydrateChatAttachmentUrls(conversationId, nextMessages).catch(error => console.warn("Chat attachment preview unavailable", error));
@@ -1756,7 +1871,7 @@ function renderMessages(messages, options = {}) {
     const deliveryLabel=readByAll?"Read":deliveredByAll?"Delivered":"Sent";
     const status = mine ? `<span class="message-ticks ${readByAll?"read":deliveredByAll?"delivered":""}" title="${deliveryLabel}">${readByAll?"✓✓":deliveredByAll?"✓✓":"✓"}</span>` : "";
     const messageText = m.sharedItem ? "" : (m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || ""));
-    const shared = m.sharedItem ? `<a class="chat-shared-card" href="${esc(validUrl(m.sharedItem.url) || "/")}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-kicker">${esc(m.sharedItem.type || "Shared item")} · HACKVERSE</span><b>${esc(m.sharedItem.title || "Shared update")}</b><small>${esc(m.sharedItem.description || "Open this shared item.")}</small><span class="chat-shared-link">Open link ↗</span></a>` : "";
+    const shared = m.sharedItem ? `<a class="chat-shared-card" href="${esc(validUrl(m.sharedItem.url) || "/")}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-kicker">${esc(m.sharedItem.type || "Shared item")} · HACKVERSE</span><b>${esc(m.sharedItem.title || "Shared update")}</b><small>${esc(m.sharedItem.description || "Open this shared item.")}</small>${Array.isArray(m.sharedItem.details) && m.sharedItem.details.length ? `<span class="chat-shared-details">${m.sharedItem.details.slice(0,4).map(row => `<i><b>${esc(row.label || "")}</b> ${esc(row.value || "")}</i>`).join("")}</span>` : ""}<span class="chat-shared-link">Open link ↗</span></a>` : "";
     const forwarded = m.forwarded ? '<small class="message-forwarded">↪ Forwarded</small>' : "";
     return `<article class="message-row ${mine ? "mine" : "theirs"} ${animateIds.has(m.id) ? "is-new" : ""}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${forwarded}${reply}${shared}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}${isPinnedHere?'<small class="message-pinned-label">⌖ Pinned on this device</small>':""}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-pin-message="${esc(m.id)}" title="Pin on this device">${isPinnedHere?"⌖":"♧"}</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine&&canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}${!mine?`<button type="button" data-report-message="${esc(m.id)}" title="Report message">⚑</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete for me or everyone">⌫</button><button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
   }).join("");
@@ -1831,7 +1946,7 @@ async function publishTyping() {
   if (now - lastTypingPublishedAt < 1400) return;
   lastTypingPublishedAt = now;
   const conversationId = activeConversationId;
-  try{await setDoc(doc(db,"conversations",conversationId,"typing",currentUser.uid),{uid:currentUser.uid,displayName:publicProfile?.displayName||currentUser.displayName||"Member",updatedAt:serverTimestamp()},{merge:true});}catch{}
+  try{await setDoc(doc(db,"conversations",conversationId,"typing",currentUser.uid),{uid:currentUser.uid,displayName:publicProfile?.displayName||currentUser.displayName||"Member",updatedAt:serverTimestamp()});}catch{}
   clearTimeout(typingStopTimer); typingStopTimer=setTimeout(()=>{if(activeConversationId===conversationId&&currentUser)deleteDoc(doc(db,"conversations",conversationId,"typing",currentUser.uid)).catch(()=>{});},4500);
 }
 async function chatMediaRequest(payload) {
@@ -1934,6 +2049,7 @@ async function submitChatMessage(payload) {
     // reconcile this optimistic row with the canonical database snapshot.
     if (activeConversationId === conversationId && savedMessageRef?.id) {
       currentMessages = [...currentMessages, { ...body, id: savedMessageRef.id, createdAt: Date.now() }];
+      cacheConversationMessages(conversationId);
       renderMessages(currentMessages);
       const messageList = $("#messageList");
       if (messageList) messageList.scrollTop = messageList.scrollHeight;
@@ -1941,17 +2057,12 @@ async function submitChatMessage(payload) {
 
     // A message is already safely stored at this point. A preview update failure
     // must not invite a retry that would create a duplicate message.
-    try {
-      await updateDoc(conversationRef, {
-        lastMessage: (messageText || body.attachment?.name || "Attachment").slice(0, 180),
-        lastMessageSender: currentUser.uid,
-        lastMessageAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
-    } catch (metadataError) {
-      console.warn("Message sent, but conversation preview update failed", metadataError);
-      toast("Message sent. The chat preview may take a moment to refresh.");
-    }
+    void updateDoc(conversationRef, {
+      lastMessage: (messageText || body.attachment?.name || "Attachment").slice(0, 180),
+      lastMessageSender: currentUser.uid,
+      lastMessageAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }).catch(metadataError => console.warn("Message sent, but conversation preview update failed", metadataError));
 
     if (activeConversationId === conversationId) {
       if (input && input.value === draftAtSend) input.value = "";
@@ -1985,10 +2096,25 @@ function renderPendingChatAttachment() {
   if (!preview) return;
   const file = pendingChatFile;
   preview.hidden = !file;
-  if (!file) { preview.replaceChildren(); return; }
+  if (!file) {
+    preview.replaceChildren();
+    if (pendingAudioObjectUrl) URL.revokeObjectURL(pendingAudioObjectUrl);
+    pendingAudioObjectUrl = ""; pendingAudioObjectFile = null;
+    return;
+  }
   const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-  const label = isPdf ? "PDF document" : file.type.startsWith("image/") ? "Image" : file.type.startsWith("video/") ? "Video" : file.type.startsWith("audio/") ? "Audio" : "File attachment";
-  preview.innerHTML = `<div class="chat-attachment-preview-icon" aria-hidden="true">${isPdf ? "PDF" : file.type.startsWith("image/") ? "IMG" : file.type.startsWith("video/") ? "VID" : file.type.startsWith("audio/") ? "AUD" : "FILE"}</div><div class="chat-attachment-preview-details"><b>${esc(file.name)}</b><span>${esc(label)} · ${esc(formatFileSize(file.size))}</span><small>Ready to send · This file has not been uploaded yet</small></div><button type="button" id="removePendingChatFile" class="chat-attachment-remove" aria-label="Remove attachment" title="Remove attachment">×</button>`;
+  const isAudio = file.type.startsWith("audio/");
+  const label = isPdf ? "PDF document" : file.type.startsWith("image/") ? "Image" : file.type.startsWith("video/") ? "Video" : isAudio ? "Voice note / audio" : "File attachment";
+  if (isAudio) {
+    if (pendingAudioObjectFile !== file) {
+      if (pendingAudioObjectUrl) URL.revokeObjectURL(pendingAudioObjectUrl);
+      pendingAudioObjectUrl = URL.createObjectURL(file);
+      pendingAudioObjectFile = file;
+    }
+  } else if (pendingAudioObjectUrl) {
+    URL.revokeObjectURL(pendingAudioObjectUrl); pendingAudioObjectUrl = ""; pendingAudioObjectFile = null;
+  }
+  preview.innerHTML = `<div class="chat-attachment-preview-icon" aria-hidden="true">${isPdf ? "PDF" : file.type.startsWith("image/") ? "IMG" : file.type.startsWith("video/") ? "VID" : isAudio ? "♫" : "FILE"}</div><div class="chat-attachment-preview-details"><b>${esc(file.name)}</b><span>${esc(label)} · ${esc(formatFileSize(file.size))}</span>${isAudio ? `<audio class="chat-audio-preview" controls preload="metadata" src="${esc(pendingAudioObjectUrl)}"></audio>` : ""}<small>Preview ready · Press Send when you are ready</small></div><button type="button" id="removePendingChatFile" class="chat-attachment-remove" aria-label="Remove attachment" title="Remove attachment">×</button>`;
   $("#removePendingChatFile").onclick = () => { pendingChatFile = null; $("#chatFileInput").value = ""; renderPendingChatAttachment(); };
 }
 function handleChatFile(file) {
@@ -2002,13 +2128,40 @@ function handleChatFile(file) {
   toast("Attachment added to your draft. Press Send when you are ready.");
 }
 async function toggleVoiceRecording() {
-  if(voiceRecorder?.state==="recording"){voiceRecorder.stop();$("#voiceRecordBtn").classList.remove("recording");$("#voiceRecordBtn").innerHTML="◉<span>Voice</span>";return;}
-  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast("Voice recording is not supported in this browser.");return;}
-  if(!activeConversationId||!requireAccount())return;
-  try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});voiceChunks=[];voiceRecorder=new MediaRecorder(stream);voiceRecorder.ondataavailable=e=>{if(e.data.size)voiceChunks.push(e.data);};voiceRecorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());const blob=new Blob(voiceChunks,{type:voiceRecorder.mimeType||"audio/webm"});const file=new File([blob],`voice-${Date.now()}.webm`,{type:blob.type});try{toast("Uploading voice note…");const attachment=await uploadChatFile(file,"voice");await submitChatMessage({text:"",kind:"voice",attachment});}catch(error){toast(error.message||friendlyError(error));}};voiceRecorder.start();$("#voiceRecordBtn").classList.add("recording");$("#voiceRecordBtn").innerHTML="■<span>Stop</span>";}
-  catch(error){toast(`Microphone access unavailable: ${error.message}`);}
+  if (voiceRecorder?.state === "recording") {
+    voiceRecorder.stop();
+    $("#voiceRecordBtn").classList.remove("recording");
+    $("#voiceRecordBtn").innerHTML = "◉<span>Voice</span>";
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    toast("Voice recording is not supported in this browser."); return;
+  }
+  if (!activeConversationId || !requireAccount()) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    voiceChunks = [];
+    const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(type => MediaRecorder.isTypeSupported?.(type)) || "";
+    voiceRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    voiceRecorder.ondataavailable = event => { if (event.data.size) voiceChunks.push(event.data); };
+    voiceRecorder.onstop = () => {
+      stream.getTracks().forEach(track => track.stop());
+      const blob = new Blob(voiceChunks, { type: voiceRecorder?.mimeType || "audio/webm" });
+      if (!blob.size) { toast("No audio was captured. Please try again."); return; }
+      const extension = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
+      pendingChatFile = new File([blob], `voice-note-${Date.now()}.${extension}`, { type: blob.type || "audio/webm" });
+      $("#chatFileInput").value = "";
+      renderPendingChatAttachment();
+      toast("Voice note recorded. Listen to the preview, then press Send.");
+      voiceChunks = [];
+      voiceRecorder = null;
+    };
+    voiceRecorder.start();
+    $("#voiceRecordBtn").classList.add("recording");
+    $("#voiceRecordBtn").innerHTML = "■<span>Stop</span>";
+    toast("Recording voice note… Press Stop when finished.");
+  } catch (error) { toast(`Microphone access unavailable: ${error.message}`); }
 }
-
 async function editMessage(messageId) {
   const message = currentMessages.find(m => m.id === messageId); if (!message || message.authorUid !== currentUser?.uid) return;
   const created = tsMillis(message.createdAt); if (!created || Date.now()-created > 15*60*1000) { toast("Messages can only be edited within 15 minutes."); return; }
@@ -2423,7 +2576,7 @@ function renderMyProfile() {
       <div class="profile-detail-grid">
         <section class="profile-detail-card"><small>MEMBER SINCE</small><b>${p.joinedAt ? esc(new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"long",year:"numeric"})) : "HackVerse member"}</b><span>@${esc(p.username)}</span></section>
         <section class="profile-detail-card"><small>HACKATHON EXPERIENCE</small><b>${Number(p.hackathonsParticipatedCount || 0)} participated</b><span>Private entries are included in your own count</span></section>
-        <section class="profile-detail-card"><small>BUILDER NETWORK</small><b>${builderFollows.filter(row => row.followingUid === currentUser?.uid).length} followers</b><span>Following ${builderFollows.filter(row => row.followerUid === currentUser?.uid).length} builders</span></section>
+        <section class="profile-detail-card"><small>BUILDER NETWORK</small><b>${Number(profileStats?.followers ?? builderFollows.filter(row => row.followingUid === currentUser?.uid).length)} followers</b><span>Following ${Number(profileStats?.following ?? builderFollows.filter(row => row.followerUid === currentUser?.uid).length)} builders</span></section>
         <section class="profile-detail-card"><small>EDUCATION</small><b>${esc(p.college || "College not added")}</b><span>${esc([p.collegeShort,p.course].filter(Boolean).join(" · ") || "Course not added")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not added")}</span></section>
         <section class="profile-detail-card"><small>COLLABORATION</small><b>${esc(p.availability || "Availability not added")}</b><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span><span>${p.lookingForTeam ? "Open to teammate invitations" : "Not currently looking for a team"}</span></section>
         <section class="profile-detail-card"><small>LOCATION</small><b>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not added")}</b><span>Visible according to your profile privacy settings</span></section>
@@ -2434,7 +2587,29 @@ function renderMyProfile() {
       <h4>Interests & domains</h4><div class="skill-tags">${interests.map(s => `<span>${esc(s)}</span>`).join("") || '<span>Add domains that motivate you</span>'}</div>
       <div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>
     </div>
-  </div>`;
+  </div>
+  <section class="profile-activity" aria-label="Your HackVerse activity">
+    <div class="profile-activity-heading"><div><div class="eyebrow">YOUR PROGRESS</div><h3>Builder activity & impact</h3><p>Track the work you publish and the impact you make in the community.</p></div><span class="profile-points-total"><b>${Number(profileStats?.points || 0).toLocaleString()}</b><small>BUILD POINTS</small></span></div>
+    <div class="profile-stats-grid">
+      <article class="profile-stat-card"><span>BUILDS</span><b>${Number(profileStats?.builds ?? builderPosts.filter(row => row.ownerUid === currentUser?.uid).length).toLocaleString()}</b><small>Build updates published</small></article>
+      <article class="profile-stat-card"><span>PROJECTS</span><b>${Number(profileStats?.projects ?? 0).toLocaleString()}</b><small>Project showcases</small></article>
+      <article class="profile-stat-card"><span>POSTS</span><b>${Number(profileStats?.posts ?? 0).toLocaleString()}</b><small>Community posts</small></article>
+      <article class="profile-stat-card"><span>LIKES RECEIVED</span><b>${Number(profileStats?.likesReceived ?? 0).toLocaleString()}</b><small>Upvotes across your work</small></article>
+      <article class="profile-stat-card"><span>COMMENTS RECEIVED</span><b>${Number(profileStats?.commentsReceived ?? 0).toLocaleString()}</b><small>Community conversations</small></article>
+      <article class="profile-stat-card"><span>HACKATHONS</span><b>${Number(profileStats?.hackathons ?? (hackathonHistory.length || p.hackathonsParticipatedCount || 0)).toLocaleString()}</b><small>Participation records</small></article>
+      <article class="profile-stat-card"><span>FOLLOWERS</span><b>${Number(profileStats?.followers ?? 0).toLocaleString()}</b><small>Builders following you</small></article>
+      <article class="profile-stat-card"><span>FOLLOWING</span><b>${Number(profileStats?.following ?? 0).toLocaleString()}</b><small>Builders in your network</small></article>
+    </div>
+    <div class="profile-achievement-strip"><span><b>${Number(profileStats?.achievements?.winners || 0)}</b> Wins</span><span><b>${Number(profileStats?.achievements?.finalists || 0)}</b> Finalist results</span><span><b>${Number(profileStats?.achievements?.otherRecognition || 0)}</b> Other recognitions</span></div>
+    <div class="profile-points-breakdown"><div><b>How your points are earned</b><small>Activity score · not a competition ranking</small></div><div class="points-breakdown-grid">
+      <span>Build updates <b>${Number(profileStats?.pointsBreakdown?.builds || 0).toLocaleString()} pts</b></span>
+      <span>Project showcases <b>${Number(profileStats?.pointsBreakdown?.projects || 0).toLocaleString()} pts</b></span>
+      <span>Community posts <b>${Number(profileStats?.pointsBreakdown?.posts || 0).toLocaleString()} pts</b></span>
+      <span>Likes received <b>${Number(profileStats?.pointsBreakdown?.likes || 0).toLocaleString()} pts</b></span>
+      <span>Hackathon participation <b>${Number(profileStats?.pointsBreakdown?.hackathons || 0).toLocaleString()} pts</b></span>
+      <span>Achievements <b>${Number(profileStats?.pointsBreakdown?.achievements || 0).toLocaleString()} pts</b></span>
+    </div><p>Earn 100 points per build, 60 per project showcase, 20 per community post, 5 per like, and 50 per hackathon. Winners, finalists and special recognitions earn additional points.</p></div>
+  </section>`;
 }
 
 async function loadProjects() {
@@ -2472,7 +2647,7 @@ async function createProject(event) {
       githubUrl: validUrl($("#projectGithub").value), visibility: $("#projectVisibility").value,
       createdAt: serverTimestamp(), updatedAt: serverTimestamp()
     });
-    hideModal("projectModal"); $("#projectForm").reset(); loadProjects(); toast("Project saved.");
+    hideModal("projectModal"); $("#projectForm").reset(); loadProjects(); void loadProfileStats(); toast("Project saved.");
   } catch (error) { msg.textContent = friendlyError(error); }
 }
 async function deleteProject(id) {
@@ -2502,6 +2677,7 @@ function renderBuilderPostCard(post, repost = null) {
   const privatePost = post.visibility === "private";
   const votes = postCount(builderPostVotes, postId);
   const comments = builderPostComments.filter(row => row.postId === postId).sort((a, b) => tsMillis(b.createdAt) - tsMillis(a.createdAt));
+  const commentCountLabel = post.commentCount != null ? Number(post.commentCount) : builderCommentsLoaded.has(postId) ? comments.length : "Comments";
   const voted = builderPostVotes.some(row => row.postId === postId && row.userUid === currentUser?.uid);
   const saved = builderPostSaves.some(row => row.postId === postId && row.userUid === currentUser?.uid);
   const reposted = builderPostReposts.some(row => row.postId === postId && row.userUid === currentUser?.uid);
@@ -2511,12 +2687,12 @@ function renderBuilderPostCard(post, repost = null) {
   const author = post.ownerName || "HackVerse builder";
   const when = tsMillis(repost?.createdAt || post.createdAt);
   const whenText = when ? new Date(when).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "Recently";
-  const commentMarkup = opened && !privatePost ? `<div class="builder-post-comments"><div class="builder-comment-list">${comments.length ? comments.map(comment => `<article class="builder-comment"><div class="builder-comment-avatar">${esc(initials(comment.authorName))}</div><div class="builder-comment-copy"><b>${esc(comment.authorName || "Builder")}</b><p>${esc(comment.body || "")}</p><small>${tsMillis(comment.createdAt) ? new Date(tsMillis(comment.createdAt)).toLocaleString() : "Just now"}</small></div>${comment.ownerUid === currentUser?.uid ? `<button type="button" class="builder-comment-delete" data-delete-post-comment="${esc(comment.id)}" aria-label="Delete comment">×</button>` : ""}</article>`).join("") : '<p class="builder-no-comments">Be the first to leave a thoughtful comment.</p>'}</div><form class="builder-comment-form" data-post-comment-form="${esc(postId)}"><textarea maxlength="1200" rows="2" required placeholder="Add a constructive comment…"></textarea><button class="btn btn-primary btn-small" type="submit">Comment</button></form></div>` : "";
+  const commentMarkup = opened && !privatePost ? `<div class="builder-post-comments"><div class="builder-comment-list">${builderCommentsLoading.has(postId) ? '<p class="builder-no-comments">Loading comments…</p>' : comments.length ? comments.map(comment => `<article class="builder-comment"><div class="builder-comment-avatar">${esc(initials(comment.authorName))}</div><div class="builder-comment-copy"><b>${esc(comment.authorName || "Builder")}</b><p>${esc(comment.body || "")}</p><small>${tsMillis(comment.createdAt) ? new Date(tsMillis(comment.createdAt)).toLocaleString() : "Just now"}</small></div>${comment.ownerUid === currentUser?.uid ? `<button type="button" class="builder-comment-delete" data-delete-post-comment="${esc(comment.id)}" aria-label="Delete comment">×</button>` : ""}</article>`).join("") : '<p class="builder-no-comments">Be the first to leave a thoughtful comment.</p>'}</div><form class="builder-comment-form" data-post-comment-form="${esc(postId)}"><textarea maxlength="1200" rows="2" required placeholder="Add a constructive comment…"></textarea><button class="btn btn-primary btn-small" type="submit">Comment</button></form></div>` : "";
   return `<article class="builder-post-card" id="builder-post-${esc(postId)}">
     ${repost ? `<div class="builder-repost-note">↻ ${esc(repost.userName || "A builder")} reposted this</div>` : ""}
     <div class="builder-post-author"><div class="builder-post-avatar">${post.ownerAvatar ? `<img src="${esc(validUrl(post.ownerAvatar))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(author))}</div><div class="builder-post-author-copy"><b>${esc(author)}</b><small>@${esc(post.ownerUsername || "builder")} · ${esc(whenText)}</small></div><div class="builder-post-badges"><span>${esc(post.category || "Project")}</span>${post.lookingForTeam ? '<span class="builder-looking-badge">Open to collaborators</span>' : ""}${privatePost ? '<span>Private</span>' : ""}</div></div>
     <div class="builder-post-content"><h3>${esc(post.title || "Untitled build")}</h3>${post.tagline ? `<p class="builder-post-tagline">${esc(post.tagline)}</p>` : ""}<p class="builder-post-body">${esc(post.body || "").replace(/\n/g, "<br>")}</p>${imageUrl ? `<a class="builder-post-cover-link" href="${esc(imageUrl)}" target="_blank" rel="noopener noreferrer"><img class="builder-post-cover" src="${esc(imageUrl)}" alt="${esc(post.title || "Project image")}" loading="lazy"></a>` : ""}<div class="builder-post-meta"><span>${esc(post.stage || "Building")}</span>${(post.techStack || []).slice(0, 10).map(tag => `<span>${esc(tag)}</span>`).join("")}</div><div class="builder-post-links">${builderPostLinks(post)}</div></div>
-    <div class="builder-post-stats"><span>▲ ${votes} upvote${votes === 1 ? "" : "s"}</span><span>${comments.length} comment${comments.length === 1 ? "" : "s"}</span><span>${postCount(builderPostReposts, postId)} repost${postCount(builderPostReposts, postId) === 1 ? "" : "s"}</span></div>
+    <div class="builder-post-stats"><span>▲ ${votes} upvote${votes === 1 ? "" : "s"}</span><span>${typeof commentCountLabel === "number" ? `${commentCountLabel} comment${commentCountLabel === 1 ? "" : "s"}` : commentCountLabel}</span><span>${postCount(builderPostReposts, postId)} repost${postCount(builderPostReposts, postId) === 1 ? "" : "s"}</span></div>
     <div class="builder-post-actions"><button type="button" class="${voted ? "is-active" : ""}" data-post-upvote="${esc(postId)}" aria-pressed="${voted}" ${privatePost ? "disabled" : ""}>▲ Upvote</button><button type="button" class="${opened ? "is-active" : ""}" data-post-comments="${esc(postId)}" aria-expanded="${opened}" ${privatePost ? "disabled" : ""}>▤ Comment</button><button type="button" data-post-repost="${esc(postId)}" class="${reposted ? "is-active" : ""}" ${privatePost ? "disabled" : ""}>↻ Repost</button><button type="button" data-post-save="${esc(postId)}" class="${saved ? "is-active" : ""}" ${privatePost ? "disabled" : ""}>${saved ? "▣ Saved" : "▢ Save"}</button><button type="button" data-post-share="${esc(postId)}">↗ Share</button>${isMine ? `<button type="button" data-edit-builder-post="${esc(postId)}">Edit</button><button type="button" class="builder-post-delete" data-delete-builder-post="${esc(postId)}">Delete</button>` : ""}</div>
     ${commentMarkup}
   </article>`;
@@ -2556,50 +2732,57 @@ function renderBuilderFeed() {
     root.querySelectorAll("[data-delete-post-comment]").forEach(button => button.addEventListener("click", () => deleteBuilderPostComment(button.dataset.deletePostComment)));
   }
 }
-async function loadBuilderFeed() {
+async function loadBuilderFeed({ force = false } = {}) {
   if (!currentUser || !db || feedLoadInProgress) return;
+  if (!force && builderPosts.length && Date.now() - lastBuilderFeedLoadedAt < 45_000) {
+    renderBuilderFeed();
+    return;
+  }
   feedLoadInProgress = true;
   const list = $("#builderFeedList");
-  if (list && !builderPosts.length) list.innerHTML = '<div class="loading-card">Loading builder posts…</div>';
-  const cacheKey = `hv-builder-feed-v2:${currentUser.uid}`;
+  if (builderPosts.length) renderBuilderFeed();
+  else if (list) list.innerHTML = '<div class="loading-card">Loading builder posts…</div>';
+  const cacheKey = `hv-builder-feed-v3:${currentUser.uid}`;
   try {
     if (!builderPosts.length) {
       try {
         const cached = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
-        if (cached?.savedAt && Date.now() - cached.savedAt < 3 * 60 * 1000 && Array.isArray(cached.posts)) {
+        if (cached?.savedAt && Date.now() - cached.savedAt < 5 * 60 * 1000 && Array.isArray(cached.posts)) {
           builderPosts = cached.posts;
           builderPostVotes = cached.votes || [];
           builderPostReposts = cached.reposts || [];
           builderPostComments = cached.comments || [];
           builderPostSaves = cached.saves || [];
           builderFollows = cached.follows || [];
+          builderCommentsLoaded = new Set(cached.loadedCommentPostIds || []);
+          lastBuilderFeedLoadedAt = cached.savedAt;
           renderBuilderFeed();
         }
       } catch {}
     }
-    // Fetch the feed page first. Engagement reads are then scoped to these post IDs,
-    // rather than downloading thousands of votes, comments and follows on every visit.
     const postsSnap = await getDocs(query(collection(db, "builderPosts"), orderBy("createdAt", "desc"), limit(60)));
     builderPosts = postsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderBuilderFeed();
     const postIds = builderPosts.map(post => post.id);
     const chunks = [];
     for (let index = 0; index < postIds.length; index += 30) chunks.push(postIds.slice(index, index + 30));
+    // Only fetch the compact engagement needed for the first paint. Comments are
+    // fetched per post when a member opens that thread.
     const relatedReadsPromise = chunks.length ? Promise.all(chunks.flatMap(ids => [
       getDocs(query(collection(db, "builderPostVotes"), where("postId", "in", ids), limit(1200))),
-      getDocs(query(collection(db, "builderReposts"), where("postId", "in", ids), limit(600))),
-      getDocs(query(collection(db, "builderPostComments"), where("postId", "in", ids), limit(600)))
+      getDocs(query(collection(db, "builderReposts"), where("postId", "in", ids), limit(600)))
     ])) : Promise.resolve([]);
     const savesRead = getDocs(query(collection(db, "builderPostSaves"), where("userUid", "==", currentUser.uid), limit(500)));
     const followersRead = getDocs(query(collection(db, "builderFollows"), where("followerUid", "==", currentUser.uid), limit(500)));
     const followedByRead = getDocs(query(collection(db, "builderFollows"), where("followingUid", "==", currentUser.uid), limit(500)));
     const [relatedReads, savesSnap, followsSnap, followedBySnap] = await Promise.all([relatedReadsPromise, savesRead, followersRead, followedByRead]);
-    const flatten = (snapshots) => snapshots.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    builderPostVotes = flatten(relatedReads.filter((_, index) => index % 3 === 0));
-    builderPostReposts = flatten(relatedReads.filter((_, index) => index % 3 === 1));
-    builderPostComments = flatten(relatedReads.filter((_, index) => index % 3 === 2));
+    const flatten = snapshots => snapshots.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    builderPostVotes = flatten(relatedReads.filter((_, index) => index % 2 === 0));
+    builderPostReposts = flatten(relatedReads.filter((_, index) => index % 2 === 1));
     builderPostSaves = savesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     builderFollows = [...followsSnap.docs, ...followedBySnap.docs].map(d => ({ id: d.id, ...d.data() })).filter((row, index, all) => all.findIndex(item => item.id === row.id) === index);
-    try { sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), posts: builderPosts, votes: builderPostVotes, reposts: builderPostReposts, comments: builderPostComments, saves: builderPostSaves, follows: builderFollows })); } catch {}
+    lastBuilderFeedLoadedAt = Date.now();
+    try { sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), posts: builderPosts, votes: builderPostVotes, reposts: builderPostReposts, comments: builderPostComments, loadedCommentPostIds: [...builderCommentsLoaded], saves: builderPostSaves, follows: builderFollows })); } catch {}
     renderBuilderFeed();
   } catch (error) {
     console.error("Builder feed failed to load", error);
@@ -2677,7 +2860,7 @@ async function createBuilderPost(event) {
       demoUrl: validUrl($("#builderPostDemo").value), repositoryUrl: validUrl($("#builderPostRepo").value), deckUrl: validUrl($("#builderPostDeck").value),
       videoUrl: validUrl($("#builderPostVideo").value), docsUrl: validUrl($("#builderPostDocs").value), otherUrl: validUrl($("#builderPostOther").value), imageUrl,
       lookingForTeam: $("#builderPostLookingForTeam").checked, visibility: $("#builderPostVisibility").value,
-      createdAt: existingPost?.createdAt || serverTimestamp(), updatedAt: serverTimestamp()
+      commentCount: Number(existingPost?.commentCount || 0), createdAt: existingPost?.createdAt || serverTimestamp(), updatedAt: serverTimestamp()
     };
     if (editingId) {
       await updateDoc(doc(db, "builderPosts", editingId), post);
@@ -2688,21 +2871,44 @@ async function createBuilderPost(event) {
     hideModal("builderPostModal"); form.reset(); form.dataset.editPostId = ""; $("#builderPostImagePreview").hidden = true;
     $("#builderPostTitle").textContent = "Share what you're building.";
     toast(editingId ? "Your project post was updated." : post.visibility === "public" ? "Your build is live in the Builder feed." : "Your private post was saved.");
-    if (editingId) renderBuilderFeed(); else await loadBuilderFeed();
+    if (editingId) renderBuilderFeed(); else await loadBuilderFeed({ force: true });
+    void loadProfileStats();
   } catch (error) { console.error("Publishing builder post failed", error); message.textContent = friendlyError(error); }
   finally { submit.disabled = false; submit.textContent = $("#builderPostForm").dataset.editPostId ? "Save post changes →" : "Publish to Builder feed →"; }
 }
 async function toggleBuilderPostVote(postId) {
-  if (!requireAccount()) return;
+  if (!requireAccount() || pendingBuilderVotes.has(postId)) return;
   const existing = builderPostVotes.find(row => row.postId === postId && row.userUid === currentUser.uid);
+  const previousVotes = builderPostVotes.slice();
+  pendingBuilderVotes.add(postId);
+  if (existing) builderPostVotes = builderPostVotes.filter(row => row.id !== existing.id);
+  else builderPostVotes.push({ id: `${postId}_${currentUser.uid}`, ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: Date.now(), pending: true });
+  renderBuilderFeed();
   try {
-    if (existing) { await deleteDoc(doc(db, "builderPostVotes", existing.id)); builderPostVotes = builderPostVotes.filter(row => row.id !== existing.id); }
-    else { const ref = doc(db, "builderPostVotes", `${postId}_${currentUser.uid}`); await setDoc(ref, { ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: serverTimestamp() }); builderPostVotes.push({ id: ref.id, ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: Date.now() }); }
-    renderBuilderFeed();
-  } catch (error) { toast(friendlyError(error)); }
+    if (existing) await deleteDoc(doc(db, "builderPostVotes", existing.id));
+    else await setDoc(doc(db, "builderPostVotes", `${postId}_${currentUser.uid}`), { ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: serverTimestamp() });
+    builderPostVotes = builderPostVotes.map(row => row.postId === postId && row.userUid === currentUser.uid ? { ...row, pending: false } : row);
+  } catch (error) {
+    builderPostVotes = previousVotes;
+    toast(friendlyError(error));
+  } finally { pendingBuilderVotes.delete(postId); renderBuilderFeed(); }
+}
+async function loadBuilderPostComments(postId) {
+  if (!currentUser || !db || builderCommentsLoaded.has(postId) || builderCommentsLoading.has(postId)) return;
+  builderCommentsLoading.add(postId);
+  renderBuilderFeed();
+  try {
+    const snap = await getDocs(query(collection(db, "builderPostComments"), where("postId", "==", postId), limit(100)));
+    builderPostComments = builderPostComments.filter(row => row.postId !== postId).concat(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    builderCommentsLoaded.add(postId);
+    const cacheKey = `hv-builder-feed-v3:${currentUser.uid}`;
+    try { sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), posts: builderPosts, votes: builderPostVotes, reposts: builderPostReposts, comments: builderPostComments, loadedCommentPostIds: [...builderCommentsLoaded], saves: builderPostSaves, follows: builderFollows })); } catch {}
+  } catch (error) { toast(`Comments could not load: ${friendlyError(error)}`); }
+  finally { builderCommentsLoading.delete(postId); renderBuilderFeed(); }
 }
 async function toggleBuilderPostComments(postId) {
-  if (openPostCommentIds.has(postId)) openPostCommentIds.delete(postId); else openPostCommentIds.add(postId);
+  if (openPostCommentIds.has(postId)) openPostCommentIds.delete(postId);
+  else { openPostCommentIds.add(postId); void loadBuilderPostComments(postId); }
   renderBuilderFeed();
   if (openPostCommentIds.has(postId)) document.querySelector(`[data-post-comment-form="${CSS.escape(postId)}"] textarea`)?.focus();
 }
@@ -2710,17 +2916,35 @@ async function submitBuilderPostComment(event) {
   event.preventDefault(); if (!requireAccount()) return;
   const form = event.currentTarget; const postId = form.dataset.postCommentForm; const input = form.querySelector("textarea"); const body = input.value.trim();
   if (!body) return;
+  const draftId = `pending-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+  const optimistic = { id: draftId, ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Builder", authorUsername: publicProfile?.username || "builder", body: body.slice(0, 1200), createdAt: Date.now(), pending: true };
+  builderPostComments.unshift(optimistic);
+  builderCommentsLoaded.add(postId);
+  openPostCommentIds.add(postId);
+  input.value = "";
+  renderBuilderFeed();
   try {
-    const ref = await addDoc(collection(db, "builderPostComments"), { ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Builder", authorUsername: publicProfile?.username || "builder", body: body.slice(0, 1200), createdAt: serverTimestamp() });
-    builderPostComments.unshift({ id: ref.id, ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Builder", body, createdAt: Date.now() });
-    openPostCommentIds.add(postId); renderBuilderFeed();
-  } catch (error) { toast(friendlyError(error)); }
+    const ref = await addDoc(collection(db, "builderPostComments"), { ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: optimistic.authorName, authorUsername: optimistic.authorUsername, body: optimistic.body, createdAt: serverTimestamp() });
+    builderPostComments = builderPostComments.map(row => row.id === draftId ? { ...row, id: ref.id, pending: false } : row);
+    const post = builderPosts.find(row => row.id === postId);
+    if (post) post.commentCount = Math.max(Number(post.commentCount || 0), builderPostComments.filter(row => row.postId === postId).length);
+    renderBuilderFeed();
+  } catch (error) {
+    builderPostComments = builderPostComments.filter(row => row.id !== draftId);
+    renderBuilderFeed();
+    toast(friendlyError(error));
+  }
 }
 async function deleteBuilderPostComment(id) {
   if (!requireAccount()) return;
   const comment = builderPostComments.find(row => row.id === id); if (!comment || comment.ownerUid !== currentUser.uid) return;
-  try { await deleteDoc(doc(db, "builderPostComments", id)); builderPostComments = builderPostComments.filter(row => row.id !== id); renderBuilderFeed(); }
-  catch (error) { toast(friendlyError(error)); }
+  const previous = builderPostComments.slice();
+  builderPostComments = builderPostComments.filter(row => row.id !== id);
+  const post = builderPosts.find(row => row.id === comment.postId);
+  if (post && post.commentCount != null) post.commentCount = Math.max(0, Number(post.commentCount) - 1);
+  renderBuilderFeed();
+  try { await deleteDoc(doc(db, "builderPostComments", id)); }
+  catch (error) { builderPostComments = previous; if (post) post.commentCount = Math.max(0, Number(post.commentCount || 0) + 1); renderBuilderFeed(); toast(friendlyError(error)); }
 }
 async function repostBuilderPost(postId) {
   if (!requireAccount()) return;
@@ -2815,7 +3039,7 @@ async function saveHackathonHistory(event) {
       visibility: $("#historyVisibility").value, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
     };
     await addDoc(collection(db, "hackathonHistory"), record);
-    $("#hackathonHistoryForm").reset(); hideModal("hackathonHistoryModal"); await loadHackathonHistory(); toast("Hackathon participation added to your profile.");
+    $("#hackathonHistoryForm").reset(); hideModal("hackathonHistoryModal"); await loadHackathonHistory(); void loadProfileStats(); toast("Hackathon participation added to your profile.");
   } catch (error) { message.textContent = friendlyError(error); }
   finally { submit.disabled = false; submit.textContent = "Save participation →"; }
 }
@@ -4075,7 +4299,7 @@ function handleRoute({ force = false } = {}) {
   if (view === "public-profile" && profileMatch) void loadPublicProfilePage(profileMatch[1]);
   if (view === "post-detail" && postMatch) void loadSocialPostDetail(postMatch[1]);
   if (view === "reports") { updateReportFields(); void loadMyReports(); if (isAdminUser) void loadAdminReports(); }
-  if (view === "profile") { if (currentUser) { void loadHackathonHistory(); if (!builderPosts.length) void loadBuilderFeed(); } }
+  if (view === "profile") { if (currentUser) { void loadHackathonHistory(); if (!profileStats) void loadProfileStats(); if (!builderPosts.length) void loadBuilderFeed(); } }
   if (view === "saved") renderSaved();
   if (view === "people" && currentUser) searchPeople();
   if (view === "notifications") { renderNotificationCenter(); void loadSocialNotifications(); }
@@ -4088,15 +4312,25 @@ function bindUI() {
     let pageReady = document.readyState === "complete";
     let minimumElapsed = false;
     let dismissed = false;
-    const dismissSplash = () => {
-      if (!pageReady || !minimumElapsed || dismissed) return;
+    const dismissSplash = (force = false) => {
+      if ((!pageReady || !minimumElapsed) && !force) return;
+      if (dismissed || !bootSplash.isConnected) return;
       dismissed = true;
       bootSplash.classList.add("is-hidden");
-      window.setTimeout(() => bootSplash.remove(), 520);
+      window.setTimeout(() => bootSplash.remove(), 320);
+    };
+    const forceRevealOnResume = () => {
+      pageReady = true; minimumElapsed = true;
+      dismissSplash(true);
+      handleRoute();
     };
     if (!pageReady) window.addEventListener("load", () => { pageReady = true; dismissSplash(); }, { once: true });
+    window.addEventListener("pageshow", forceRevealOnResume);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden && document.readyState === "complete") forceRevealOnResume(); });
     window.setTimeout(() => { minimumElapsed = true; dismissSplash(); }, 180);
-    window.setTimeout(() => { pageReady = true; minimumElapsed = true; dismissSplash(); }, 1100);
+    // A background tab may throttle the normal timer; the resume hooks above
+    // always remove the splash once the page is visible again.
+    window.setTimeout(() => { pageReady = true; minimumElapsed = true; dismissSplash(); }, 1000);
   }
 
   document.addEventListener("click", event => {

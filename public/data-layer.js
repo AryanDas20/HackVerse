@@ -288,8 +288,12 @@ function rowFor(ref, data) {
 }
 
 export async function setDoc(ref, value, options = {}) {
-  const existing = await getDoc(ref);
-  const next = options.merge && existing.exists() ? mergeDeep(existing.data() || {}, value) : clone(value || {});
+  // A normal set is a single upsert. Only merge-style writes need the extra read.
+  let next = clone(value || {});
+  if (options.merge) {
+    const existing = await getDoc(ref);
+    if (existing.exists()) next = mergeDeep(existing.data() || {}, value);
+  }
   const row = rowFor(ref, next);
   const { error } = await supabaseClient.from("documents").upsert(row, { onConflict: "path" });
   if (error) throw error;
