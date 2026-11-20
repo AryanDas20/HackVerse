@@ -30,7 +30,7 @@
   <link rel="stylesheet" href="mobile-performance-v16.css">
   <link rel="stylesheet" href="career-match.css">
   <link rel="stylesheet" href="career-navigation-performance-v17.css">
-  <link rel="stylesheet" href="global-sidebar-v18.css">
+  <link rel="stylesheet" href="top-navigation-v19.css">
 </head>
 <body>
   <div class="hv-boot-splash" id="hvBootSplash" role="status" aria-label="Loading HackVerse">
@@ -41,42 +41,40 @@
     <span class="hv-boot-caption">Preparing your workspace</span>
   </div>
   <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
-  <header class="topbar">
+  <header class="topbar" id="siteTopbar">
     <a class="brand" href="/" aria-label="HackVerse home"><span class="brand-mark">H</span><span>hack<span class="brand-accent">verse</span></span></a>
-    <div class="top-actions">
-      <button class="icon-btn notification-trigger" id="notificationBell" aria-label="Open notifications">♧<span id="notificationBadge" class="notification-badge" hidden>0</span></button><button class="icon-btn" id="themeToggle" aria-label="Toggle theme" title="Toggle light and dark mode">◐</button>
-      <button class="btn btn-quiet" id="authButton">Sign in</button>
-      <button class="btn btn-primary" id="accountButton">Get started <span>↗</span></button>
-      <button class="menu-toggle" id="menuToggle" aria-label="Open navigation">☰</button>
-    </div>
-  </header>
-
-  <div class="hv-shell-backdrop" id="hvShellBackdrop" hidden></div>
-  <aside class="hv-sidebar" id="hvSidebar" aria-label="Main sidebar">
-    <div class="hv-sidebar-heading"><span class="hv-sidebar-kicker">WORKSPACE</span><span class="hv-sidebar-caption">Navigate HackVerse</span></div>
-    <nav class="desktop-nav" aria-label="Main navigation">
+    <nav class="desktop-nav" id="mainNavigation" aria-label="Main navigation">
       <a class="active" href="/" data-route="home">Home</a>
       <a href="/posts" data-route="posts">Posts</a>
       <a href="/feed" data-route="feed">Builds</a>
       <a href="/opportunities" data-route="opportunities">Explore</a>
       <a href="/career-match" data-route="career-match">Career Match</a>
-      <a href="/people" data-route="people">Builders</a>
       <a href="/messages" data-route="messages">Messages</a>
-      <a href="/aiwish" data-route="aiwish" class="nav-aiwish">AI Wish <span>✦</span></a>
-      <a href="/profile" data-route="profile">Profile</a>
       <div class="nav-more">
         <button type="button" id="navMoreBtn" aria-expanded="false" aria-controls="navMoreMenu">More <span aria-hidden="true">⌄</span></button>
         <div class="nav-more-menu" id="navMoreMenu" hidden>
+          <a href="/people" data-route="people">Builders community</a>
+          <a href="/aiwish" data-route="aiwish">AI Wish ✦</a>
+          <a href="/profile" data-route="profile">My profile</a>
           <a href="/saved" data-route="saved">Saved opportunities</a>
           <a href="/reports" data-route="reports">Safety & reports</a>
-          <a href="/notifications" data-route="notifications">Activity</a>
+          <a href="/notifications" data-route="notifications">Activity & notifications</a>
           <a href="/settings" data-route="settings">Settings</a>
           <button type="button" id="navTourBtn">Replay website tour</button>
+          <div class="nav-menu-divider" aria-hidden="true"></div>
+          <div class="nav-menu-utilities">
+            <button class="nav-menu-utility" type="button" id="notificationBell" aria-label="Open notifications">♧ <span>Notifications</span><span id="notificationBadge" class="notification-badge" hidden>0</span></button>
+            <button class="nav-menu-utility" type="button" id="themeToggle" aria-label="Toggle theme" title="Toggle light and dark mode">◐ <span>Appearance</span></button>
+          </div>
+          <button type="button" id="authButton" class="nav-menu-auth">Sign in</button>
         </div>
       </div>
     </nav>
-    <div class="hv-sidebar-footer"><span class="hv-sidebar-status-dot"></span><span>Built for builders</span></div>
-  </aside>
+    <div class="top-actions">
+      <button class="btn btn-primary" id="accountButton">Get started <span>↗</span></button>
+      <button class="menu-toggle" id="menuToggle" aria-label="Open navigation" aria-controls="mainNavigation" aria-expanded="false">☰</button>
+    </div>
+  </header>
 
   <main id="top">
     <section id="routeAccessGate" class="route-access-gate wrap" hidden aria-live="polite">
@@ -262,6 +260,11 @@
         </div>
       </div>
 
+      <section class="career-how-it-works" aria-label="How Career Match works">
+        <article><span>01</span><div><b>Upload your CV</b><p>Add your resume as a PDF. The reader extracts text from ordinary PDFs and uses OCR to read scanned pages where possible.</p></div></article>
+        <article><span>02</span><div><b>Add the job description</b><p>Paste the role details, especially required skills and responsibilities, so the comparison has enough information.</p></div></article>
+        <article><span>03</span><div><b>Review your next steps</b><p>See skills that match, skills that may be missing, the job-description lines behind each gap and a 14-day learning plan.</p></div></article>
+      </section>
       <div class="career-match-workspace">
         <form id="careerMatchForm" class="career-match-form">
           <div class="career-match-form-heading"><div><span class="eyebrow">STEP 01 · YOUR INPUTS</span><h2>Start with a resume and a role.</h2><p class="muted">Upload a PDF resume, then paste the full job description for the placement role you are targeting.</p></div><span class="career-match-private">PRIVATE ANALYSIS</span></div>
@@ -292,6 +295,7 @@ Example:
             <div class="career-process-copy"><div class="career-process-topline"><b id="careerProcessTitle">Reading your resume</b><span id="careerProcessPct">Step 1 of 4</span></div><p id="careerProcessDetail">Checking document structure and extracting readable text.</p><div class="career-process-track"><i id="careerProcessBar"></i></div><div class="career-process-steps"><span data-process-step="extract" class="is-active">Read</span><span data-process-step="layout">Reconstruct</span><span data-process-step="match">Match</span><span data-process-step="plan">Plan</span></div></div>
           </div>
         </form>
+        <details class="career-feature-guide career-main-guide"><summary>How does Career Match read my PDF and decide which skills match?</summary><div><p>Career Match first tries to read selectable text from your PDF. It then arranges text from different parts of the page into a more readable order. For scanned pages, it can try OCR, which means reading letters from the page image. Clear, upright scans usually work best; blurry pages, handwriting, unusual fonts or complicated designs can still cause mistakes.</p><p>It looks for skills it knows about in both the CV text and the job description. Common names for the same technology are treated alike where an alias is supported (for example, ReactJS and React.js). A skill is shown as matched when it is found in the resume text. A skill in the job description that is not found in the resume text may be shown as missing. Each missing skill includes the job-description line that mentioned it, so you can check the reason yourself.</p><p>This is a text-based comparison, not a judgement of how good you are at a skill. It may miss skills written in an unusual way, and it cannot prove your real ability. Check the original documents and correct your CV before applying.</p></div></details>
 
         <section id="careerMatchResults" class="career-match-results" hidden aria-live="polite">
           <div class="career-match-results-heading"><div><span class="eyebrow">STEP 02 · YOUR MATCH REPORT</span><h2>Here is where you stand.</h2><p class="muted">Matched and missing skills are based on the requirements recognised in this job description.</p></div><div class="career-result-actions"><button type="button" class="btn btn-outline" id="careerExportReportBtn">Export report ↓</button><button type="button" class="btn btn-outline" id="careerPrintReportBtn">Print ↗</button><button type="button" class="btn btn-primary" id="careerNewAnalysisBtn">New analysis ↻</button></div></div>
@@ -319,6 +323,7 @@ Example:
 
         <section class="career-tool-panel is-active" data-career-panel="readiness" role="tabpanel">
           <div class="career-tool-panel-head"><div><span class="career-panel-kicker">01 · RESUME + ROLE DIAGNOSTICS</span><h3>See what a recruiter can actually find.</h3><p class="muted">A transparent, rules-based review of structure, evidence, keyword coverage and job-post clarity.</p></div><span class="career-panel-icon">◈</span></div>
+          <details class="career-feature-guide"><summary>What does Resume Intelligence check?</summary><div><p>It checks whether important parts of your CV are easy to find in the extracted text: contact details, education, skills, experience, projects, clear headings and action words. It also checks whether the job post clearly mentions a role, responsibilities, required skills and preferred skills.</p><p>The skill map groups the skills recognised in the job post (for example, frontend, backend or databases) and shows how many of those skills were found in your resume. The percentage is a simple checklist result, not an employer's official ATS score and not a prediction that you will get an interview.</p></div></details>
           <div class="career-intel-grid">
             <article class="career-subcard"><div class="career-subcard-title"><div><small>RESUME HEALTH</small><h4>ATS readability check</h4></div><b id="careerAtsScore" class="career-big-score">—</b></div><div id="careerAtsChecks" class="career-check-list"><div class="career-empty-state">Run a resume analysis to generate your resume health report.</div></div></article>
             <article class="career-subcard"><div class="career-subcard-title"><div><small>JOB POST SIGNALS</small><h4>JD clarity snapshot</h4></div><span class="career-chip">Candidate view</span></div><div id="careerJdSignals" class="career-signal-list"><div class="career-empty-state">Paste a job description and run the analysis to review its visible details.</div></div></article>
@@ -329,12 +334,14 @@ Example:
 
         <section class="career-tool-panel" data-career-panel="learning" role="tabpanel" hidden>
           <div class="career-tool-panel-head"><div><span class="career-panel-kicker">02 · BUILD THE MISSING SKILLS</span><h3>Make progress visible.</h3><p class="muted">Turn your 14-day plan into a checklist. Progress is saved only in this browser.</p></div><span class="career-panel-icon">✦</span></div>
+          <details class="career-feature-guide"><summary>How does the 14-day Skill Sprint help me?</summary><div><p>After you analyse a CV and a job description, Career Match selects up to three important skills that appear in the job post but were not found in your resume. It turns those gaps into small daily learning tasks for two weeks.</p><p>Open each day, complete the task and tick it off. The progress bar updates as you go. Your checklist is saved in this browser on this device, not in your HackVerse account, so it will not automatically move to another phone or computer.</p></div></details>
           <div class="career-learning-progress"><div><small>YOUR SPRINT PROGRESS</small><b id="careerLearningProgressText">0 / 14 days complete</b></div><div class="career-learning-progress-track"><i id="careerLearningProgressBar"></i></div></div>
           <div id="careerLearningTasks" class="career-learning-tasks"><div class="career-empty-state">Analyse a resume and job description to create a role-specific learning sprint.</div></div>
         </section>
 
         <section class="career-tool-panel" data-career-panel="interview" role="tabpanel" hidden>
           <div class="career-tool-panel-head"><div><span class="career-panel-kicker">03 · PRACTISE BEFORE THE CALL</span><h3>Interview lab.</h3><p class="muted">Practice questions are shaped around your matched skills, gaps and project experience.</p></div><span class="career-panel-icon">◎</span></div>
+          <details class="career-feature-guide"><summary>What can I practise in Interview Lab?</summary><div><p>It creates a question list related to the skills in the role and the experience described in your CV. Questions can help you practise technical topics, explain a project, discuss a challenge or answer common workplace questions.</p><p>Write notes for an answer and use the STAR guide: Situation (what was happening), Task (what you needed to do), Action (what you did) and Result (what happened). The review is a writing aid that checks answer structure; it is not a live interviewer and does not guarantee how a recruiter will score you. You can save notes in this browser and use the two-minute timer to practise speaking clearly.</p></div></details>
           <div class="career-interview-grid"><div class="career-subcard"><div class="career-subcard-title"><div><small>QUESTION DECK</small><h4>Pick a question</h4></div><button type="button" class="career-text-button" id="careerShuffleQuestion">Shuffle ↻</button></div><div id="careerInterviewQuestionList" class="career-question-list"><div class="career-empty-state">Run an analysis to build your personalised question deck.</div></div></div>
             <div class="career-subcard career-practice-card"><div class="career-interview-type" id="careerInterviewType">PRACTICE PROMPT</div><h4 id="careerInterviewQuestion">Your next question will appear here.</h4><p id="careerInterviewHint" class="muted">Choose a prompt from the question deck.</p><label class="career-field-label" for="careerInterviewAnswer">Your answer notes</label><textarea id="careerInterviewAnswer" rows="7" placeholder="Structure your answer. Use a concrete example and explain your decisions…"></textarea><div class="career-answer-actions"><button type="button" class="btn btn-outline" id="careerSaveAnswer">Save answer locally</button><button type="button" class="btn btn-primary" id="careerReviewAnswer">Review my answer</button></div><span id="careerAnswerSaved" aria-live="polite">Not saved</span><div id="careerAnswerFeedback" class="career-answer-feedback" hidden aria-live="polite"></div><div class="career-star-guide"><b>STAR answer guide</b><span><i>S</i> Situation</span><span><i>T</i> Task</span><span><i>A</i> Action</span><span><i>R</i> Result</span></div></div>
           </div>
@@ -343,6 +350,7 @@ Example:
 
         <section class="career-tool-panel" data-career-panel="studio" role="tabpanel" hidden>
           <div class="career-tool-panel-head"><div><span class="career-panel-kicker">04 · WRITE WITH INTENTION</span><h3>Career studio.</h3><p class="muted">Draft a tailored cover letter and strengthen resume bullets without inventing achievements.</p></div><span class="career-panel-icon">✎</span></div>
+          <details class="career-feature-guide"><summary>How do the Cover Letter Builder and Bullet Workshop work?</summary><div><p>For a cover letter, enter your name, the job title, company name, a real project or experience and why the role interests you. The tool assembles those details into an editable first draft. Read it carefully, correct anything that is not true and personalise it before sending.</p><p>For a resume bullet, paste one real bullet, choose an action word such as Built or Improved, and optionally add an outcome you can prove. The tool makes the sentence clearer, but it will not verify your claims. Never add made-up numbers, users, results or responsibilities.</p></div></details>
           <div class="career-studio-grid">
             <form class="career-subcard career-studio-form" id="careerCoverLetterForm"><div class="career-subcard-title"><div><small>COVER LETTER BUILDER</small><h4>Make the introduction count.</h4></div></div>
               <label class="career-field-label" for="careerCoverName">Your name</label><input id="careerCoverName" maxlength="80" placeholder="Your name">
@@ -358,6 +366,7 @@ Example:
 
         <section class="career-tool-panel" data-career-panel="portfolio" role="tabpanel" hidden>
           <div class="career-tool-panel-head"><div><span class="career-panel-kicker">05 · PROVE YOU CAN BUILD</span><h3>Portfolio quality audit.</h3><p class="muted">A practical proof checklist for student developers, designers and project teams.</p></div><span class="career-panel-icon">▧</span></div>
+          <details class="career-feature-guide"><summary>What does the Portfolio Audit score mean?</summary><div><p>This is a checklist to help you prepare proof of your work before a placement interview. It covers a working demo, a useful README, screenshots or a video, tests, a clear explanation of impact, your personal contribution, a tidy repository and basic mobile/accessibility checks.</p><p>Tick an item only after you have checked it. The completion percentage is simply the number of boxes you have ticked. It does not inspect your GitHub account or automatically verify that a website works.</p></div></details>
           <div class="career-portfolio-summary"><div><small>PORTFOLIO COMPLETENESS</small><b id="careerPortfolioScore">0%</b></div><div class="career-learning-progress-track"><i id="careerPortfolioBar"></i></div><p>Tick an item only when the proof is ready to share with a recruiter.</p></div>
           <div id="careerPortfolioChecklist" class="career-portfolio-checklist">
             <label><input type="checkbox" data-portfolio-check="demo"><span><b>Live demo works</b><small>Provide a working deployment or a short recorded walkthrough.</small></span></label>
@@ -374,6 +383,7 @@ Example:
 
         <section class="career-tool-panel" data-career-panel="tracker" role="tabpanel" hidden>
           <div class="career-tool-panel-head"><div><span class="career-panel-kicker">06 · KEEP YOUR SEARCH ORGANISED</span><h3>Application tracker.</h3><p class="muted">Track placement applications in this browser. Details are local to this device, are not synced across devices and are not sent to HackVerse.</p></div><span class="career-panel-icon">▤</span></div>
+          <details class="career-feature-guide"><summary>How should I use the Application Tracker?</summary><div><p>Add the company and role, then choose where you are in the process: Saved, Applied, Assessment, Interview, Offer, Rejected or Withdrawn. You can also add a next date, the job link and a private reminder note.</p><p>The summary at the top counts your saved applications and offers. Update the stage when you hear back, and use the next date to remember assessments or follow-ups. These records stay in this browser on this device; clearing browser data can remove them.</p></div></details>
           <div class="career-tracker-stats"><div><small>TRACKED</small><b id="careerTrackerTotal">0</b></div><div><small>IN PROGRESS</small><b id="careerTrackerActive">0</b></div><div><small>OFFERS</small><b id="careerTrackerOffers">0</b></div></div>
           <form id="careerApplicationForm" class="career-application-form"><div class="career-two-fields"><div><label class="career-field-label" for="careerAppCompany">Company</label><input id="careerAppCompany" required maxlength="100" placeholder="Company name"></div><div><label class="career-field-label" for="careerAppRole">Role</label><input id="careerAppRole" required maxlength="100" placeholder="Role / placement drive"></div></div><div class="career-three-fields"><div><label class="career-field-label" for="careerAppStage">Stage</label><select id="careerAppStage"><option>Saved</option><option>Applied</option><option>Assessment</option><option>Interview</option><option>Offer</option><option>Rejected</option><option>Withdrawn</option></select></div><div><label class="career-field-label" for="careerAppDate">Next date</label><input id="careerAppDate" type="date"></div><div><label class="career-field-label" for="careerAppLink">Job link</label><input id="careerAppLink" type="url" placeholder="https://..."></div></div><label class="career-field-label" for="careerAppNote">Private note (optional)</label><input id="careerAppNote" maxlength="240" placeholder="Recruiter contact, preparation reminder, follow-up…"><button type="submit" class="btn btn-primary">Add application +</button></form>
           <div class="career-tracker-list-head"><h4>Your pipeline</h4><span id="careerTrackerHint">Stored on this device</span></div><div id="careerApplicationList" class="career-application-list"><div class="career-empty-state">No applications tracked yet. Add your first one above.</div></div>
