@@ -20,3 +20,4 @@ ui-debug.log
 # Logs
 *.log
 npm-debug.log*
+.DS_Store
