@@ -284,6 +284,21 @@ async function handler(req, res) {
       return res.status(201).json({ post: data });
     }
 
+    if (action === "voter-list") {
+      const postId = String(body.postId || "");
+      const value = String(body.value || "");
+      if (!/[0-9a-f-]{36}/i.test(postId) || !["upvote", "downvote"].includes(value)) return fail(res,400,"Choose a valid post and vote type.");
+      await visiblePost(client, postId, user.id);
+      const { data: votes, error: voteError } = await client.from("votes").select("user_id,created_at").eq("post_id",postId).eq("value",value).order("created_at",{ascending:false}).limit(100);
+      if (voteError) throw voteError;
+      const ids = [...new Set((votes || []).map(row => row.user_id).filter(Boolean))];
+      if (!ids.length) return res.status(200).json({ voters: [] });
+      const { data: profiles, error: profileError } = await client.from("profiles").select("id,username,display_name,avatar_url").in("id",ids);
+      if (profileError) throw profileError;
+      const byId = new Map((profiles || []).map(profile => [profile.id, profile]));
+      return res.status(200).json({ voters: ids.map(id => byId.get(id)).filter(profile => profile && profile.username).map(profile => ({ username: profile.username, display_name: profile.display_name, avatar_url: profile.avatar_url })) });
+    }
+
     if (action === "vote") {
       if (!["upvote","downvote"].includes(body.value)) return fail(res,400,"Choose an upvote or downvote.");
       const postId = String(body.postId || "");

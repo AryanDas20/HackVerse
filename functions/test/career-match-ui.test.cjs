@@ -47,3 +47,29 @@ test('top navigation has desktop, tablet/mobile and compact-screen responsive ru
   assert.match(css, /@media\s*\(max-width:\s*390px\)/);
   assert.match(css, /\.topbar \.desktop-nav\.mobile-open\s*\{\s*display:\s*flex/s);
 });
+
+test('Career Match uses the dedicated peach palette and includes Agent37 Career Copilot', () => {
+  const palette = fs.readFileSync(path.join(root, 'public/palette-performance-v20.css'), 'utf8');
+  assert.match(html, /palette-performance-v20\.css/);
+  assert.match(html, /career-copilot/);
+  assert.match(html, /data-career-agent-prompt=/);
+  for (const color of ['#ffdbbb', '#ccbeb1', '#997e67']) assert.ok(palette.includes(color), `Missing Career Match palette color ${color}`);
+  for (const color of ['#6f8f7b', '#afc8b4', '#f4ebdd', '#d8c7a6', '#3e5f4d']) assert.ok(palette.includes(color), `Missing site palette color ${color}`);
+});
+
+test('Career Match includes responsive layout and reduced-motion performance safeguards', () => {
+  const palette = fs.readFileSync(path.join(root, 'public/palette-performance-v20.css'), 'utf8');
+  assert.match(palette, /prefers-reduced-motion/);
+  assert.match(palette, /content-visibility:auto/);
+  assert.match(palette, /@media\(max-width:720px\)/);
+  assert.match(palette, /settings-grid/);
+});
+
+test('community feed exposes clickable voter lists backed by a profile-safe API action', () => {
+  const app = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
+  const api = fs.readFileSync(path.join(root, 'api/social-v13.js'), 'utf8');
+  assert.match(app, /data-voter-list/);
+  assert.match(app, /data-voter-profile/);
+  assert.match(api, /action === "voter-list"/);
+  assert.match(api, /from\("profiles"\)\.select\("id,username,display_name,avatar_url"\)/);
+});

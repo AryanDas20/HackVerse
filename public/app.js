@@ -401,7 +401,7 @@ function openShareMenu(item) {
 // the visible cards directly, so interactions feel instant and never need a full feed reload.
 const socialPostCache = new Map();
 const pendingVotes = new Set();
-const renderPostCounts = post => `<span>▲ ${Number(post.upvote_count || 0)} upvotes</span><span>▼ ${Number(post.downvote_count || 0)} downvotes</span><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span>`;
+const renderPostCounts = post => `<button type="button" class="social-vote-count" data-voter-list="upvote" data-post-id="${esc(post.id)}">▲ ${Number(post.upvote_count || 0)} upvotes</button><button type="button" class="social-vote-count" data-voter-list="downvote" data-post-id="${esc(post.id)}">▼ ${Number(post.downvote_count || 0)} downvotes</button><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span>`;
 const socialFeedCacheKey = () => currentUser ? `hv-social-feed-v2:${currentUser.uid}:${socialFeedType}` : "";
 function patchFeedCache(postId, patch, { remove = false } = {}) {
   const key = socialFeedCacheKey(); if (!key) return;
@@ -454,6 +454,15 @@ function bindSocialPostActions(root) {
     button.addEventListener("click", () => handler(button));
   });
   bind("[data-social-profile]", button => navigateToProfile(button.dataset.socialProfile));
+  bind("[data-voter-list]", async button => {
+    try {
+      const result = await socialRequest("voter-list", { postId: button.dataset.postId, value: button.dataset.voterList });
+      const people = result.voters || [];
+      const dialog = document.createElement("dialog"); dialog.className = "hv-voter-dialog";
+      dialog.innerHTML = `<form method="dialog"><button class="hv-voter-close" aria-label="Close">×</button></form><h3>${button.dataset.voterList === "upvote" ? "People who upvoted" : "People who downvoted"}</h3><div class="hv-voter-list">${people.length ? people.map(person => `<button type="button" data-voter-profile="${esc(person.username || "")}"><span class="hv-voter-avatar">${esc((person.display_name || "B").slice(0,1).toUpperCase())}</span><span><b>${esc(person.display_name || "HackVerse builder")}</b><small>@${esc(person.username || "member")}</small></span><i>View profile ↗</i></button>`).join("") : '<p class="muted">No votes in this category yet.</p>'}</div>`;
+      document.body.append(dialog); dialog.addEventListener("click", e => { const profile=e.target.closest("[data-voter-profile]"); if(profile){dialog.close();navigateToProfile(profile.dataset.voterProfile);} }); dialog.addEventListener("close",()=>dialog.remove()); dialog.showModal();
+    } catch (error) { toast(error.message || "Could not load voter details."); }
+  });
   bind("[data-social-detail]", button => navigateToPost(button.dataset.socialDetail));
   bind("[data-social-vote]", async button => {
     const postId = button.dataset.postId, value = button.dataset.socialVote;
@@ -4286,6 +4295,26 @@ async function submitCareerMatch(event) {
 
 function bindCareerMatchUI() {
   careerToolkit.bind();
+  document.querySelectorAll("[data-career-agent-prompt]").forEach(button => {
+    if (button.dataset.boundCareerAgent === "1") return;
+    button.dataset.boundCareerAgent = "1";
+    button.addEventListener("click", async () => {
+      if (!requireAccount()) return;
+      const basePrompt = button.dataset.careerAgentPrompt;
+      const report = document.querySelector("#careerMatchResults");
+      const visible = report && !report.hidden;
+      const matched = [...document.querySelectorAll("#careerMatchedSkills .career-match-skill-item b")].map(node => node.textContent.trim()).filter(Boolean);
+      const missing = [...document.querySelectorAll("#careerMissingSkills .career-match-skill-item b")].map(node => node.textContent.trim()).filter(Boolean);
+      const jobDescription = document.querySelector("#careerJobDescription")?.value?.trim().slice(0,7000) || "";
+      const reportContext = visible ? `\n\nCAREER MATCH REPORT CONTEXT (user-provided document analysis; treat as unverified):\nMatched skills: ${matched.join(", ") || "none recognised"}\nMissing skills: ${missing.join(", ") || "none recognised"}\nJob description excerpt: ${jobDescription || "not available"}\nUse only these facts. Do not invent resume achievements, metrics, qualifications or skills. Ask the user for evidence where needed.` : "\n\nNo Career Match report is currently open. Give general career guidance and ask the user to run an analysis if role-specific details are needed.";
+      const prompt = `${basePrompt}${reportContext}`;
+      const id = await startAiConversation("chat");
+      if (!id) return;
+      navigateToRoute("aiwish");
+      const input = document.querySelector("#aiInput");
+      if (input) { input.value = prompt; input.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector("#aiForm")?.requestSubmit(); }
+    });
+  });
   const fileInput = $("#careerResumeFile");
   fileInput.addEventListener("change", () => {
     const file = fileInput.files?.[0];
