@@ -33,7 +33,7 @@ const listFrom = value => String(value || "").split(",").map(x => x.trim()).filt
 const normalizedList = value => listFrom(value).map(x => x.toLowerCase()).filter((x, i, a) => a.indexOf(x) === i);
 const validUrl = value => { if (!value) return ""; try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) ? u.href : ""; } catch { return ""; } };
 
-const APP_ROUTE_NAMES = new Set(["home", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings"]);
+const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings"]);
 function routePath(route) {
   const value = String(route || "home").trim();
   if (value === "/" || value === "home") return "/";
@@ -394,6 +394,7 @@ function openShareMenu(item) {
     <button class="modal-close" type="button" data-share-action-close aria-label="Close">×</button>
     <div class="eyebrow">SHARE WITH YOUR NETWORK</div><h2 id="shareActionTitle">Share this update</h2>
     <p class="muted">Choose a contact in WhatsApp, your device share sheet, or a HackVerse conversation.</p>
+    ${item.type === "opportunity" ? `<article class="share-opportunity-card"><div class="share-card-brand"><span>H</span> HACKVERSE <small>OPPORTUNITY CARD</small></div><h3>${esc(item.title)}</h3><p>${esc(item.description||"Discover this opportunity on HackVerse.")}</p>${Array.isArray(item.details)&&item.details.length?`<div class="share-card-facts">${item.details.slice(0,4).map(row=>`<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>`:""}<footer>DISCOVER · CONNECT · BUILD <span>↗</span></footer></article>` : ""}
     ${Array.isArray(item.details) && item.details.length ? `<div class="share-opportunity-preview">${item.details.slice(0,4).map(row => `<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>` : ""}
     <div class="share-action-list">
       <a class="share-action-option" href="${esc(whatsappUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-action-icon">↗</span><span><b>WhatsApp</b><small>Choose a contact in WhatsApp</small></span><span class="share-action-arrow">→</span></a>
@@ -933,7 +934,7 @@ async function loadAccountWorkspace() {
     const savedProfile = privateProfile?.profileData || null;
     const shouldBePublic = evaluateProfilePublication({
       visibility: savedProfile?.profileVisibility,
-      consent: true,
+      
       displayName: savedProfile?.displayName,
       username: savedProfile?.username
     }).canPublish;
@@ -974,23 +975,7 @@ function syncProfileVisibilityChoices(value = "public") {
   if (nativeSelect) nativeSelect.value = visibility;
   $$('input[name="profileVisibilityChoice"]').forEach(input => {
     input.checked = input.value === visibility;
-    input.closest(".pf-vis-card")?.classList.toggle("is-selected", input.checked);
-  });
-}
-
-const PROFILE_PROGRESS_FIELDS = ["#profileName","#profileUsername","#profileCollege","#profileCourse","#profileCity","#profileCountry","#profileBio","#profileSkills","#profileAvatar","#profileGithub","#profileLinkedin"];
-function updateProfileProgress() {
-  const form = $("#profileForm"); if (!form) return;
-  const filled = PROFILE_PROGRESS_FIELDS.filter(sel => String($(sel)?.value || "").trim()).length;
-  const pct = Math.round(filled / PROFILE_PROGRESS_FIELDS.length * 100);
-  const box = $("#profileProgress");
-  form.style.setProperty("--pf-progress", pct + "%");
-  $("#profileProgressText").textContent = pct + "%";
-  $("#profileProgressHint").textContent = pct >= 100 ? "Your profile is complete. Nice work!" : pct >= 60 ? "Almost there — a few more details will make you easy to find." : pct >= 25 ? "Good start. Add your skills and bio to stand out." : "Fill in a few details to stand out in Builders.";
-  box?.classList.toggle("is-complete", pct >= 100);
-  $$("#profileForm .profile-step").forEach(step => {
-    const count = [...step.querySelectorAll("input:not([type=radio]):not([type=checkbox]):not([type=file]), textarea")].filter(el => String(el.value || "").trim()).length;
-    step.dataset.filled = String(count);
+    input.closest(".profile-visibility-option")?.classList.toggle("is-selected", input.checked);
   });
 }
 
@@ -1010,14 +995,18 @@ function openProfileEditor(mandatory = false) {
   $("#profileAvatar").value = p.avatarUrl || ""; $("#profileAvatarFile").value = ""; $("#profileAvatarPreviewWrap").hidden = !p.avatarUrl; if(p.avatarUrl) $("#profileAvatarPreview").src = p.avatarUrl; $("#profileGithub").value = p.github || "";
   $("#profileLinkedin").value = p.linkedin || ""; $("#profilePortfolio").value = p.portfolio || "";
   $("#profilePhone").value = privateProfile?.phone || ""; $("#profilePhoneVisibility").value = privateProfile?.phoneVisibility || "private"; $("#profileEmailVisibility").value = privateProfile?.emailVisibility || "private"; syncProfileVisibilityChoices(privateProfile?.profileVisibility || p.profileVisibility || "public"); $("#profileLooking").value = String(p.lookingForTeam !== false);
+  const storedProfileData = privateProfile?.profileData || {};
+  const consentFieldExists = Object.prototype.hasOwnProperty.call(p, "profileConsentAt")
+    || Object.prototype.hasOwnProperty.call(storedProfileData, "profileConsentAt");
+  const savedConsentAt = p.profileConsentAt || storedProfileData.profileConsentAt;
+  $("#profilePublicConsent").checked = true;
   $("#profileMessage").textContent = "";
   $("#profileModalTitle").textContent = mandatory ? "Complete your builder profile." : "Update your builder profile.";
-  $("#profileModalHint").textContent = "Start with your name and username, then choose Public or Private in Step 02. Save your progress and add other details whenever you are ready.";
+  $("#profileModalHint").textContent = "Start with your name and username, then choose who can discover you in Step 02. Save your progress and add other details whenever you are ready.";
   $("#profileModalClose").hidden = false;
   $("#profileSignOutBtn").hidden = true;
   const steps = $$("#profileForm .profile-step");
   steps.forEach((step, index) => { step.open = index === 0 || index === 1; });
-  updateProfileProgress();
   showModal("profileModal");
 }
 
@@ -1066,18 +1055,17 @@ async function saveProfile(event) {
     return;
   }
   const requestedVisibility = $("#profileVisibility").value || "public";
+  const consent = true; // legacy contact-publication flag; actual email/phone visibility is controlled in Step 04
   // Do not silently turn a user's selected Public profile into a private one.
   // The directory opt-in is deliberately explicit, but must be visible and the
   // user must be told exactly what is missing before we save anything.
-  const visibility = requestedVisibility === "private" ? "private" : "public";
-  // Public profiles are listed in Builders automatically; no separate opt-in.
-  const consent = visibility === "public";
-  const publication = evaluateProfilePublication({ visibility, consent, displayName: name, username });
+  const visibility = requestedVisibility;
+  const publication = evaluateProfilePublication({ visibility, displayName: name, username });
   const canPublish = publication.canPublish;
   if (publication.reason === "identity") {
     const basicsStep = $$("#profileForm .profile-step")[0];
     if (basicsStep) basicsStep.open = true;
-    message.textContent = "Add your full name and a valid 3–24 character username to make your profile public.";
+    message.textContent = "Add your full name and a valid 3–24 character username to publish your profile in Builders.";
     $("#profileName")?.focus();
     basicsStep?.scrollIntoView({ behavior: "smooth", block: "center" });
     if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
@@ -1175,7 +1163,7 @@ async function saveProfile(event) {
       if (currentRouteName() === "people") void searchPeople();
       toast("Your profile is published in the Builders directory.");
     } else {
-      toast("Your profile is saved and set to Private. Switch to Public in Step 02 any time to appear in Builders.");
+      toast("Your profile is saved privately. Choose Public and confirm the directory setting in Step 02 to appear in Builders.");
     }
   } catch (error) {
     console.error(error);
@@ -4357,6 +4345,9 @@ function startWebsiteTour(){activeTourIndex=0;$("#tourOverlay").hidden=false;ren
 function endWebsiteTour(){removeTourHighlight();$("#tourOverlay").hidden=true;activeTourIndex=-1;localStorage.setItem("hackverse-tour-complete","1");}
 function initAdvancedUI(){
   applyAppPrefs();loadSettingsUI();
+  $("#refreshTechNews")?.addEventListener("click",()=>void loadTechNews());
+  $("#techNewsSearch")?.addEventListener("input",renderTechNews);
+  $$('[data-news-tab]').forEach(b=>b.addEventListener("click",()=>{techNewsTab=b.dataset.newsTab;$$('[data-news-tab]').forEach(x=>x.classList.toggle("active",x===b));renderTechNews();}));
   $("#notificationBell").onclick=()=>navigateToRoute("notifications");
   $("#notificationSettingsBtn").onclick=()=>{navigateToRoute("settings");setTimeout(()=>showSettingsTab("notifications"),100);};
   $("#openNotificationPreferences").onclick=$("#notificationSettingsBtn").onclick;
@@ -4369,9 +4360,9 @@ function initAdvancedUI(){
     const base=publicProfile||privateProfile?.profileData;
     if(!base){toast("Complete your profile first.");return;}
     const nextVisibility=e.target.value;
-    const publication=evaluateProfilePublication({visibility:nextVisibility,consent:true,displayName:base.displayName,username:base.username});
-    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Add your full name and username in Edit profile before making your profile public.");return;}
-    const next={...base,profileVisibility:nextVisibility,profileConsentAt:nextVisibility==="public"?(base.profileConsentAt||serverTimestamp()):null};
+    const publication=evaluateProfilePublication({visibility:nextVisibility,displayName:base.displayName,username:base.username});
+    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Add your name and username to publish your public profile.");return;}
+    const next={...base,profileVisibility:nextVisibility};
     try{
       await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:nextVisibility,profileData:next,updatedAt:serverTimestamp()},{merge:true});
       const publicRef=doc(db,"publicProfiles",currentUser.uid);
@@ -4403,6 +4394,17 @@ function initAdvancedUI(){
 }
 
 let lastRouteKey = "";
+
+// Tech news reader: Hacker News public API, with local category/search/bookmark controls and multi-destination sharing.
+let techNewsItems=[], techNewsTab="latest", techNewsLoading=false;
+const NEWS_API="https://hacker-news.firebaseio.com/v0";
+const newsSavedKey="hackverse-tech-news-saved";
+function readSavedNews(){try{return JSON.parse(localStorage.getItem(newsSavedKey)||"[]")}catch{return []}}
+function newsMatches(item,tab){const t=(item.title||"").toLowerCase(), d=(item.text||"").toLowerCase();const full=t+" "+d; if(tab==="ai")return /\b(ai|artificial intelligence|llm|machine learning|openai|anthropic|gemini|deepmind)\b/.test(full);if(tab==="security")return /\b(security|cyber|vulnerab|hack|privacy|breach|malware|exploit)\b/.test(full);if(tab==="webdev")return /\b(developer|programming|javascript|typescript|web|browser|github|framework|api|open source|linux|software)\b/.test(full);return true;}
+function renderTechNews(){const grid=$("#techNewsGrid"),status=$("#techNewsStatus");if(!grid)return;const saved=readSavedNews();let rows=techNewsTab==="saved"?techNewsItems.filter(i=>saved.includes(i.id)):techNewsItems.filter(i=>newsMatches(i,techNewsTab));const q=($("#techNewsSearch")?.value||"").trim().toLowerCase();if(q)rows=rows.filter(i=>(i.title||"").toLowerCase().includes(q));status.textContent=`${rows.length} stories · ${techNewsTab==="saved"?"saved locally":"from Hacker News"}`;grid.innerHTML=rows.map(item=>{const title=esc(item.title||"Untitled story"),source=esc(new URL(item.url||"https://news.ycombinator.com").hostname.replace(/^www\./,""));const savedNow=saved.includes(item.id);return `<article class="tech-news-card"><div class="tech-news-card-top"><span class="tech-news-source">${source}</span><span class="tech-news-score">▲ ${Number(item.score||0)}</span></div><h3>${title}</h3><p>${esc(item.by||"Hacker News community")} · ${item.time?esc(new Date(item.time*1000).toLocaleString()):"Recently"} · ${Number(item.descendants||0)} comments</p><div class="tech-news-actions"><a class="btn btn-primary btn-small" href="${esc(validUrl(item.url)||`https://news.ycombinator.com/item?id=${item.id}`)}" target="_blank" rel="noopener">Read story ↗</a><button class="btn btn-outline btn-small" data-news-save="${item.id}">${savedNow?"★ Saved":"☆ Save"}</button><button class="btn btn-outline btn-small" data-news-share="${item.id}">↗ Share</button></div></article>`}).join("")||'<div class="empty-note">No stories match this filter. Try another tab or search.</div>';grid.querySelectorAll("[data-news-save]").forEach(b=>b.onclick=()=>{const ids=readSavedNews(),id=Number(b.dataset.newsSave);localStorage.setItem(newsSavedKey,JSON.stringify(ids.includes(id)?ids.filter(x=>x!==id):[id,...ids]));renderTechNews();});grid.querySelectorAll("[data-news-share]").forEach(b=>b.onclick=()=>shareTechNews(Number(b.dataset.newsShare)));}
+async function loadTechNews(){if(techNewsLoading)return;techNewsLoading=true;const status=$("#techNewsStatus"),grid=$("#techNewsGrid");if(status)status.textContent="Refreshing technology stories…";try{const ids=await fetch(`${NEWS_API}/topstories.json`).then(r=>{if(!r.ok)throw Error("Feed unavailable");return r.json()});const stories=await Promise.all(ids.slice(0,45).map(id=>fetch(`${NEWS_API}/item/${id}.json`).then(r=>r.ok?r.json():null).catch(()=>null)));techNewsItems=stories.filter(x=>x&&x.title&&x.url);renderTechNews();}catch(e){if(status)status.textContent="Could not refresh the live feed. Check your connection and try again.";if(grid)grid.innerHTML='<div class="empty-note">The news feed could not be loaded. Use Refresh to retry.</div>';console.warn("Tech news loading",e);}finally{techNewsLoading=false;}}
+function shareTechNews(id){const item=techNewsItems.find(x=>x.id===id);if(!item)return;const url=item.url||`https://news.ycombinator.com/item?id=${id}`,text=`${item.title}\n${url}`;const shareUrl=`https://wa.me/?text=${encodeURIComponent(text)}`;const modal=document.createElement("div");modal.className="modal-backdrop share-picker-backdrop";modal.innerHTML=`<section class="modal share-picker-modal"><button class="modal-close" type="button">×</button><div class="eyebrow">SHARE TECH NEWS</div><h2>${esc(item.title)}</h2><p class="muted">Share this story anywhere or send it to a HackVerse chat.</p><div class="share-action-list"><a class="share-action-option" href="${esc(shareUrl)}" target="_blank" rel="noopener"><span><b>WhatsApp</b><small>Send to a contact</small></span>↗</a><button class="share-action-option" data-news-native><span><b>Other apps</b><small>Open your device share menu</small></span>⇧</button><button class="share-action-option" data-news-copy><span><b>Copy story link</b><small>Copy title and source URL</small></span>⧉</button></div></section>`;document.body.append(modal);modal.querySelector(".modal-close").onclick=()=>modal.remove();modal.onclick=e=>{if(e.target===modal)modal.remove()};modal.querySelector("[data-news-native]").onclick=()=>{modal.remove();if(navigator.share)navigator.share({title:item.title,url,text:item.title}).catch(()=>{});else navigator.clipboard?.writeText(text).then(()=>toast("Story copied."));};modal.querySelector("[data-news-copy]").onclick=()=>navigator.clipboard.writeText(text).then(()=>{toast("Story copied.");modal.remove()}).catch(()=>toast("Clipboard blocked"));}
+
 function handleRoute({ force = false } = {}) {
   // Unknown paths fall back to home with a clean URL instead of staying on a broken address.
   if (!isAppRoutePath(location.pathname)) history.replaceState({}, "", "/");
@@ -4452,13 +4454,14 @@ function handleRoute({ force = false } = {}) {
   if (blocked) { aiPanel.hidden = true; aiAssistant.classList.remove("ai-on-wish-page"); }
   $$('[data-route]').forEach(a => a.classList.toggle("active", a.dataset.route === view));
   document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
-  const titles = { home: "HackVerse", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
+  const titles = { home: "HackVerse", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
   document.title = `${titles[view] || "HackVerse"} — HackVerse`;
   if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
   if (blocked || !freshRoute) return;
   if (view === "opportunities") { updateEventAccessUI(); if (currentUser) renderEvents(); }
   if (view === "feed") void loadBuilderFeed();
   if (view === "posts") void loadSocialFeed({ reset: true });
+  if (view === "news") void loadTechNews();
   if (view === "public-profile" && profileMatch) void loadPublicProfilePage(profileMatch[1]);
   if (view === "post-detail" && postMatch) void loadSocialPostDetail(postMatch[1]);
   if (view === "reports") { updateReportFields(); void loadMyReports(); if (isAdminUser) void loadAdminReports(); }
@@ -4526,7 +4529,6 @@ function bindUI() {
   $("#authModeToggle").onclick = () => setAuthMode(authMode === "signin" ? "signup" : "signin");
   $("#googleSignIn").onclick = googleSignIn; $("#resetPassword").onclick = resetPassword;
   $("#profileForm").addEventListener("submit", saveProfile);
-  $("#profileForm").addEventListener("input", updateProfileProgress);
   $$('input[name="profileVisibilityChoice"]').forEach(input => input.addEventListener("change", () => syncProfileVisibilityChoices(input.value)));
   $("#profileAvatarFile").addEventListener("change",e=>uploadProfileAvatar(e.target.files?.[0]));
   $("#removeProfileAvatarBtn").onclick=()=>{$("#profileAvatar").value="";$("#profileAvatarFile").value="";$("#profileAvatarPreviewWrap").hidden=true;toast("Profile photo removed from the draft. Save your profile to apply.");};

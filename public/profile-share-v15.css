@@ -79,3 +79,14 @@
 .share-action-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; background: var(--accent-soft); color: var(--accent); font-size: 19px; }
 .share-action-arrow { color: var(--muted); }
 .share-picker-section-title { padding: 12px 8px 5px; color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+
+/* Make the public Builders opt-in unmistakable in the profile editor. */
+.profile-directory-consent {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+}
+.profile-directory-consent strong {
+  display: block;
+  color: var(--text);
+  margin-bottom: 3px;
+}
