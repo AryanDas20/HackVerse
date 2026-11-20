@@ -4084,58 +4084,122 @@ function handleRoute({ force = false } = {}) {
 }
 
 async function extractCareerResumeText(file) {
+  if (!file || file.type !== "application/pdf" && !/\.pdf$/i.test(file.name || "")) {
+    throw new Error("Please choose a valid PDF resume.");
+  }
+  if (file.size > 8 * 1024 * 1024) throw new Error("Please upload a PDF smaller than 8 MB.");
+
   const pdfjsLib = await import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.5.438/pdf.min.mjs");
   pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const pdf = await pdfjsLib.getDocument({ data: bytes, useSystemFonts: true, disableFontFace: true, isEvalSupported: false }).promise;
+  let pdf;
+  try {
+    pdf = await pdfjsLib.getDocument({
+      data: bytes,
+      useSystemFonts: true,
+      disableFontFace: false,
+      isEvalSupported: false,
+      stopAtErrors: false
+    }).promise;
+  } catch (error) {
+    if (error?.name === "PasswordException") {
+      throw new Error("This PDF is password-protected. Please upload an unlocked copy of your resume.");
+    }
+    throw new Error("This PDF could not be opened. Please re-export it as a standard PDF and try again.");
+  }
   if (!pdf.numPages) throw new Error("This PDF does not contain any pages.");
   if (pdf.numPages > 8) throw new Error("Please upload a resume with 8 pages or fewer.");
-  const pages = [];
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const content = await page.getTextContent({ includeMarkedContent: false });
-    const items = content.items
-      .filter(item => typeof item.str === "string" && item.str.trim())
-      .map(item => ({
-        text: item.str.normalize("NFKC").replace(/[\uE000-\uF8FF]/g, "").trim(),
-        x: Number(item.transform?.[4] || 0),
-        y: Number(item.transform?.[5] || 0),
-        width: Math.max(0, Number(item.width || 0))
-      }))
-      .filter(item => item.text);
-    if (!items.length) continue;
-    // PDF.js exposes text coordinates. Grouping by baseline and splitting large horizontal
-    // gaps keeps left/right columns and table cells from being interleaved into one sentence.
-    items.sort((a, b) => b.y - a.y || a.x - b.x);
-    const rows = [];
-    for (const item of items) {
-      let row = rows.find(candidate => Math.abs(candidate.y - item.y) <= 2.6);
-      if (!row) { row = { y: item.y, items: [] }; rows.push(row); }
-      row.items.push(item);
-    }
-    rows.sort((a, b) => b.y - a.y);
-    const pageLines = [];
-    for (const row of rows) {
-      row.items.sort((a, b) => a.x - b.x);
-      let segment = [], previousRight = null;
-      const flush = () => {
-        const line = segment.map(part => part.text).join(" ").replace(/\s+/g, " ").trim();
-        if (line) pageLines.push(line);
-        segment = [];
-      };
-      for (const item of row.items) {
-        const gap = previousRight == null ? 0 : item.x - previousRight;
-        if (gap > 48 && segment.length) flush();
-        segment.push(item);
-        previousRight = item.x + item.width;
+
+  // OCR is loaded only when needed, keeping normal text-PDF uploads fast.
+  let ocrWorker = null;
+  const ensureOcrWorker = async () => {
+    if (ocrWorker) return ocrWorker;
+    const tesseract = await import("https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js");
+    ocrWorker = await tesseract.createWorker("eng", 1, {
+      logger: message => {
+        if (message.status === "recognizing text") {
+          const pct = Math.round((message.progress || 0) * 100);
+          const status = document.querySelector("#careerMatchStatus");
+          if (status) status.textContent = `Reading scanned page with OCR… ${pct}%`;
+        }
       }
-      flush();
+    });
+    return ocrWorker;
+  };
+
+  const pages = [];
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const content = await page.getTextContent({ includeMarkedContent: false, disableNormalization: false });
+      const items = content.items
+        .filter(item => typeof item.str === "string" && item.str.trim())
+        .map(item => ({
+          text: item.str.normalize("NFKC").replace(/[\uE000-\uF8FF]/g, "").trim(),
+          x: Number(item.transform?.[4] || 0),
+          y: Number(item.transform?.[5] || 0),
+          width: Math.max(0, Number(item.width || 0))
+        }))
+        .filter(item => item.text);
+
+      let pageText = "";
+      if (items.length) {
+        // Rebuild lines from coordinates; preserve wide column gaps as separators.
+        items.sort((a, b) => b.y - a.y || a.x - b.x);
+        const rows = [];
+        for (const item of items) {
+          let row = rows.find(candidate => Math.abs(candidate.y - item.y) <= 2.6);
+          if (!row) { row = { y: item.y, items: [] }; rows.push(row); }
+          row.items.push(item);
+        }
+        rows.sort((a, b) => b.y - a.y);
+        const pageLines = [];
+        for (const row of rows) {
+          row.items.sort((a, b) => a.x - b.x);
+          let segment = [], previousRight = null;
+          const flush = () => {
+            const line = segment.map(part => part.text).join(" ").replace(/\s+/g, " ").trim();
+            if (line) pageLines.push(line);
+            segment = [];
+          };
+          for (const item of row.items) {
+            const gap = previousRight == null ? 0 : item.x - previousRight;
+            if (gap > 48 && segment.length) flush();
+            segment.push(item);
+            previousRight = item.x + item.width;
+          }
+          flush();
+        }
+        pageText = pageLines.join("\n");
+      }
+
+      // Image-only pages, or pages with only a few selectable labels, are OCR'd.
+      // Mixed PDFs are handled page-by-page so their text pages are not OCR'd again.
+      if (pageText.replace(/\s/g, "").length < 35) {
+        const status = document.querySelector("#careerMatchStatus");
+        if (status) status.textContent = `Scanned/image page detected (${pageNumber}/${pdf.numPages}). Running OCR…`;
+        const worker = await ensureOcrWorker();
+        const viewport = page.getViewport({ scale: 2.2 });
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        await page.render({ canvasContext: context, viewport }).promise;
+        const recognised = await worker.recognize(canvas);
+        const ocrText = String(recognised?.data?.text || "").trim();
+        canvas.width = 0;
+        canvas.height = 0;
+        if (ocrText.length > pageText.length) pageText = ocrText;
+      }
+      if (pageText.trim()) pages.push(`PAGE ${pageNumber}\n${pageText.trim()}`);
     }
-    if (pageLines.length) pages.push(pageLines.join("\n"));
+  } finally {
+    if (ocrWorker) await ocrWorker.terminate();
   }
+
   const extracted = pages.join("\n\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   if (extracted.length < 30) {
-    throw new Error("No selectable text was found. This may be a scanned/image-only PDF; export it with selectable text or run OCR first.");
+    throw new Error("We couldn't read enough text from this PDF, even after OCR. Try a clearer scan, higher-resolution export, or an unlocked PDF.");
   }
   return extracted.slice(0, 60000);
 }
