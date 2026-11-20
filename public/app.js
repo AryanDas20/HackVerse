@@ -4068,6 +4068,8 @@ function handleRoute({ force = false } = {}) {
   if (blocked) { aiPanel.hidden = true; aiAssistant.classList.remove("ai-on-wish-page"); }
   $$('[data-route]').forEach(a => a.classList.toggle("active", a.dataset.route === view));
   document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
+  document.body.classList.remove("hv-sidebar-open");
+  const shellBackdrop = document.querySelector("#hvShellBackdrop"); if (shellBackdrop) shellBackdrop.hidden = true;
   const titles = { home: "HackVerse", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", "career-match": "Career Match", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
   document.title = `${titles[view] || "HackVerse"} — HackVerse`;
   if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
@@ -4427,18 +4429,26 @@ function bindUI() {
   $("#backToExploreBtn").onclick = () => { navigateToRoute("opportunities"); };
   $("#themeToggle").onclick = () => { const prefs=readAppPrefs();prefs.theme=document.body.classList.contains("light")?"dark":"light";localStorage.setItem("hackverse-app-preferences",JSON.stringify(prefs));localStorage.setItem("hackverse-theme",prefs.theme);applyAppPrefs();if($("#settingTheme"))$("#settingTheme").value=prefs.theme; };
   const mainNav = document.querySelector(".desktop-nav");
+  const shellBackdrop = $("#hvShellBackdrop");
   const closeMainNav = () => {
     mainNav?.classList.remove("mobile-open");
+    document.body.classList.remove("hv-sidebar-open");
+    if (shellBackdrop) shellBackdrop.hidden = true;
     $("#menuToggle").setAttribute("aria-expanded", "false");
     $("#menuToggle").setAttribute("aria-label", "Open navigation");
     $("#navMoreMenu").hidden = true;
     $("#navMoreBtn").setAttribute("aria-expanded", "false");
   };
   $("#menuToggle").onclick = () => {
-    const open = mainNav.classList.toggle("mobile-open");
+    const open = !document.body.classList.contains("hv-sidebar-open");
+    document.body.classList.toggle("hv-sidebar-open", open);
+    mainNav?.classList.toggle("mobile-open", open);
+    if (shellBackdrop) shellBackdrop.hidden = !open;
     $("#menuToggle").setAttribute("aria-expanded", String(open));
     $("#menuToggle").setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
   };
+  shellBackdrop?.addEventListener("click", closeMainNav);
+  document.addEventListener("keydown", event => { if (event.key === "Escape") closeMainNav(); });
   $("#navMoreBtn").onclick = () => {
     const menu = $("#navMoreMenu");
     menu.hidden = !menu.hidden;
@@ -4447,7 +4457,7 @@ function bindUI() {
   $$(".desktop-nav a").forEach(a => a.addEventListener("click", closeMainNav));
   document.addEventListener("click", event => {
     if (!mainNav?.classList.contains("mobile-open") && $("#navMoreMenu").hidden) return;
-    if (!event.target.closest(".topbar")) closeMainNav();
+    if (!event.target.closest(".topbar") && !event.target.closest(".hv-sidebar")) closeMainNav();
   });
   bindCareerMatchUI();
   handleRoute();
