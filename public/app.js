@@ -6,11 +6,13 @@ import {
   serverTimestamp, addDoc, setDoc, deleteDoc, onSnapshot, updateDoc, runTransaction, writeBatch, httpsCallable
 } from './data-layer.js';
 import { supabaseConfig } from './supabase-config.js';
+import { createCareerToolkit } from './career-toolkit.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const CONFIGURED = Boolean(supabaseConfig.url && !String(supabaseConfig.url).startsWith("YOUR_") && supabaseConfig.anonKey && !String(supabaseConfig.anonKey).startsWith("YOUR_"));
 let currentUser = null, authMode = "signin", isAdminUser = false;
+const careerToolkit = createCareerToolkit(() => currentUser);
 let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [];
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null, chatReturnRoute = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
@@ -4121,6 +4123,7 @@ async function extractCareerResumeText(file) {
           const pct = Math.round((message.progress || 0) * 100);
           const status = document.querySelector("#careerMatchStatus");
           if (status) status.textContent = `Reading scanned page with OCR… ${pct}%`;
+          careerToolkit.setProcessingStage("layout", `OCR is recognising scanned content… ${pct}% complete for the current page.`);
         }
       }
     });
@@ -4130,6 +4133,7 @@ async function extractCareerResumeText(file) {
   const pages = [];
   try {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      careerToolkit.setProcessingStage("extract", `Reading page ${pageNumber} of ${pdf.numPages} and checking its text layer.`);
       const page = await pdf.getPage(pageNumber);
       const content = await page.getTextContent({ includeMarkedContent: false, disableNormalization: false });
       const items = content.items
@@ -4178,6 +4182,7 @@ async function extractCareerResumeText(file) {
       if (pageText.replace(/\s/g, "").length < 35) {
         const status = document.querySelector("#careerMatchStatus");
         if (status) status.textContent = `Scanned/image page detected (${pageNumber}/${pdf.numPages}). Running OCR…`;
+        careerToolkit.setProcessingStage("layout", `Scanned page ${pageNumber} of ${pdf.numPages} detected. Running OCR to read the page image.`);
         const worker = await ensureOcrWorker();
         const viewport = page.getViewport({ scale: 2.2 });
         const canvas = document.createElement("canvas");
@@ -4204,7 +4209,7 @@ async function extractCareerResumeText(file) {
   return extracted.slice(0, 60000);
 }
 
-function renderCareerMatchResults(result) {
+function renderCareerMatchResults(result, resumeText = "", jobDescription = "", fileName = "") {
   const percent = Math.max(0, Math.min(100, Number(result.alignmentPercent) || 0));
   $("#careerMatchSummary").innerHTML = `
     <div class="career-match-score-card"><div class="career-match-score-number" style="--score:${percent}%"><b>${percent}%</b></div><div class="career-match-score-copy"><small>SKILL ALIGNMENT</small><b>${percent >= 75 ? "Strong starting point" : percent >= 45 ? "Room to strengthen" : "Build your role fit"}</b><p>${Number(result.matchedCount) || 0} of ${Number(result.totalJobSkills) || 0} recognised job skills also appear in your resume.</p></div></div>
@@ -4214,10 +4219,11 @@ function renderCareerMatchResults(result) {
   $("#careerMissingCount").textContent = String(result.missingSkills?.length || 0);
   const matched = Array.isArray(result.matchedSkills) ? result.matchedSkills : [];
   $("#careerMatchedSkills").innerHTML = matched.length ? matched.map(skill => `
-    <div class="career-match-skill-item"><div class="career-match-skill-item-top"><b>${esc(skill.name)}</b><small>${esc(skill.category || "Skill")}</small></div><p>Found in your resume${skill.mentions > 1 ? ` · ${Number(skill.mentions)} mentions` : ""}.</p></div>`).join("") : '<div class="career-match-empty">No recognised job-description skills were found in your resume yet.</div>';
+    <div class="career-match-skill-item"><div class="career-match-skill-item-top"><b>${esc(skill.name)}</b><small>${esc(skill.category || "Skill")}</small></div><p>Found in your resume${skill.mentions > 1 ? ` · ${Number(skill.mentions)} mentions` : ""}.</p>${(skill.resumeEvidence || []).slice(0,2).map(source => `<div class="career-match-evidence career-resume-evidence"><strong>RESUME · LINE ${Number(source.lineNumber) || "—"}</strong>${esc(source.text)}</div>`).join("")}</div>`).join("") : '<div class="career-match-empty">No recognised job-description skills were found in your resume yet.</div>';
   const missing = Array.isArray(result.missingSkills) ? result.missingSkills : [];
   $("#careerMissingSkills").innerHTML = missing.length ? missing.map(skill => `
     <div class="career-match-skill-item"><div class="career-match-skill-item-top"><b>${esc(skill.name)}</b><small>${esc(skill.category || "Skill")}</small></div>
+      <span class="career-gap-priority ${esc(skill.priority || "mentioned")}">${skill.priority === "must-have" ? "Must-have" : skill.priority === "preferred" ? "Preferred" : "Mentioned"}</span>
       ${(skill.sourceLines || []).map(source => `<div class="career-match-evidence"><strong>JOB DESCRIPTION · LINE ${Number(source.lineNumber) || "—"}</strong>${esc(source.text)}</div>`).join("")}
       ${skill.resource ? `<a href="${esc(skill.resource)}" target="_blank" rel="noopener noreferrer">Open learning resource ↗</a>` : ""}
     </div>`).join("") : '<div class="career-match-empty">No missing skills were found in the supported skill catalogue. Review the complete job description to check for requirements outside the catalogue.</div>';
@@ -4225,6 +4231,7 @@ function renderCareerMatchResults(result) {
   $("#careerLearningPlan").innerHTML = plan.length ? plan.map(day => `
     <article class="career-match-day"><span class="career-match-day-number">DAY ${Number(day.day) || "—"}</span><div><small>14-DAY SPRINT</small><b>${esc(day.focus || "Learning task")}</b><p>${esc(day.task || "")}</p>${day.resource ? `<a href="${esc(day.resource)}" target="_blank" rel="noopener noreferrer">Study resource ↗</a>` : ""}</div></article>`).join("") : '<div class="career-match-empty">Add the missing skills above to generate a learning sprint.</div>';
   if (result.notice) toast(result.notice);
+  careerToolkit.updateAnalysis({ result, resumeText, jobDescription, fileName });
   $("#careerMatchResults").hidden = false;
 }
 
@@ -4241,11 +4248,14 @@ async function submitCareerMatch(event) {
   if (jobDescription.length < 30) { status.textContent = "Paste the full job description (at least 30 characters)."; status.classList.add("is-error"); return; }
   button.disabled = true; button.setAttribute("aria-busy", "true"); button.textContent = "Reading your resume…";
   $("#careerMatchResults").hidden = true;
+  let analysisSucceeded = false;
   try {
+    careerToolkit.setProcessingStage("extract", "Opening the PDF and checking each page for selectable text or scanned content.");
     status.textContent = "Extracting resume text in your browser…";
     const resumeText = await extractCareerResumeText(file);
+    careerToolkit.setProcessingStage("match", "Comparing your resume with the job description and checking synonym matches.");
     button.textContent = "Comparing skills…";
-    status.textContent = "Comparing recognised skills and building your 14-day plan…";
+    status.textContent = "Comparing recognised skills and verifying job-description evidence…";
     const token = await currentUser.getIdToken();
     const response = await fetch("/api/resume-gap-analysis", {
       method: "POST",
@@ -4254,18 +4264,23 @@ async function submitCareerMatch(event) {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Career Match failed (${response.status}).`);
-    renderCareerMatchResults(data);
+    careerToolkit.setProcessingStage("plan", "Prioritising the top skill gaps and preparing the learning sprint and interview prompts.");
+    renderCareerMatchResults(data, resumeText, jobDescription, file.name);
+    careerToolkit.finishProcessing(true);
+    analysisSucceeded = true;
     status.textContent = `Analysis complete · ${resumeText.length.toLocaleString()} characters extracted from ${file.name}.`;
     $("#careerMatchResults").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     status.textContent = error.message || "Could not analyse this PDF. Try another text-based PDF.";
     status.classList.add("is-error");
   } finally {
+    if (!analysisSucceeded) careerToolkit.finishProcessing(false);
     button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = 'Analyse resume <span>↗</span>';
   }
 }
 
 function bindCareerMatchUI() {
+  careerToolkit.bind();
   const fileInput = $("#careerResumeFile");
   fileInput.addEventListener("change", () => {
     const file = fileInput.files?.[0];

@@ -46,7 +46,7 @@ const SKILLS = [
   { key: 'firebase', name: 'Firebase', category: 'Cloud & Tools', aliases: ['firebase', 'google firebase'], resource: 'https://firebase.google.com/docs' },
   { key: 'supabase', name: 'Supabase', category: 'Cloud & Tools', aliases: ['supabase'], resource: 'https://supabase.com/docs' },
   { key: 'git', name: 'Git', category: 'Tools', aliases: ['git', 'version control'], resource: 'https://git-scm.com/docs/gittutorial' },
-  { key: 'github', name: 'GitHub', category: 'Tools', aliases: ['github', 'github actions'], resource: 'https://docs.github.com/en/get-started' },
+  { key: 'github', name: 'GitHub', category: 'Tools', aliases: ['github'], resource: 'https://docs.github.com/en/get-started' },
   { key: 'docker', name: 'Docker', category: 'Cloud & Tools', aliases: ['docker', 'containerization'], resource: 'https://docs.docker.com/get-started/' },
   { key: 'kubernetes', name: 'Kubernetes', category: 'Cloud & Tools', aliases: ['kubernetes', 'k8s'], resource: 'https://kubernetes.io/docs/tutorials/' },
   { key: 'aws', name: 'AWS', category: 'Cloud & Tools', aliases: ['aws', 'amazon web services'], resource: 'https://skillbuilder.aws/' },
@@ -65,7 +65,7 @@ const SKILLS = [
   { key: 'machinelearning', name: 'Machine Learning', category: 'AI & Data', aliases: ['machine learning', 'ml'], resource: 'https://developers.google.com/machine-learning/crash-course' },
   { key: 'deeplearning', name: 'Deep Learning', category: 'AI & Data', aliases: ['deep learning', 'dl'], resource: 'https://www.deeplearning.ai/' },
   { key: 'nlp', name: 'Natural Language Processing', category: 'AI & Data', aliases: ['natural language processing', 'nlp'], resource: 'https://huggingface.co/learn/nlp-course' },
-  { key: 'generativeai', name: 'Generative AI', category: 'AI & Data', aliases: ['generative ai', 'gen ai', 'genai', 'large language models', 'llm', 'llms'], resource: 'https://www.deeplearning.ai/short-courses/' },
+  { key: 'generativeai', name: 'Generative AI', category: 'AI & Data', aliases: ['generative ai', 'gen ai', 'genai'], resource: 'https://www.deeplearning.ai/short-courses/' },
   { key: 'tensorflow', name: 'TensorFlow', category: 'AI & Data', aliases: ['tensorflow', 'tensor flow'], resource: 'https://www.tensorflow.org/tutorials' },
   { key: 'pytorch', name: 'PyTorch', category: 'AI & Data', aliases: ['pytorch', 'py torch'], resource: 'https://pytorch.org/tutorials/' },
   { key: 'scikitlearn', name: 'scikit-learn', category: 'AI & Data', aliases: ['scikit-learn', 'scikit learn', 'sklearn'], resource: 'https://scikit-learn.org/stable/getting_started.html' },
@@ -87,7 +87,52 @@ const SKILLS = [
   { key: 'scrum', name: 'Scrum', category: 'Ways of Working', aliases: ['scrum'], resource: 'https://www.scrum.org/resources/what-scrum-module' },
   { key: 'communication', name: 'Communication', category: 'Professional Skills', aliases: ['communication skills', 'verbal communication', 'written communication'], resource: 'https://www.coursera.org/articles/communication-skills' },
   { key: 'leadership', name: 'Leadership', category: 'Professional Skills', aliases: ['leadership', 'team leadership'], resource: 'https://www.coursera.org/articles/leadership-skills' },
-  { key: 'problemsolving', name: 'Problem Solving', category: 'Professional Skills', aliases: ['problem solving', 'problem-solving', 'analytical thinking'], resource: 'https://www.coursera.org/articles/problem-solving-skills' }
+  { key: 'problemsolving', name: 'Problem Solving', category: 'Professional Skills', aliases: ['problem solving', 'problem-solving', 'analytical thinking'], resource: 'https://www.coursera.org/articles/problem-solving-skills' },
+  { key: 'svelte', name: 'Svelte', category: 'Frontend', aliases: ['svelte', 'sveltekit', 'svelte kit'], resource: 'https://svelte.dev/docs' },
+  { key: 'astro', name: 'Astro', category: 'Frontend', aliases: ['astro framework', 'astro.build'], resource: 'https://docs.astro.build/' },
+  { key: 'vite', name: 'Vite', category: 'Frontend', aliases: ['vite'], resource: 'https://vite.dev/guide/' },
+  { key: 'webpack', name: 'Webpack', category: 'Frontend', aliases: ['webpack'], resource: 'https://webpack.js.org/concepts/' },
+  { key: 'bootstrap', name: 'Bootstrap', category: 'Frontend', aliases: ['bootstrap'], resource: 'https://getbootstrap.com/docs/' },
+  { key: 'sass', name: 'Sass', category: 'Frontend', aliases: ['sass', 'scss'], resource: 'https://sass-lang.com/guide/' },
+  { key: 'materialui', name: 'Material UI', category: 'Frontend', aliases: ['material ui', 'mui'], resource: 'https://mui.com/material-ui/getting-started/' },
+  { key: 'reactnative', name: 'React Native', category: 'Mobile', aliases: ['react native', 'react-native'], resource: 'https://reactnative.dev/docs/getting-started' },
+  { key: 'flutter', name: 'Flutter', category: 'Mobile', aliases: ['flutter'], resource: 'https://docs.flutter.dev/get-started/install' },
+  { key: 'android', name: 'Android Development', category: 'Mobile', aliases: ['android development', 'android sdk'], resource: 'https://developer.android.com/get-started' },
+  { key: 'ios', name: 'iOS Development', category: 'Mobile', aliases: ['ios development', 'ios sdk'], resource: 'https://developer.apple.com/tutorials/' },
+  { key: 'nestjs', name: 'NestJS', category: 'Backend', aliases: ['nestjs', 'nest.js', 'nest js'], resource: 'https://docs.nestjs.com/' },
+  { key: 'fastify', name: 'Fastify', category: 'Backend', aliases: ['fastify'], resource: 'https://fastify.dev/docs/latest/' },
+  { key: 'laravel', name: 'Laravel', category: 'Backend', aliases: ['laravel'], resource: 'https://laravel.com/docs' },
+  { key: 'dotnet', name: '.NET', category: 'Backend', aliases: ['.net', 'dotnet', 'asp.net', 'asp net'], resource: 'https://learn.microsoft.com/en-us/dotnet/' },
+  { key: 'rubyonrails', name: 'Ruby on Rails', category: 'Backend', aliases: ['ruby on rails', 'rails framework'], resource: 'https://guides.rubyonrails.org/' },
+  { key: 'elasticsearch', name: 'Elasticsearch', category: 'Databases', aliases: ['elasticsearch', 'elastic search'], resource: 'https://www.elastic.co/guide/index.html' },
+  { key: 'sqlite', name: 'SQLite', category: 'Databases', aliases: ['sqlite', 'sqlite3'], resource: 'https://www.sqlite.org/docs.html' },
+  { key: 'oracle', name: 'Oracle Database', category: 'Databases', aliases: ['oracle database', 'oracle sql'], resource: 'https://docs.oracle.com/en/database/' },
+  { key: 'hadoop', name: 'Hadoop', category: 'Data & Streaming', aliases: ['apache hadoop', 'hadoop'], resource: 'https://hadoop.apache.org/docs/' },
+  { key: 'airflow', name: 'Apache Airflow', category: 'Data & Streaming', aliases: ['apache airflow', 'airflow'], resource: 'https://airflow.apache.org/docs/' },
+  { key: 'bigquery', name: 'Google BigQuery', category: 'Data & Analytics', aliases: ['bigquery', 'big query', 'google bigquery'], resource: 'https://cloud.google.com/bigquery/docs' },
+  { key: 'snowflake', name: 'Snowflake', category: 'Data & Analytics', aliases: ['snowflake data cloud', 'snowflake'], resource: 'https://docs.snowflake.com/' },
+  { key: 'dbt', name: 'dbt', category: 'Data & Analytics', aliases: ['dbt', 'data build tool'], resource: 'https://docs.getdbt.com/docs/introduction' },
+  { key: 'opencv', name: 'OpenCV', category: 'AI & Data', aliases: ['opencv', 'open cv'], resource: 'https://docs.opencv.org/' },
+  { key: 'huggingface', name: 'Hugging Face', category: 'AI & Data', aliases: ['hugging face', 'huggingface', 'transformers library'], resource: 'https://huggingface.co/docs' },
+  { key: 'langchain', name: 'LangChain', category: 'AI & Data', aliases: ['langchain', 'lang chain'], resource: 'https://python.langchain.com/docs/introduction/' },
+  { key: 'rag', name: 'Retrieval-Augmented Generation', category: 'AI & Data', aliases: ['retrieval augmented generation', 'retrieval-augmented generation', 'rag pipeline'], resource: 'https://www.deeplearning.ai/short-courses/' },
+  { key: 'llm', name: 'Large Language Models', category: 'AI & Data', aliases: ['large language model', 'large language models', 'llm', 'llms'], resource: 'https://www.deeplearning.ai/short-courses/' },
+  { key: 'mlops', name: 'MLOps', category: 'AI & Data', aliases: ['mlops', 'machine learning operations'], resource: 'https://ml-ops.org/' },
+  { key: 'matplotlib', name: 'Matplotlib', category: 'AI & Data', aliases: ['matplotlib'], resource: 'https://matplotlib.org/stable/tutorials/' },
+  { key: 'pytest', name: 'Pytest', category: 'Testing', aliases: ['pytest', 'py.test'], resource: 'https://docs.pytest.org/en/stable/getting-started.html' },
+  { key: 'playwright', name: 'Playwright', category: 'Testing', aliases: ['playwright'], resource: 'https://playwright.dev/docs/intro' },
+  { key: 'reacttestinglibrary', name: 'React Testing Library', category: 'Testing', aliases: ['react testing library', 'testing-library/react'], resource: 'https://testing-library.com/docs/react-testing-library/intro/' },
+  { key: 'oauth', name: 'OAuth 2.0', category: 'Security', aliases: ['oauth', 'oauth 2.0', 'oauth2'], resource: 'https://oauth.net/2/' },
+  { key: 'jwt', name: 'JSON Web Tokens', category: 'Security', aliases: ['json web token', 'json web tokens', 'jwt'], resource: 'https://jwt.io/introduction' },
+  { key: 'owasp', name: 'OWASP', category: 'Security', aliases: ['owasp', 'owasp top 10'], resource: 'https://owasp.org/www-project-top-ten/' },
+  { key: 'nginx', name: 'Nginx', category: 'Cloud & Tools', aliases: ['nginx', 'engine x'], resource: 'https://nginx.org/en/docs/' },
+  { key: 'prometheus', name: 'Prometheus', category: 'Cloud & Tools', aliases: ['prometheus monitoring'], resource: 'https://prometheus.io/docs/introduction/overview/' },
+  { key: 'grafana', name: 'Grafana', category: 'Cloud & Tools', aliases: ['grafana'], resource: 'https://grafana.com/docs/' },
+  { key: 'githubactions', name: 'GitHub Actions', category: 'Tools', aliases: ['github actions', 'github action'], resource: 'https://docs.github.com/en/actions' },
+  { key: 'accessibility', name: 'Web Accessibility', category: 'Frontend', aliases: ['web accessibility', 'accessibility', 'wcag'], resource: 'https://www.w3.org/WAI/fundamentals/accessibility-intro/' },
+  { key: 'performance', name: 'Web Performance', category: 'Frontend', aliases: ['web performance', 'performance optimisation', 'performance optimization', 'core web vitals'], resource: 'https://web.dev/explore/learn-performance' },
+  { key: 'responsive', name: 'Responsive Web Design', category: 'Frontend', aliases: ['responsive web design', 'responsive design', 'mobile first design'], resource: 'https://developer.mozilla.org/en-US/docs/Learn/CSS/CSS_layout/Responsive_Design' },
+  { key: 'teamwork', name: 'Teamwork', category: 'Professional Skills', aliases: ['teamwork', 'team collaboration', 'cross-functional collaboration'], resource: 'https://www.coursera.org/articles/teamwork-skills' }
 ];
 
 function escapeRegex(value) {
@@ -169,10 +214,23 @@ function analyzeResumeGap(resumeText, jobDescription) {
   const resume = extractSkills(resumeText);
   const job = extractSkills(jobDescription);
   const resumeKeys = new Set(resume.map(skill => skill.key));
-  const matchedSkills = job.filter(skill => resumeKeys.has(skill.key));
+  const resumeByKey = new Map(resume.map(skill => [skill.key, skill]));
+  const matchedSkills = job.filter(skill => resumeKeys.has(skill.key)).map(skill => ({
+    ...skill,
+    resumeEvidence: resumeByKey.get(skill.key)?.sourceLines || []
+  }));
   const missingSkills = job
     .filter(skill => !resumeKeys.has(skill.key))
-    .sort((a, b) => b.mentions - a.mentions || a.name.localeCompare(b.name));
+    .map(skill => {
+      const sourceText = (skill.sourceLines || []).map(line => line.text).join(' ').toLowerCase();
+      const priority = /\b(required|must[- ]have|mandatory|essential|minimum qualification|strong proficiency|proficient|expertise)\b/i.test(sourceText)
+        ? 'must-have'
+        : /\b(preferred|nice to have|bonus|desirable|good to have)\b/i.test(sourceText)
+          ? 'preferred'
+          : 'mentioned';
+      return { ...skill, priority };
+    })
+    .sort((a, b) => ({ 'must-have': 0, mentioned: 1, preferred: 2 }[a.priority] - { 'must-have': 0, mentioned: 1, preferred: 2 }[b.priority]) || b.mentions - a.mentions || a.name.localeCompare(b.name));
   const total = job.length;
   const alignmentPercent = total ? Math.round((matchedSkills.length / total) * 100) : 0;
   const topGaps = missingSkills.slice(0, 3);

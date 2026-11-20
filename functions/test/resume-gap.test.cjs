@@ -46,7 +46,38 @@ test('avoids treating React.js as JavaScript through the generic JS alias', () =
 
 test('returns an empty plan when the role contains no recognised skill', () => {
   assert.deepEqual(buildLearningPlan([]), []);
-  const result = analyzeResumeGap('Team member and volunteer', 'A friendly and motivated person who enjoys teamwork.');
+  const result = analyzeResumeGap('Team member and volunteer', 'A friendly and motivated person who enjoys helping others and learning.');
   assert.equal(result.totalJobSkills, 0);
   assert.equal(result.notice.length > 0, true);
+});
+
+
+test('provides resume evidence for matched skills and classifies missing requirements by priority', () => {
+  const result = analyzeResumeGap(
+    'Skills: React.js and JavaScript\nBuilt projects with Git.',
+    'Required skills: ReactJS, TypeScript and Git.\nPreferred: Docker experience.'
+  );
+  const react = result.matchedSkills.find(skill => skill.name === 'React');
+  const typescript = result.missingSkills.find(skill => skill.name === 'TypeScript');
+  const docker = result.missingSkills.find(skill => skill.name === 'Docker');
+  assert.ok(react.resumeEvidence.length > 0);
+  assert.equal(typescript.priority, 'must-have');
+  assert.equal(docker.priority, 'preferred');
+});
+
+test('recognises additional modern development skills without merging distinct skills', () => {
+  const result = analyzeResumeGap(
+    'SvelteKit, Vite, LangChain and Playwright',
+    'Experience with Svelte, Vite, LangChain and Playwright.'
+  );
+  assert.equal(result.missingCount, 0);
+  assert.deepEqual(result.matchedSkills.map(skill => skill.name).sort(), ['LangChain', 'Playwright', 'Svelte', 'Vite']);
+});
+
+test('skill catalogue keys and aliases are unique', () => {
+  const { SKILLS } = require('../../api/lib/resume-gap');
+  const keys = SKILLS.map(skill => skill.key);
+  assert.equal(new Set(keys).size, keys.length);
+  const aliases = SKILLS.flatMap(skill => skill.aliases.map(alias => alias.toLowerCase()));
+  assert.equal(new Set(aliases).size, aliases.length);
 });
