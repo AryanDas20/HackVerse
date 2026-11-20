@@ -18,12 +18,19 @@ test("legacy Public profiles are restored when the consent field did not exist y
   assert.equal("phone" in result, false);
 });
 
-test("a new profile with an explicit empty consent field is never backfilled", () => {
+test("the Public profile choice is the single directory opt-in even if a legacy consent field is empty", () => {
   const result = buildLegacyPublicProfile({
     profileVisibility: "public",
     profileData: { displayName: "New Builder", username: "new_builder", profileVisibility: "public", profileConsentAt: null }
   }, uid);
-  assert.equal(result, null);
+  assert.equal(result?.profileVisibility, "public");
+  assert.ok(result?.profileConsentAt);
+});
+
+test("profiles without an explicit Public or Private visibility choice are not backfilled", () => {
+  assert.equal(buildLegacyPublicProfile({
+    profileData: { displayName: "Unknown Visibility", username: "unknown_builder" }
+  }, uid), null);
 });
 
 test("private and followers-only profiles are never backfilled", () => {

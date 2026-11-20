@@ -111,11 +111,10 @@ test('transaction helper waits for queued Supabase writes before resolving', asy
 });
 
 
-test('public builder publishing requires explicit directory consent and a valid identity', async () => {
+test('public/private is the single profile-directory choice and public publishing requires a valid identity', async () => {
   const { evaluateProfilePublication } = await import('../../public/profile-policy.mjs');
-  const base = { visibility: 'public', consent: true, displayName: 'A Builder', username: 'builder_01' };
+  const base = { visibility: 'public', displayName: 'A Builder', username: 'builder_01' };
   assert.deepEqual(evaluateProfilePublication(base), { canPublish: true, reason: null });
-  assert.deepEqual(evaluateProfilePublication({ ...base, consent: false }), { canPublish: false, reason: 'consent' });
   assert.deepEqual(evaluateProfilePublication({ ...base, username: '' }), { canPublish: false, reason: 'identity' });
   assert.deepEqual(evaluateProfilePublication({ ...base, visibility: 'private' }), { canPublish: false, reason: null });
 });

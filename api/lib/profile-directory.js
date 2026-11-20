@@ -4,10 +4,9 @@ const USERNAME_RE = /^[A-Za-z0-9_]{3,24}$/;
 /**
  * Build a public directory projection from a legacy account document.
  *
- * Privacy rule: publish only profiles with a saved directory consent timestamp,
- * or a legacy profile that predates the consent field and explicitly selected
- * Public visibility. A present-but-empty consent field means the current user
- * has not opted in. Private email/phone values are never copied from the user row.
+ * Privacy rule: the profile's explicit Public visibility choice is the single
+ * directory opt-in. Private and followers-only profiles are never published.
+ * Private email/phone values are never copied from the user row.
  */
 function buildLegacyPublicProfile(userDoc = {}, docId = "") {
   const nested = userDoc && typeof userDoc.profileData === "object" && userDoc.profileData
@@ -27,14 +26,11 @@ function buildLegacyPublicProfile(userDoc = {}, docId = "") {
   const topVisibility = userDoc.profileVisibility || userDoc.visibility;
   const nestedVisibility = nested.profileVisibility || nested.visibility;
   const visibilityValues = [topVisibility, nestedVisibility].filter(value => value != null && String(value).trim() !== "").map(normalizeVisibility);
-  if (visibilityValues.some(value => value !== "public")) return null;
+  // Require an explicit Public value. That one choice is the complete directory
+  // consent; there is no additional checkbox or followers-only profile mode.
+  if (!visibilityValues.length || visibilityValues.some(value => value !== "public")) return null;
   const visibility = normalizeVisibility(nestedVisibility || topVisibility);
-
-  const consentFieldExists = Object.prototype.hasOwnProperty.call(userDoc, "profileConsentAt")
-    || Object.prototype.hasOwnProperty.call(nested, "profileConsentAt");
-  const explicitConsent = Boolean(profile.profileConsentAt);
-  const legacyPublicChoice = !consentFieldExists && visibility === "public";
-  if (!explicitConsent && !legacyPublicChoice) return null;
+  if (visibility !== "public") return null;
 
   const displayName = String(profile.displayName || profile.name || profile.fullName || "").trim().slice(0, 80);
   const username = String(profile.username || profile.handle || "").trim().replace(/^@/, "").slice(0, 24);

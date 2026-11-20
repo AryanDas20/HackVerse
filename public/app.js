@@ -28,7 +28,8 @@ let pendingAudioObjectUrl = "", pendingAudioObjectFile = null;
 let socialFeedType = "explore", socialFeedCursor = null, socialFeedLoading = false, publicProfilePageData = null, publicProfileTab = "posts", publicProfileTabCursor = null, publicProfileTabLoading = false;
 let dialogResolver = null;
 let techNewsItems = [], techNewsFilter = "all", techNewsLimit = 18, techNewsLoading = false;
-const techNewsSaved = new Set(JSON.parse(localStorage.getItem("hackverse-news-saved") || "[]"));
+const techNewsSaved = new Set((() => { try { const value = JSON.parse(localStorage.getItem("hackverse-news-saved") || "[]"); return Array.isArray(value) ? value.map(String) : []; } catch { return []; } })());
+const techNewsSavedItems = new Map((() => { try { const value = JSON.parse(localStorage.getItem("hackverse-news-saved-items") || "[]"); return Array.isArray(value) ? value.filter(row => Array.isArray(row) && row.length === 2 && row[1]?.id).map(([id, item]) => [String(id), item]) : []; } catch { return []; } })());
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const listFrom = value => String(value || "").split(",").map(x => x.trim()).filter(Boolean).slice(0, 30);
@@ -234,6 +235,35 @@ function shareFilename(item) {
   const slug = String(item.title || item.type || "update").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "update";
   return `hackverse-${slug}.png`;
 }
+async function shareBrandedCard(item) {
+  const url = validUrl(item.url) || `${location.origin}/`;
+  const normalized = { ...item, url };
+  try {
+    const blob = await makeShareCardBlob(normalized);
+    const filename = shareFilename(normalized);
+    const file = typeof File === "function" ? new File([blob], filename, { type: "image/png" }) : null;
+    if (file && navigator.share && typeof navigator.canShare === "function" && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: normalized.title || "HackVerse", text: shareTextForItem(normalized) });
+        toast("HackVerse card shared.");
+        return;
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        console.warn("Image sharing is unavailable; downloading the card instead", error);
+      }
+    }
+    downloadShareCard(blob, filename);
+    try {
+      await navigator.clipboard.writeText(url);
+      toast("Branded HackVerse card downloaded and link copied.");
+    } catch {
+      toast("Branded HackVerse card downloaded. Copy the link from the share menu to send it.");
+    }
+  } catch (error) {
+    console.warn("Could not create branded share card", error);
+    toast("Could not create the share card. Try copying the link instead.");
+  }
+}
 async function shareExternally(item) {
   const url = validUrl(item.url) || `${location.origin}/`;
   const normalized = { ...item, url };
@@ -388,31 +418,61 @@ function openShareMenu(item) {
   const old = document.getElementById("shareActionPicker");
   old?.remove();
   const url = validUrl(item.url) || `${location.origin}/`;
-  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareTextForItem({ ...item, url }))}`;
+  const title = String(item.title || "HackVerse update");
+  const description = String(item.description || "Discover this update on HackVerse.");
+  const shareText = shareTextForItem({ ...item, url });
+  const shortText = `${title}${description ? ` — ${description}` : ""}`.slice(0, 600);
+  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+  const telegramUrl = `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(shortText)}`;
+  const linkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`;
+  const xUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(title)}&url=${encodeURIComponent(url)}`;
+  const emailUrl = `mailto:?subject=${encodeURIComponent(title)}&body=${encodeURIComponent(shareText)}`;
+  const isOpportunity = item.type === "opportunity";
+  const isNews = item.type === "news";
+  const cardType = isOpportunity ? "OPPORTUNITY" : isNews ? "TECH NEWS" : String(item.type || "UPDATE").toUpperCase();
+  const detailMarkup = Array.isArray(item.details) && item.details.length
+    ? `<div class="share-opportunity-preview">${item.details.slice(0, 5).map(row => `<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>`
+    : "";
+  const cardMarkup = (isOpportunity || isNews) ? `<article class="share-opportunity-card ${isNews ? "share-news-card" : "share-opportunity-card-featured"}">
+    <div class="share-card-brand"><span class="brand-mark">H</span><span>HACKVERSE</span><span class="share-card-label">${esc(cardType)}</span></div>
+    <div class="share-card-overline">SHARED FROM THE HACKVERSE COMMUNITY</div>
+    <h3>${esc(title)}</h3><p>${esc(description)}</p>${detailMarkup}
+    <div class="share-card-footer"><span>${esc(location.host || "HackVerse")}</span><span>Discover · Connect · Create</span></div>
+    <div class="share-card-url">${esc(url)}</div>
+  </article>` : "";
   const modal = document.createElement("div");
   modal.id = "shareActionPicker";
   modal.className = "modal-backdrop share-picker-backdrop";
   modal.innerHTML = `<section class="modal share-picker-modal share-action-modal" role="dialog" aria-modal="true" aria-labelledby="shareActionTitle">
     <button class="modal-close" type="button" data-share-action-close aria-label="Close">×</button>
-    <div class="eyebrow">SHARE WITH YOUR NETWORK</div><h2 id="shareActionTitle">Share this update</h2>
-    <p class="muted">Choose a contact in WhatsApp, your device share sheet, or a HackVerse conversation.</p>
-    ${item.type === "opportunity" ? `<article class="share-opportunity-card"><div class="share-card-brand"><span class="brand-mark">H</span> HACKVERSE <span class="share-card-label">OPPORTUNITY</span></div><h3>${esc(item.title || "Opportunity")}</h3><p>${esc(item.description || "Discover this opportunity on HackVerse.")}</p>${Array.isArray(item.details) && item.details.length ? `<div class="share-opportunity-preview">${item.details.slice(0,5).map(row => `<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>` : ""}<div class="share-card-url">${esc(url)}</div></article>` : ""}
+    <div class="eyebrow">SHARE WITH YOUR NETWORK</div><h2 id="shareActionTitle">Share this ${isNews ? "story" : isOpportunity ? "opportunity" : "update"}.</h2>
+    <p class="muted">Send the original link anywhere, forward it to a HackVerse chat, or share a branded card with the HackVerse name.</p>
+    ${cardMarkup}
+    <div class="share-channel-heading"><span>QUICK SHARE</span><small>Choose a destination</small></div>
+    <div class="share-channel-grid">
+      <a class="share-channel-option" href="${esc(whatsappUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-channel-symbol">◉</span><b>WhatsApp</b><small>Message a contact</small></a>
+      <a class="share-channel-option" href="${esc(telegramUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-channel-symbol">➤</span><b>Telegram</b><small>Send to a chat</small></a>
+      <a class="share-channel-option" href="${esc(xUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-channel-symbol">𝕏</span><b>X</b><small>Post an update</small></a>
+      <a class="share-channel-option" href="${esc(linkedInUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-channel-symbol">in</span><b>LinkedIn</b><small>Share professionally</small></a>
+      <a class="share-channel-option" href="${esc(emailUrl)}"><span class="share-channel-symbol">✉</span><b>Email</b><small>Send the link</small></a>
+    </div>
     <div class="share-action-list">
-      <a class="share-action-option" href="${esc(whatsappUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-action-icon">↗</span><span><b>WhatsApp</b><small>Choose a contact in WhatsApp</small></span><span class="share-action-arrow">→</span></a>
-      <button class="share-action-option" type="button" data-share-native><span class="share-action-icon">⇧</span><span><b>More apps and contacts</b><small>Open your device share sheet</small></span><span class="share-action-arrow">→</span></button>
-      <button class="share-action-option" type="button" data-share-chat><span class="share-action-icon">✉</span><span><b>HackVerse chat</b><small>Send directly to a person or group</small></span><span class="share-action-arrow">→</span></button>
-      <button class="share-action-option" type="button" data-share-copy><span class="share-action-icon">⧉</span><span><b>Copy link</b><small>Copy a shareable link</small></span><span class="share-action-arrow">→</span></button>
+      <button class="share-action-option" type="button" data-share-native><span class="share-action-icon">⇧</span><span><b>More apps and contacts</b><small>Open your device's share sheet</small></span><span class="share-action-arrow">→</span></button>
+      <button class="share-action-option" type="button" data-share-chat><span class="share-action-icon">✦</span><span><b>HackVerse chat</b><small>Send directly to a person or group</small></span><span class="share-action-arrow">→</span></button>
+      ${(isOpportunity || isNews) ? `<button class="share-action-option share-card-download-option" type="button" data-share-branded-card><span class="share-action-icon">▧</span><span><b>Share HackVerse card image</b><small>Share a branded PNG or download it for any app</small></span><span class="share-action-arrow">→</span></button>` : ""}
+      <button class="share-action-option" type="button" data-share-copy><span class="share-action-icon">⧉</span><span><b>Copy original link</b><small>Paste it anywhere</small></span><span class="share-action-arrow">→</span></button>
     </div>
   </section>`;
   document.body.append(modal);
   const close = () => modal.remove();
   modal.querySelector("[data-share-action-close]").addEventListener("click", close);
   modal.addEventListener("click", event => { if (event.target === modal) close(); });
-  // Keep these actions synchronous with the actual click for browser share permissions.
+  // Invoke browser share actions directly from the user's click to preserve platform permissions.
   modal.querySelector("[data-share-native]").addEventListener("click", () => { close(); void shareExternally(item); });
   modal.querySelector("[data-share-chat]").addEventListener("click", () => { close(); void forwardSharedItem(item); });
+  modal.querySelector("[data-share-branded-card]")?.addEventListener("click", () => { close(); void shareBrandedCard(item); });
   modal.querySelector("[data-share-copy]").addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(url); toast("Link copied."); close(); }
+    try { await navigator.clipboard.writeText(url); toast("Original link copied."); close(); }
     catch { toast("Clipboard access was blocked by your browser."); }
   });
 }
@@ -932,10 +992,23 @@ async function loadAccountWorkspace() {
     ]);
     privateProfile = snap.exists() ? snap.data() : null;
     let publicData = pubSnap.exists() ? pubSnap.data() : null;
-    const savedProfile = privateProfile?.profileData || null;
+    let savedProfile = privateProfile?.profileData || null;
+    const savedVisibility = savedProfile?.profileVisibility || privateProfile?.profileVisibility || "private";
+    // Migrate legacy followers-only/unknown profile visibility to Private. The
+    // new editor intentionally exposes only Public and Private choices.
+    if (savedProfile && !["public", "private"].includes(savedVisibility)) {
+      savedProfile = { ...savedProfile, profileVisibility: "private" };
+      privateProfile = { ...(privateProfile || {}), profileVisibility: "private", profileData: savedProfile };
+      try { await setDoc(doc(db, "users", currentUser.uid), { profileVisibility: "private", profileData: savedProfile, updatedAt: serverTimestamp() }, { merge: true }); }
+      catch (migrationError) { console.warn("Legacy profile visibility migration deferred", migrationError); }
+    }
+    if (publicData && publicData.profileVisibility !== "public") {
+      try { await deleteDoc(doc(db, "publicProfiles", currentUser.uid)); }
+      catch (cleanupError) { console.warn("Legacy non-public directory cleanup deferred", cleanupError); }
+      publicData = null;
+    }
     const shouldBePublic = evaluateProfilePublication({
-      visibility: savedProfile?.profileVisibility,
-      consent: true,
+      visibility: savedProfile?.profileVisibility || privateProfile?.profileVisibility,
       displayName: savedProfile?.displayName,
       username: savedProfile?.username
     }).canPublish;
@@ -970,6 +1043,19 @@ async function loadAccountWorkspace() {
   }
 }
 
+function updateProfileFormProgress() {
+  const selectors = ["#profileName", "#profileUsername", "#profileCollege", "#profileCourse", "#profileStudyLevel", "#profileBio", "#profileSkills", "#profileRoles", "#profileInterests", "#profileCity", "#profileCountry", "#profileGithub", "#profileLinkedin", "#profilePortfolio"];
+  const completed = selectors.filter(selector => String($(selector)?.value || "").trim()).length;
+  const total = selectors.length;
+  const percent = Math.round((completed / total) * 100);
+  const bar = $("#profileProgressBar"), track = $("#profileProgressTrack");
+  if (bar) bar.style.width = `${percent}%`;
+  if (track) track.setAttribute("aria-valuenow", String(percent));
+  if ($("#profileCompletionValue")) $("#profileCompletionValue").textContent = `${percent}% complete`;
+  if ($("#profileProgressCount")) $("#profileProgressCount").textContent = `${completed} / ${total} details`;
+  if ($("#profileProgressLabel")) $("#profileProgressLabel").textContent = percent >= 85 ? "Your builder profile is looking great." : percent >= 50 ? "Great progress — add a few more details." : "Start with your basics, then add your builder story.";
+}
+
 function syncProfileVisibilityChoices(value = "public") {
   const visibility = ["public", "private"].includes(value) ? value : "private";
   const nativeSelect = $("#profileVisibility");
@@ -999,11 +1085,12 @@ function openProfileEditor(mandatory = false) {
   // Public/private is the single visibility control; no separate directory consent is required.
   $("#profileMessage").textContent = "";
   $("#profileModalTitle").textContent = mandatory ? "Complete your builder profile." : "Update your builder profile.";
-  $("#profileModalHint").textContent = "Start with your name and username, then choose who can discover you in Step 02. Save your progress and add other details whenever you are ready.";
+  $("#profileModalHint").textContent = "Create a profile that reflects what you build. Choose Public to appear in Builders or Private to keep your profile to yourself. Email and phone are private unless you explicitly share them.";
   $("#profileModalClose").hidden = false;
   $("#profileSignOutBtn").hidden = true;
   const steps = $$("#profileForm .profile-step");
   steps.forEach((step, index) => { step.open = index === 0 || index === 1; });
+  updateProfileFormProgress();
   showModal("profileModal");
 }
 
@@ -1053,7 +1140,7 @@ async function saveProfile(event) {
   }
   const requestedVisibility = $("#profileVisibility").value || "public";
   const visibility = requestedVisibility === "public" ? "public" : "private";
-  const publication = evaluateProfilePublication({ visibility, consent: true, displayName: name, username });
+  const publication = evaluateProfilePublication({ visibility, displayName: name, username });
   const canPublish = publication.canPublish;
   if (publication.reason === "identity") {
     const basicsStep = $$("#profileForm .profile-step")[0];
@@ -1090,6 +1177,7 @@ async function saveProfile(event) {
     publicPhone: $("#profilePhoneVisibility").value === "public" ? phone : "",
     publicPhoneDigits: $("#profilePhoneVisibility").value === "public" ? phone.replace(/\D/g, "") : "",
     profileVisibility: visibility,
+    ...(visibility === "public" ? { profileConsentAt: publicProfile?.profileConsentAt || privateProfile?.profileData?.profileConsentAt || serverTimestamp() } : {}),
     hackathonsParticipatedCount: Number(publicProfile?.hackathonsParticipatedCount ?? privateProfile?.hackathonsParticipatedCount ?? 0),
     updatedAt: serverTimestamp()
   };
@@ -4297,7 +4385,7 @@ async function applyAiActions() {
 function readAppPrefs(){try{return JSON.parse(localStorage.getItem("hackverse-app-preferences")||"{}");}catch{return {};}}
 function applyAppPrefs(){const p=readAppPrefs();const theme=p.theme||localStorage.getItem("hackverse-theme")||"dark";document.body.classList.toggle("light",theme==="light");document.documentElement.style.colorScheme=theme==="light"?"light":"dark";const themeMeta=document.querySelector('meta[name="theme-color"]');if(themeMeta)themeMeta.content=theme==="light"?"#FFFFFF":"#222222";const toggle=$("#themeToggle");if(toggle){toggle.setAttribute("aria-label",theme==="light"?"Switch to dark mode":"Switch to light mode");toggle.title=theme==="light"?"Switch to dark mode":"Switch to light mode";}document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");document.body.dataset.fontFamily=p.fontFamily||"dm";}
 function saveAppPrefs(){const p={theme:$("#settingTheme").value,motion:$("#settingMotion").value,fontFamily:$("#settingFontFamily").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked};localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
-function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme||localStorage.getItem("hackverse-theme")||(document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";}
+function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme||localStorage.getItem("hackverse-theme")||(document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility==="public"?"public":"private";}
 function upcomingSavedDeadlines(){if(!currentUser||readAppPrefs().opportunity===false)return [];const now=Date.now();return events.filter(e=>savedIds.has(e.id)).map(e=>({...e,deadlineMs:tsMillis(e.registrationDeadline)})).filter(e=>e.deadlineMs>now&&e.deadlineMs<=now+14*86400000).sort((a,b)=>a.deadlineMs-b.deadlineMs);}
 function notifyUpcomingDeadlines(){const prefs=readAppPrefs();if(!currentUser||!prefs.desktop||!("Notification" in window)||Notification.permission!=="granted")return;for(const e of upcomingSavedDeadlines()){const key=`hv-deadline-notified-${currentUser.uid}-${e.id}`;const stamp=String(e.deadlineMs);if(localStorage.getItem(key)===stamp)continue;localStorage.setItem(key,stamp);try{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));const n=new Notification("Saved opportunity deadline",{body:`${e.title||"A saved opportunity"} closes in ${days} day${days===1?"":"s"}.`,tag:`deadline-${e.id}`});n.onclick=()=>{window.focus();navigateToRoute("opportunities");viewEvent(e.id);};}catch{}}}
 function renderNotificationCenter(){
@@ -4349,9 +4437,9 @@ function initAdvancedUI(){
     const base=publicProfile||privateProfile?.profileData;
     if(!base){toast("Complete your profile first.");return;}
     const nextVisibility=e.target.value;
-    const publication=evaluateProfilePublication({visibility:nextVisibility,consent:true,displayName:base.displayName,username:base.username});
+    const publication=evaluateProfilePublication({visibility:nextVisibility,displayName:base.displayName,username:base.username});
     if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Add your name and a valid username before publishing your profile.");return;}
-    const next={...base,profileVisibility:nextVisibility};
+    const next={...base,profileVisibility:nextVisibility,...(nextVisibility==="public"?{profileConsentAt:base.profileConsentAt||privateProfile?.profileData?.profileConsentAt||serverTimestamp()}: {})};
     try{
       await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:nextVisibility,profileData:next,updatedAt:serverTimestamp()},{merge:true});
       const publicRef=doc(db,"publicProfiles",currentUser.uid);
@@ -4387,9 +4475,12 @@ const NEWS_API = "https://hacker-news.firebaseio.com/v0";
 function newsCategoryMatches(item, filter) {
   if (filter === "all" || filter === "saved") return true;
   const text = `${item.title || ""} ${item.url || ""}`.toLowerCase();
-  if (filter === "ai") return /\b(ai|artificial intelligence|llm|machine learning|neural|gpt|model)\b/.test(text);
-  if (filter === "security") return /\b(security|vulnerability|cyber|hack|privacy|breach|malware|cve)\b/.test(text);
-  if (filter === "developer") return /\b(developer|programming|code|github|javascript|python|rust|linux|open source|api|framework)\b/.test(text);
+  if (filter === "ai") return /\b(ai|artificial intelligence|llm|machine learning|neural|gpt|model|agentic|inference)\b/.test(text);
+  if (filter === "security") return /\b(security|vulnerability|cyber|hack|privacy|breach|malware|cve|phishing|ransomware)\b/.test(text);
+  if (filter === "developer") return /\b(developer|programming|code|github|javascript|python|rust|linux|api|framework|database|devtool)\b/.test(text);
+  if (filter === "startup") return /\b(startup|founder|funding|venture|vc|seed round|series [a-f]|acquisition|ipo|launch)\b/.test(text);
+  if (filter === "opensource") return /\b(open.?source|github|gitlab|repository|maintainer|license|self.hosted|community edition)\b/.test(text);
+  if (filter === "hardware") return /\b(hardware|chip|semiconductor|gpu|cpu|robot|robotics|iot|device|quantum|battery|silicon)\b/.test(text);
   return true;
 }
 async function loadTechNews(force = false) {
@@ -4415,20 +4506,54 @@ function renderTechNews() {
   const grid = $("#newsGrid"); if (!grid) return;
   const search = String($("#newsSearch")?.value || "").trim().toLowerCase();
   const sort = $("#newsSort")?.value || "new";
-  let items = techNewsItems.filter(item => newsCategoryMatches(item, techNewsFilter));
-  if (techNewsFilter === "saved") items = items.filter(item => techNewsSaved.has(String(item.id)));
+  const savedLookup = new Map([...techNewsSavedItems.entries(), ...techNewsItems.filter(item => techNewsSaved.has(String(item.id))).map(item => [String(item.id), item])]);
+  let items = (techNewsFilter === "saved" ? [...techNewsSaved].map(id => savedLookup.get(String(id))).filter(Boolean) : techNewsItems)
+    .filter(item => newsCategoryMatches(item, techNewsFilter));
   if (search) items = items.filter(item => `${item.title} ${item.url} ${item.by || ""}`.toLowerCase().includes(search));
   if (sort === "score") items.sort((a,b)=>(b.score||0)-(a.score||0)); else items.sort((a,b)=>(b.time||0)-(a.time||0));
   const visible = items.slice(0, techNewsLimit);
   const loadMore = $("#newsLoadMore"); if (loadMore) loadMore.hidden = items.length <= techNewsLimit;
   if (!visible.length) { grid.innerHTML = `<div class="loading-card">No stories match this filter. Try another topic or search.</div>`; return; }
-  grid.innerHTML = visible.map(item => {
-    const saved = techNewsSaved.has(String(item.id)); const domain = (()=>{try{return new URL(item.url).hostname.replace(/^www\./,"")}catch{return "Hacker News"}})();
+  grid.innerHTML = visible.map((item, index) => {
+    const saved = techNewsSaved.has(String(item.id));
+    const domain = (()=>{try{return new URL(item.url).hostname.replace(/^www\./,"")}catch{return "Hacker News"}})();
     const date = item.time ? new Date(item.time*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "Recently";
-    return `<article class="news-card"><div class="news-card-top"><span class="news-domain">${esc(domain)}</span><span class="news-score">▲ ${Number(item.score||0)}</span></div><h3><a href="${esc(validUrl(item.url))}" target="_blank" rel="noopener noreferrer">${esc(item.title)}</a></h3><p class="news-meta">${esc(date)} · ${Number(item.descendants||0)} comments · by ${esc(item.by||"unknown")}</p><div class="news-card-actions"><button type="button" class="btn btn-outline btn-small" data-news-save="${item.id}">${saved?"★ Saved":"☆ Save"}</button><button type="button" class="btn btn-outline btn-small" data-news-share="${item.id}">↗ Share</button><a class="btn btn-primary btn-small" href="${esc(validUrl(item.url))}" target="_blank" rel="noopener noreferrer">Read story ↗</a></div></article>`;
+    const discussionUrl = `https://news.ycombinator.com/item?id=${encodeURIComponent(item.id)}`;
+    return `<article class="news-card" style="--news-card-order:${index}">
+      <div class="news-card-top"><span class="news-domain"><span class="news-source-dot"></span>${esc(domain)}</span><span class="news-score">▲ ${Number(item.score||0)} points</span></div>
+      <h3><a href="${esc(validUrl(item.url))}" target="_blank" rel="noopener noreferrer">${esc(item.title)}</a></h3>
+      <p class="news-meta"><span>${esc(date)}</span><span>·</span><span>${Number(item.descendants||0)} comments</span><span>·</span><span>by ${esc(item.by||"unknown")}</span></p>
+      <div class="news-card-actions"><button type="button" class="btn btn-outline btn-small" data-news-save="${esc(item.id)}">${saved?"★ Saved":"☆ Save"}</button><button type="button" class="btn btn-outline btn-small" data-news-share="${esc(item.id)}">↗ Share</button><a class="btn btn-outline btn-small news-discussion-link" href="${esc(discussionUrl)}" target="_blank" rel="noopener noreferrer">Discussion ↗</a><a class="btn btn-primary btn-small" href="${esc(validUrl(item.url))}" target="_blank" rel="noopener noreferrer">Read story ↗</a></div>
+    </article>`;
   }).join("");
-  grid.querySelectorAll("[data-news-save]").forEach(button => button.addEventListener("click",()=>{const id=String(button.dataset.newsSave);if(techNewsSaved.has(id))techNewsSaved.delete(id);else techNewsSaved.add(id);localStorage.setItem("hackverse-news-saved",JSON.stringify([...techNewsSaved]));renderTechNews();}));
-  grid.querySelectorAll("[data-news-share]").forEach(button => button.addEventListener("click",()=>{const item=techNewsItems.find(row=>String(row.id)===String(button.dataset.newsShare));if(!item)return;const shareData={title:item.title,text:item.title,url:item.url};if(navigator.share)void navigator.share(shareData).catch(()=>{});else void navigator.clipboard?.writeText(`${item.title} — ${item.url}`).then(()=>toast("News link copied."));}));
+  grid.querySelectorAll("[data-news-save]").forEach(button => button.addEventListener("click",()=>{
+    const id=String(button.dataset.newsSave);
+    if(techNewsSaved.has(id)) { techNewsSaved.delete(id); techNewsSavedItems.delete(id); }
+    else {
+      const story = techNewsItems.find(item => String(item.id) === id);
+      if (story) techNewsSavedItems.set(id, { id: story.id, title: story.title, url: story.url, by: story.by, time: story.time, score: story.score, descendants: story.descendants, type: "story" });
+      techNewsSaved.add(id);
+    }
+    localStorage.setItem("hackverse-news-saved",JSON.stringify([...techNewsSaved]));
+    localStorage.setItem("hackverse-news-saved-items",JSON.stringify([...techNewsSavedItems.entries()]));
+    renderTechNews();
+  }));
+  grid.querySelectorAll("[data-news-share]").forEach(button => button.addEventListener("click",()=>{
+    const item=techNewsItems.find(row=>String(row.id)===String(button.dataset.newsShare)); if(!item)return;
+    const domain = (()=>{try{return new URL(item.url).hostname.replace(/^www\./,"")}catch{return "Hacker News"}})();
+    const shareItem = {
+      type: "news", title: item.title,
+      description: `Technology story from ${domain}. Read the original article and join the discussion.`,
+      details: [
+        { label: "Source", value: domain },
+        { label: "Community score", value: `${Number(item.score||0)} points` },
+        { label: "Comments", value: String(Number(item.descendants||0)) },
+        { label: "Posted by", value: String(item.by||"unknown") }
+      ],
+      url: item.url, sourceId: String(item.id), visibility: "public"
+    };
+    openShareMenu(shareItem);
+  }));
 }
 function bindTechNewsUI() {
   $("#newsSearch")?.addEventListener("input",renderTechNews);
@@ -4564,6 +4689,8 @@ function bindUI() {
   $("#authModeToggle").onclick = () => setAuthMode(authMode === "signin" ? "signup" : "signin");
   $("#googleSignIn").onclick = googleSignIn; $("#resetPassword").onclick = resetPassword;
   $("#profileForm").addEventListener("submit", saveProfile);
+  $("#profileForm").addEventListener("input", updateProfileFormProgress);
+  $("#profileForm").addEventListener("change", updateProfileFormProgress);
   $$('input[name="profileVisibilityChoice"]').forEach(input => input.addEventListener("change", () => syncProfileVisibilityChoices(input.value)));
   $("#profileAvatarFile").addEventListener("change",e=>uploadProfileAvatar(e.target.files?.[0]));
   $("#removeProfileAvatarBtn").onclick=()=>{$("#profileAvatar").value="";$("#profileAvatarFile").value="";$("#profileAvatarPreviewWrap").hidden=true;toast("Profile photo removed from the draft. Save your profile to apply.");};

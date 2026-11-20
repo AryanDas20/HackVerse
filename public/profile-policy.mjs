@@ -1,7 +1,6 @@
-/** Decide whether a saved profile may be published in the public Builders directory. */
-export function evaluateProfilePublication({ visibility, consent, displayName, username }) {
+/** Public visibility is the sole profile-directory choice; a valid identity is still required. */
+export function evaluateProfilePublication({ visibility, displayName, username }) {
   if (visibility !== "public") return { canPublish: false, reason: null };
-  if (!consent) return { canPublish: false, reason: "consent" };
   const name = String(displayName || "").trim();
   const handle = String(username || "").trim().replace(/^@/, "");
   if (!name || !/^[A-Za-z0-9_]{3,24}$/.test(handle)) {
