@@ -29,6 +29,7 @@
   <link rel="stylesheet" href="profile-share-v15.css">
   <link rel="stylesheet" href="mobile-performance-v16.css">
   <link rel="stylesheet" href="career-match.css">
+  <link rel="stylesheet" href="career-navigation-performance-v17.css">
 </head>
 <body>
   <div class="hv-boot-splash" id="hvBootSplash" role="status" aria-label="Loading HackVerse">
@@ -299,14 +300,15 @@ Example:
 
       <section class="career-toolkit" aria-labelledby="careerToolkitTitle">
         <div class="career-toolkit-heading"><div><span class="eyebrow">BEYOND THE MATCH SCORE</span><h2 id="careerToolkitTitle">Your placement toolkit.</h2><p class="muted">Turn one resume analysis into a complete preparation workflow, from skills to applications and interviews.</p></div><div class="career-toolkit-orbit" aria-hidden="true"><span>✦</span><i></i><b></b></div></div>
-        <div class="career-tool-tabs" role="tablist" aria-label="Career toolkit features">
+        <button type="button" class="career-mobile-nav-toggle" id="careerMobileNavToggle" aria-expanded="false" aria-controls="careerToolNavigation"><span class="career-mobile-nav-icon">☰</span><span><small>CAREER TOOLKIT</small><b id="careerMobileNavCurrent">Resume intelligence</b></span><span class="career-mobile-nav-chevron" aria-hidden="true">⌄</span></button>
+        <nav class="career-tool-tabs" id="careerToolNavigation" role="tablist" aria-label="Career toolkit features">
           <button type="button" role="tab" aria-selected="true" class="is-active" data-career-tab="readiness">◈ Resume intelligence</button>
           <button type="button" role="tab" aria-selected="false" data-career-tab="learning">✦ Skill sprint</button>
           <button type="button" role="tab" aria-selected="false" data-career-tab="interview">◎ Interview lab</button>
           <button type="button" role="tab" aria-selected="false" data-career-tab="studio">✎ Career studio</button>
           <button type="button" role="tab" aria-selected="false" data-career-tab="portfolio">▧ Portfolio audit</button>
           <button type="button" role="tab" aria-selected="false" data-career-tab="tracker">▤ Application tracker</button>
-        </div>
+        </nav>
 
         <section class="career-tool-panel is-active" data-career-panel="readiness" role="tabpanel">
           <div class="career-tool-panel-head"><div><span class="career-panel-kicker">01 · RESUME + ROLE DIAGNOSTICS</span><h3>See what a recruiter can actually find.</h3><p class="muted">A transparent, rules-based review of structure, evidence, keyword coverage and job-post clarity.</p></div><span class="career-panel-icon">◈</span></div>

@@ -260,6 +260,22 @@ export function createCareerToolkit(getUser = () => null) {
 
   function bind() {
     $$('[data-career-tab]').forEach(button => button.addEventListener("click", () => setTab(button.dataset.careerTab)));
+    const mobileNavToggle = $("#careerMobileNavToggle");
+    const toolNavigation = $("#careerToolNavigation");
+    mobileNavToggle?.addEventListener("click", () => {
+      const open = mobileNavToggle.getAttribute("aria-expanded") !== "true";
+      mobileNavToggle.setAttribute("aria-expanded", String(open));
+      toolNavigation?.classList.toggle("is-mobile-open", open);
+    });
+    toolNavigation?.addEventListener("keydown", event => {
+      if (!['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
+      const tabs = $$('[data-career-tab]');
+      const current = tabs.indexOf(document.activeElement);
+      if (current < 0) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (current + (event.key === 'ArrowDown' ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next]?.focus();
+    });
     $("#careerLearningTasks")?.addEventListener("change", event => {
       const checkbox = event.target.closest("[data-learning-day]"); if (!checkbox) return;
       const completed = new Set(readStore(learningStorageKey(), []));
