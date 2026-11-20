@@ -6,14 +6,17 @@ const path = require('node:path');
 const html = fs.readFileSync(path.join(__dirname, '../../public/index.html'), 'utf8');
 const app = fs.readFileSync(path.join(__dirname, '../../public/app.js'), 'utf8');
 
-test('visibility choices and Builders consent are inside Step 02', () => {
+test('public/private profile visibility choices are inside Step 02 without separate directory consent', () => {
   const stepTwo = html.indexOf('id="profileDiscoveryStep"');
   const stepThree = html.indexOf('03 · Your builder identity');
   const visibilityCards = html.indexOf('name="profileVisibilityChoice"');
-  const directoryConsent = html.indexOf('id="profilePublicConsent"');
   const stepFour = html.indexOf('04 · Links and contact privacy');
   assert.ok(stepTwo > 0 && stepTwo < visibilityCards && visibilityCards < stepThree);
-  assert.ok(stepTwo < directoryConsent && directoryConsent < stepThree);
+  assert.match(html, /value="public"/);
+  assert.match(html, /value="private"/);
+  assert.doesNotMatch(html, /id="profilePublicConsent"/);
+  const visibilityStep = html.slice(stepTwo, stepThree);
+  assert.doesNotMatch(visibilityStep, /value="followers"/);
   assert.ok(stepFour > stepThree);
   assert.equal((html.match(/id="profileVisibility"/g) || []).length, 1);
 });
