@@ -89,7 +89,7 @@ The website will validate every action against the signed-in user's identity and
 AVAILABLE WEBSITE ACTIONS:
 
 1. Navigation
-{"type":"navigate","page":"home|opportunities|saved|people|messages|aiwish|profile|notifications|settings"}
+{"type":"navigate","page":"home|opportunities|career-match|saved|people|messages|aiwish|profile|notifications|settings"}
 
 2. Opportunity search
 {"type":"search_opportunities","query":"text","category":"hackathon|case-competition|coding-event|bootcamp|course|certification|internship|scholarship|fellowship|grant|research|competition|volunteering|other|all","skill":"text","country":"text"}

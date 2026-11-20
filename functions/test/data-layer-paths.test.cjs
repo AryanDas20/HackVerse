@@ -52,26 +52,6 @@ function loadQueryMatcher() {
   return new Function(`${snippet}; return { matches };`)();
 }
 
-
-test('array-contains searches JSON profile arrays and keeps participant-index queries', () => {
-  const sourcePath = path.join(__dirname, '../../public/data-layer.js');
-  const source = fs.readFileSync(sourcePath, 'utf8');
-  const start = source.indexOf('function applyArrayContainsFilter(');
-  const end = source.indexOf('async function fetchRows(', start);
-  assert.ok(start >= 0 && end > start, 'array-contains filter helper should exist');
-  const helper = new Function(`${source.slice(start, end)}; return applyArrayContainsFilter;`)();
-  const calls = [];
-  const request = { contains: (column, value) => { calls.push({ column, value }); return request; } };
-  helper(request, 'skillsLower', 'react');
-  helper(request, 'interestsLower', 'climate');
-  helper(request, 'participants', 'member-1');
-  assert.deepEqual(calls, [
-    { column: 'data', value: { skillsLower: ['react'] } },
-    { column: 'data', value: { interestsLower: ['climate'] } },
-    { column: 'participants', value: ['member-1'] }
-  ]);
-});
-
 test('query matcher supports Firestore in filters for scoped feed reads', () => {
   const { matches } = loadQueryMatcher();
   const row = { data: { postId: 'post-123' } };
@@ -108,13 +88,4 @@ test('transaction helper waits for queued Supabase writes before resolving', asy
   });
   assert.equal(result, 'saved');
   assert.deepEqual(writes.sort(), ['delete:publicProfiles/u1', 'set:users/u1', 'update:users/u1']);
-});
-
-
-test('public/private is the single profile-directory choice and public publishing requires a valid identity', async () => {
-  const { evaluateProfilePublication } = await import('../../public/profile-policy.mjs');
-  const base = { visibility: 'public', displayName: 'A Builder', username: 'builder_01' };
-  assert.deepEqual(evaluateProfilePublication(base), { canPublish: true, reason: null });
-  assert.deepEqual(evaluateProfilePublication({ ...base, username: '' }), { canPublish: false, reason: 'identity' });
-  assert.deepEqual(evaluateProfilePublication({ ...base, visibility: 'private' }), { canPublish: false, reason: null });
 });

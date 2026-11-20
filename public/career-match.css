@@ -1,0 +1,85 @@
+/* Career Match — self-contained styles; inherits HackVerse theme tokens. */
+.career-match-page { padding-top: 58px; padding-bottom: 96px; }
+.career-match-hero { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(220px,.65fr); align-items:center; gap:42px; margin-bottom:38px; }
+.career-match-hero-copy { max-width:790px; }
+.career-match-hero h1 { margin:14px 0 15px; font:700 clamp(2.7rem,6vw,5rem)/.99 "Space Grotesk",sans-serif; letter-spacing:-.065em; }
+.career-match-hero-copy>p { max-width:700px; color:var(--muted); font-size:1.06rem; line-height:1.75; }
+.career-match-promises { display:flex; flex-wrap:wrap; gap:9px 18px; margin-top:25px; color:var(--muted); font-size:.76rem; font-weight:700; letter-spacing:.02em; }
+.career-match-promises span { border-left:2px solid var(--hv-pink); padding-left:10px; }
+.career-match-score-art { min-height:260px; position:relative; display:grid; place-items:center; overflow:hidden; border:1px solid var(--line); border-radius:26px; background:radial-gradient(circle at 50% 50%,var(--accent-soft),transparent 65%),var(--surface); }
+.career-match-orbit { position:absolute; width:205px; height:205px; border:1px dashed color-mix(in srgb,var(--hv-pink) 65%,transparent); border-radius:50%; box-shadow:0 0 0 24px color-mix(in srgb,var(--accent-soft) 60%,transparent),0 0 0 48px color-mix(in srgb,var(--accent-soft) 35%,transparent); transform:rotate(-25deg) scaleX(.82); }
+.career-match-orb { width:130px; height:130px; display:flex; flex-direction:column; align-items:center; justify-content:center; border-radius:50%; background:linear-gradient(145deg,var(--hv-red),var(--hv-pink)); color:white; box-shadow:0 18px 65px color-mix(in srgb,var(--hv-red) 32%,transparent); }
+.career-match-orb b { font:700 3rem/1 "Space Grotesk",sans-serif; }
+.career-match-orb small { margin-top:5px; font-size:.65rem; font-weight:800; letter-spacing:.15em; }
+.career-match-art-tag { position:absolute; right:18px; bottom:17px; padding:8px 11px; border:1px solid var(--line); border-radius:9px; background:var(--surface); color:var(--muted); font-size:.62rem; font-weight:800; letter-spacing:.13em; }
+.career-match-workspace { display:grid; gap:28px; }
+.career-match-form,.career-match-skill-panel,.career-match-plan-panel { border:1px solid var(--line); border-radius:22px; background:var(--surface); box-shadow:var(--shadow); }
+.career-match-form { padding:clamp(20px,3.5vw,34px); }
+.career-match-form-heading,.career-match-results-heading,.career-match-plan-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; }
+.career-match-form-heading h2,.career-match-results-heading h2 { margin:8px 0 7px; font:700 clamp(1.55rem,3vw,2.1rem)/1.1 "Space Grotesk",sans-serif; letter-spacing:-.04em; }
+.career-match-form-heading p,.career-match-results-heading p { margin:0; max-width:650px; line-height:1.6; }
+.career-match-private,.career-match-plan-badge { flex:none; padding:8px 11px; border:1px solid var(--line); border-radius:999px; color:var(--muted); font-size:.62rem; font-weight:800; letter-spacing:.1em; }
+.career-match-input-grid { display:grid; grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr); gap:18px; margin-top:27px; }
+.career-match-upload-card,.career-match-jd-card { min-width:0; padding:18px; border:1px solid var(--line); border-radius:16px; background:var(--surface2); }
+.career-match-field-top { display:flex; justify-content:space-between; gap:10px; margin-bottom:13px; }
+.career-match-field-top label { color:var(--text); font-size:.9rem; font-weight:800; }
+.career-match-field-top>span { color:var(--muted); font-size:.7rem; }
+.career-match-dropzone { min-height:210px; padding:25px 16px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; border:1.5px dashed color-mix(in srgb,var(--hv-pink) 68%,var(--line)); border-radius:13px; text-align:center; cursor:pointer; transition:background .2s,border-color .2s; }
+.career-match-dropzone:hover,.career-match-dropzone:focus-within { background:var(--accent-soft); border-color:var(--hv-pink); }
+.career-match-upload-icon { width:43px; height:43px; display:grid; place-items:center; border-radius:13px; background:var(--accent-soft); color:var(--hv-pink); font-size:1.6rem; font-weight:800; }
+.career-match-dropzone b { max-width:100%; overflow-wrap:anywhere; font-size:.9rem; }
+.career-match-dropzone small { color:var(--muted); font-size:.72rem; line-height:1.5; }
+.career-match-dropzone input { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+.career-match-field-note { margin:12px 0 0; color:var(--muted); font-size:.7rem; line-height:1.55; }
+.career-match-jd-card textarea { width:100%; min-height:210px; resize:vertical; padding:14px; border:1px solid var(--line); border-radius:12px; outline:none; background:var(--bg); color:var(--text); font:inherit; font-size:.83rem; line-height:1.65; }
+.career-match-jd-card textarea:focus { border-color:var(--hv-pink); box-shadow:var(--hv-focus); }
+.career-match-char-count { display:flex; justify-content:space-between; gap:12px; margin-top:9px; color:var(--muted); font-size:.67rem; }
+.career-match-form-footer { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-top:22px; }
+.career-match-form-footer p { margin:0; color:var(--muted); font-size:.72rem; line-height:1.5; }
+.career-match-form-footer p span { color:var(--hv-pink); margin-right:6px; }
+.career-match-form-footer .btn { flex:none; }
+.career-match-status { min-height:20px; margin:12px 0 0; color:var(--muted); font-size:.78rem; }
+.career-match-status.is-error { color:#e17c68; }
+.career-match-results { display:grid; gap:20px; }
+.career-match-results-heading { align-items:center; }
+.career-match-summary { display:grid; grid-template-columns:minmax(0,1fr) repeat(2,minmax(125px,.27fr)); gap:14px; }
+.career-match-score-card,.career-match-stat-card { padding:20px; border:1px solid var(--line); border-radius:16px; background:var(--surface); }
+.career-match-score-card { display:flex; align-items:center; gap:18px; }
+.career-match-score-number { width:84px; height:84px; display:grid; place-items:center; flex:none; border-radius:50%; background:conic-gradient(var(--hv-pink) var(--score,0%),var(--surface2) 0); position:relative; }
+.career-match-score-number::before { content:""; position:absolute; inset:7px; border-radius:50%; background:var(--surface); }
+.career-match-score-number b { position:relative; font:700 1.28rem "Space Grotesk",sans-serif; }
+.career-match-score-copy small,.career-match-stat-card small { display:block; color:var(--muted); font-size:.65rem; font-weight:800; letter-spacing:.11em; }
+.career-match-score-copy b { display:block; margin:5px 0; font:700 1.15rem "Space Grotesk",sans-serif; }
+.career-match-score-copy p { margin:0; color:var(--muted); font-size:.75rem; line-height:1.45; }
+.career-match-stat-card { display:flex; flex-direction:column; justify-content:center; }
+.career-match-stat-card b { margin:4px 0; font:700 2rem "Space Grotesk",sans-serif; }
+.career-match-skill-columns { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.career-match-skill-panel { padding:21px; min-width:0; }
+.career-match-panel-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }
+.career-match-panel-kicker { color:var(--muted); font-size:.62rem; font-weight:800; letter-spacing:.12em; }
+.career-match-panel-heading h3,.career-match-plan-heading h3 { margin:5px 0 0; font:700 1.25rem "Space Grotesk",sans-serif; }
+.career-match-count { min-width:34px; height:34px; display:grid; place-items:center; border:1px solid var(--line); border-radius:10px; font-weight:800; }
+.career-match-skill-list { display:grid; gap:10px; }
+.career-match-skill-item { padding:13px; border:1px solid var(--line); border-radius:12px; background:var(--surface2); }
+.career-match-skill-item-top { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.career-match-skill-item b { font-size:.85rem; }
+.career-match-skill-item small { color:var(--muted); font-size:.68rem; }
+.career-match-skill-item p { margin:7px 0 0; color:var(--muted); font-size:.73rem; line-height:1.55; overflow-wrap:anywhere; }
+.career-match-skill-item a { display:inline-block; margin-top:8px; color:var(--hv-pink); font-size:.72rem; font-weight:700; text-decoration:none; }
+.career-match-evidence { margin-top:10px; padding:9px 10px; border-left:2px solid var(--hv-pink); border-radius:0 8px 8px 0; background:var(--accent-soft); color:var(--text); font-size:.7rem; line-height:1.5; }
+.career-match-evidence strong { display:block; margin-bottom:3px; color:var(--hv-pink); font-size:.62rem; letter-spacing:.08em; }
+.career-match-empty { padding:20px; border:1px dashed var(--line); border-radius:12px; color:var(--muted); font-size:.8rem; line-height:1.55; }
+.career-match-plan-panel { padding:clamp(19px,3vw,28px); }
+.career-match-plan-heading { margin-bottom:18px; }
+.career-match-plan-heading h3 { font-size:1.5rem; }
+.career-match-plan-heading p { margin:6px 0 0; font-size:.8rem; }
+.career-match-plan-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.career-match-day { display:grid; grid-template-columns:47px minmax(0,1fr); gap:12px; padding:13px; border:1px solid var(--line); border-radius:12px; background:var(--surface2); }
+.career-match-day-number { width:43px; height:43px; display:grid; place-items:center; border-radius:12px; background:var(--accent-soft); color:var(--hv-pink); font:700 .72rem "Space Grotesk",sans-serif; }
+.career-match-day small { display:block; color:var(--muted); font-size:.62rem; font-weight:800; letter-spacing:.09em; text-transform:uppercase; }
+.career-match-day b { display:block; margin:3px 0 5px; font-size:.79rem; }
+.career-match-day p { margin:0; color:var(--muted); font-size:.7rem; line-height:1.5; }
+.career-match-day a { display:inline-block; margin-top:6px; color:var(--hv-pink); font-size:.67rem; font-weight:700; text-decoration:none; }
+.career-match-disclaimer { margin:0; color:var(--muted); font-size:.7rem; line-height:1.6; }
+@media (max-width:850px) { .career-match-hero { grid-template-columns:1fr; } .career-match-score-art { min-height:210px; } .career-match-input-grid { grid-template-columns:1fr; } .career-match-summary { grid-template-columns:1fr 1fr; } .career-match-score-card { grid-column:1/-1; } }
+@media (max-width:600px) { .career-match-page { padding-top:32px; } .career-match-form-heading,.career-match-results-heading,.career-match-plan-heading { flex-direction:column; } .career-match-private,.career-match-plan-badge { align-self:flex-start; } .career-match-form-footer { align-items:stretch; flex-direction:column; } .career-match-form-footer .btn { width:100%; } .career-match-skill-columns { grid-template-columns:1fr; } .career-match-plan-grid { grid-template-columns:1fr; } .career-match-char-count { flex-direction:column; gap:3px; } }
