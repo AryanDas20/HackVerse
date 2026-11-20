@@ -933,7 +933,7 @@ async function loadAccountWorkspace() {
     const savedProfile = privateProfile?.profileData || null;
     const shouldBePublic = evaluateProfilePublication({
       visibility: savedProfile?.profileVisibility,
-      consent: Boolean(savedProfile?.profileConsentAt),
+      consent: true,
       displayName: savedProfile?.displayName,
       username: savedProfile?.username
     }).canPublish;
@@ -969,12 +969,28 @@ async function loadAccountWorkspace() {
 }
 
 function syncProfileVisibilityChoices(value = "public") {
-  const visibility = ["public", "followers", "private"].includes(value) ? value : "private";
+  const visibility = value === "public" ? "public" : "private";
   const nativeSelect = $("#profileVisibility");
   if (nativeSelect) nativeSelect.value = visibility;
   $$('input[name="profileVisibilityChoice"]').forEach(input => {
     input.checked = input.value === visibility;
-    input.closest(".profile-visibility-option")?.classList.toggle("is-selected", input.checked);
+    input.closest(".pf-vis-card")?.classList.toggle("is-selected", input.checked);
+  });
+}
+
+const PROFILE_PROGRESS_FIELDS = ["#profileName","#profileUsername","#profileCollege","#profileCourse","#profileCity","#profileCountry","#profileBio","#profileSkills","#profileAvatar","#profileGithub","#profileLinkedin"];
+function updateProfileProgress() {
+  const form = $("#profileForm"); if (!form) return;
+  const filled = PROFILE_PROGRESS_FIELDS.filter(sel => String($(sel)?.value || "").trim()).length;
+  const pct = Math.round(filled / PROFILE_PROGRESS_FIELDS.length * 100);
+  const box = $("#profileProgress");
+  form.style.setProperty("--pf-progress", pct + "%");
+  $("#profileProgressText").textContent = pct + "%";
+  $("#profileProgressHint").textContent = pct >= 100 ? "Your profile is complete. Nice work!" : pct >= 60 ? "Almost there — a few more details will make you easy to find." : pct >= 25 ? "Good start. Add your skills and bio to stand out." : "Fill in a few details to stand out in Builders.";
+  box?.classList.toggle("is-complete", pct >= 100);
+  $$("#profileForm .profile-step").forEach(step => {
+    const count = [...step.querySelectorAll("input:not([type=radio]):not([type=checkbox]):not([type=file]), textarea")].filter(el => String(el.value || "").trim()).length;
+    step.dataset.filled = String(count);
   });
 }
 
@@ -994,20 +1010,14 @@ function openProfileEditor(mandatory = false) {
   $("#profileAvatar").value = p.avatarUrl || ""; $("#profileAvatarFile").value = ""; $("#profileAvatarPreviewWrap").hidden = !p.avatarUrl; if(p.avatarUrl) $("#profileAvatarPreview").src = p.avatarUrl; $("#profileGithub").value = p.github || "";
   $("#profileLinkedin").value = p.linkedin || ""; $("#profilePortfolio").value = p.portfolio || "";
   $("#profilePhone").value = privateProfile?.phone || ""; $("#profilePhoneVisibility").value = privateProfile?.phoneVisibility || "private"; $("#profileEmailVisibility").value = privateProfile?.emailVisibility || "private"; syncProfileVisibilityChoices(privateProfile?.profileVisibility || p.profileVisibility || "public"); $("#profileLooking").value = String(p.lookingForTeam !== false);
-  const storedProfileData = privateProfile?.profileData || {};
-  const consentFieldExists = Object.prototype.hasOwnProperty.call(p, "profileConsentAt")
-    || Object.prototype.hasOwnProperty.call(storedProfileData, "profileConsentAt");
-  const savedConsentAt = p.profileConsentAt || storedProfileData.profileConsentAt;
-  const legacyPublicChoice = !consentFieldExists && (p.profileVisibility === "public" || privateProfile?.profileVisibility === "public");
-  const existingPublicDirectoryRecord = publicProfile?.uid === currentUser?.uid && publicProfile?.profileVisibility === "public";
-  $("#profilePublicConsent").checked = Boolean(savedConsentAt || legacyPublicChoice || existingPublicDirectoryRecord);
   $("#profileMessage").textContent = "";
   $("#profileModalTitle").textContent = mandatory ? "Complete your builder profile." : "Update your builder profile.";
-  $("#profileModalHint").textContent = "Start with your name and username, then choose who can discover you in Step 02. Save your progress and add other details whenever you are ready.";
+  $("#profileModalHint").textContent = "Start with your name and username, then choose Public or Private in Step 02. Save your progress and add other details whenever you are ready.";
   $("#profileModalClose").hidden = false;
   $("#profileSignOutBtn").hidden = true;
   const steps = $$("#profileForm .profile-step");
   steps.forEach((step, index) => { step.open = index === 0 || index === 1; });
+  updateProfileProgress();
   showModal("profileModal");
 }
 
@@ -1055,27 +1065,19 @@ async function saveProfile(event) {
     if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
     return;
   }
-  const consent = $("#profilePublicConsent").checked;
   const requestedVisibility = $("#profileVisibility").value || "public";
   // Do not silently turn a user's selected Public profile into a private one.
   // The directory opt-in is deliberately explicit, but must be visible and the
   // user must be told exactly what is missing before we save anything.
-  const visibility = requestedVisibility;
+  const visibility = requestedVisibility === "private" ? "private" : "public";
+  // Public profiles are listed in Builders automatically; no separate opt-in.
+  const consent = visibility === "public";
   const publication = evaluateProfilePublication({ visibility, consent, displayName: name, username });
   const canPublish = publication.canPublish;
-  if (publication.reason === "consent") {
-    const discoveryStep = $("#profileDiscoveryStep");
-    if (discoveryStep) discoveryStep.open = true;
-    message.textContent = "To appear in Builders, open Step 02, choose Public, and tick ‘Show my builder profile in the public Builders directory’.";
-    $("#profilePublicConsent")?.focus();
-    discoveryStep?.scrollIntoView({ behavior: "smooth", block: "center" });
-    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
-    return;
-  }
   if (publication.reason === "identity") {
     const basicsStep = $$("#profileForm .profile-step")[0];
     if (basicsStep) basicsStep.open = true;
-    message.textContent = "Add your full name and a valid 3–24 character username to publish your profile in Builders.";
+    message.textContent = "Add your full name and a valid 3–24 character username to make your profile public.";
     $("#profileName")?.focus();
     basicsStep?.scrollIntoView({ behavior: "smooth", block: "center" });
     if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
@@ -1173,7 +1175,7 @@ async function saveProfile(event) {
       if (currentRouteName() === "people") void searchPeople();
       toast("Your profile is published in the Builders directory.");
     } else {
-      toast("Your profile is saved privately. Choose Public and confirm the directory setting in Step 02 to appear in Builders.");
+      toast("Your profile is saved and set to Private. Switch to Public in Step 02 any time to appear in Builders.");
     }
   } catch (error) {
     console.error(error);
@@ -4367,9 +4369,9 @@ function initAdvancedUI(){
     const base=publicProfile||privateProfile?.profileData;
     if(!base){toast("Complete your profile first.");return;}
     const nextVisibility=e.target.value;
-    const publication=evaluateProfilePublication({visibility:nextVisibility,consent:Boolean(base.profileConsentAt),displayName:base.displayName,username:base.username});
-    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Open Edit profile and confirm the public Builders directory setting. Your name and username must also be complete.");return;}
-    const next={...base,profileVisibility:nextVisibility};
+    const publication=evaluateProfilePublication({visibility:nextVisibility,consent:true,displayName:base.displayName,username:base.username});
+    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Add your full name and username in Edit profile before making your profile public.");return;}
+    const next={...base,profileVisibility:nextVisibility,profileConsentAt:nextVisibility==="public"?(base.profileConsentAt||serverTimestamp()):null};
     try{
       await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:nextVisibility,profileData:next,updatedAt:serverTimestamp()},{merge:true});
       const publicRef=doc(db,"publicProfiles",currentUser.uid);
@@ -4524,6 +4526,7 @@ function bindUI() {
   $("#authModeToggle").onclick = () => setAuthMode(authMode === "signin" ? "signup" : "signin");
   $("#googleSignIn").onclick = googleSignIn; $("#resetPassword").onclick = resetPassword;
   $("#profileForm").addEventListener("submit", saveProfile);
+  $("#profileForm").addEventListener("input", updateProfileProgress);
   $$('input[name="profileVisibilityChoice"]').forEach(input => input.addEventListener("change", () => syncProfileVisibilityChoices(input.value)));
   $("#profileAvatarFile").addEventListener("change",e=>uploadProfileAvatar(e.target.files?.[0]));
   $("#removeProfileAvatarBtn").onclick=()=>{$("#profileAvatar").value="";$("#profileAvatarFile").value="";$("#profileAvatarPreviewWrap").hidden=true;toast("Profile photo removed from the draft. Save your profile to apply.");};
