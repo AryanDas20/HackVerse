@@ -4,7 +4,7 @@ const { buildLegacyPublicProfile } = require("../lib/profile-directory");
 
 const uid = "11111111-1111-4111-8111-111111111111";
 
-test("legacy Public profiles are restored when the consent field did not exist yet", () => {
+test("Public profiles are restored based on the Public visibility choice", () => {
   const result = buildLegacyPublicProfile({
     profileVisibility: "public",
     profileData: { displayName: "Old Builder", username: "old_builder", profileVisibility: "public", skills: ["JavaScript"] },
@@ -18,12 +18,12 @@ test("legacy Public profiles are restored when the consent field did not exist y
   assert.equal("phone" in result, false);
 });
 
-test("a new profile with an explicit empty consent field is never backfilled", () => {
+test("a Public profile is restored even if it contains an old empty consent field", () => {
   const result = buildLegacyPublicProfile({
     profileVisibility: "public",
     profileData: { displayName: "New Builder", username: "new_builder", profileVisibility: "public", profileConsentAt: null }
   }, uid);
-  assert.equal(result, null);
+  assert.equal(result?.profileVisibility, "public");
 });
 
 test("private and followers-only profiles are never backfilled", () => {
