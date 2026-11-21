@@ -139,7 +139,7 @@ async function handler(req, res) {
     client = clients(); user = await authenticate(client, req);
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const action = String(body.action || "");
-    const readActions = new Set(["feed","profile","profile-stats","profile-tab","post-detail","comments","my-reports","preferences","blocked-users"]);
+    const readActions = new Set(["feed","profile","profile-stats","profile-tab","post-detail","comments","voters","my-reports","preferences","blocked-users"]);
     // Hot interaction paths run the rate-limit check alongside their reads; every write awaits it first.
     const deferredLimit = new Set(["vote","comment","repost","unrepost"]);
     let limitCheck = Promise.resolve();
@@ -209,6 +209,54 @@ async function handler(req, res) {
     if (action === "post-detail") {
       const { post, author, viewerVote } = await loadVisiblePost(client, body.postId, user.id, { withVote: true });
       return res.status(200).json({ post: { ...post, viewer_vote: viewerVote, author } });
+    }
+
+    // Voter identities are returned only when the authenticated viewer may also
+    // see those members' public profiles. Private/followers-only accounts and
+    // blocked relationships are filtered on the server, never in the browser.
+    if (action === "voters") {
+      const postId = String(body.postId || "");
+      const voteType = ["upvote", "downvote"].includes(body.voteType) ? body.voteType : "upvote";
+      const offset = Math.max(0, Math.min(5000, Number.parseInt(body.offset, 10) || 0));
+      const pageSize = 100;
+      const post = await visiblePost(client, postId, user.id);
+      const { data: votes, error: votesError, count } = await client.from("votes")
+        .select("user_id,value,created_at", { count: "exact" })
+        .eq("post_id", post.id).eq("value", voteType)
+        .order("created_at", { ascending: false }).range(offset, offset + pageSize - 1);
+      if (votesError) throw votesError;
+      const rows = votes || [];
+      const ids = [...new Set(rows.map(row => row.user_id).filter(Boolean))];
+      const [profilesResult, followsResult, blocksResult] = await Promise.all([
+        ids.length ? client.from("profiles").select("id,username,display_name,avatar_url,is_verified,profile_visibility,is_private").in("id", ids) : Promise.resolve({ data: [], error: null }),
+        ids.length ? client.from("follows").select("following_id").eq("follower_id", user.id).eq("status", "active").in("following_id", ids) : Promise.resolve({ data: [], error: null }),
+        ids.length ? client.from("user_blocks").select("blocker_id,blocked_id").or(`and(blocker_id.eq.${user.id},blocked_id.in.(${ids.join(",")})),and(blocked_id.eq.${user.id},blocker_id.in.(${ids.join(",")}))`) : Promise.resolve({ data: [], error: null })
+      ]);
+      for (const result of [profilesResult, followsResult, blocksResult]) if (result.error) throw result.error;
+      const profiles = new Map((profilesResult.data || []).map(profile => [profile.id, profile]));
+      const followed = new Set((followsResult.data || []).map(row => row.following_id));
+      const blocked = new Set();
+      for (const row of blocksResult.data || []) {
+        blocked.add(row.blocker_id === user.id ? row.blocked_id : row.blocker_id);
+      }
+      let hiddenCount = 0;
+      const voters = [];
+      for (const vote of rows) {
+        const profile = profiles.get(vote.user_id);
+        if (!profile || blocked.has(vote.user_id)) { hiddenCount++; continue; }
+        const visibility = profile.profile_visibility || (profile.is_private ? "private" : "public");
+        if (vote.user_id !== user.id && visibility !== "public" && !followed.has(vote.user_id)) { hiddenCount++; continue; }
+        voters.push({
+          username: profile.username,
+          display_name: profile.display_name,
+          avatar_url: profile.avatar_url,
+          is_verified: Boolean(profile.is_verified),
+          vote_type: vote.value,
+          voted_at: vote.created_at
+        });
+      }
+      const total = Number(count || 0);
+      return res.status(200).json({ voters, total, hiddenCount, nextOffset: offset + rows.length, hasMore: offset + rows.length < total, pageSize });
     }
 
     if (action === "profile-stats") {

@@ -26,6 +26,8 @@ let builderCommentsLoading = new Set(), builderCommentsLoaded = new Set(), pendi
 let profileStats = null, profileStatsLoading = false, profileNudgeTimer = null;
 let pendingAudioObjectUrl = "", pendingAudioObjectFile = null;
 let socialFeedType = "explore", socialFeedCursor = null, socialFeedLoading = false, publicProfilePageData = null, publicProfileTab = "posts", publicProfileTabCursor = null, publicProfileTabLoading = false;
+let voterModalPostId = null, voterModalType = "upvote", voterModalRows = [], voterModalOffset = 0, voterModalHasMore = false, voterModalLoading = false, voterModalHiddenCount = 0, voterModalError = "", voterModalReturnFocus = null, voterModalRequestId = 0;
+let lastChatAttachmentHydratedAt = 0, lastOpportunityRefreshAt = 0, eventsLoadInProgress = false;
 let dialogResolver = null;
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -419,7 +421,7 @@ function openShareMenu(item) {
 // the visible cards directly, so interactions feel instant and never need a full feed reload.
 const socialPostCache = new Map();
 const pendingVotes = new Set();
-const renderPostCounts = post => `<span>▲ ${Number(post.upvote_count || 0)} upvotes</span><span>▼ ${Number(post.downvote_count || 0)} downvotes</span><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span>`;
+const renderPostCounts = post => `<button type="button" class="social-count-link" data-social-voters="upvote" data-post-id="${esc(post.id)}" aria-label="View ${Number(post.upvote_count || 0)} upvoters">▲ <b>${Number(post.upvote_count || 0)}</b> upvotes</button><button type="button" class="social-count-link" data-social-voters="downvote" data-post-id="${esc(post.id)}" aria-label="View ${Number(post.downvote_count || 0)} downvoters">▼ <b>${Number(post.downvote_count || 0)}</b> downvotes</button><button type="button" class="social-count-link" data-social-comments="${esc(post.id)}" aria-label="View ${Number(post.comment_count || 0)} comments">▤ <b>${Number(post.comment_count || 0)}</b> comments</button><span>↻ ${Number(post.share_count || 0)} shares</span>`;
 const socialFeedCacheKey = () => currentUser ? `hv-social-feed-v2:${currentUser.uid}:${socialFeedType}` : "";
 function patchFeedCache(postId, patch, { remove = false } = {}) {
   const key = socialFeedCacheKey(); if (!key) return;
@@ -433,7 +435,7 @@ function updatePostCards(postId, patch) {
   const post = socialPostCache.get(postId) || { id: postId };
   Object.assign(post, patch); socialPostCache.set(postId, post);
   document.querySelectorAll(`[data-social-post="${CSS.escape(postId)}"]`).forEach(card => {
-    const counts = card.querySelector(".social-post-counts"); if (counts) counts.innerHTML = renderPostCounts(post);
+    const counts = card.querySelector(".social-post-counts"); if (counts) { counts.innerHTML = renderPostCounts(post); bindSocialPostActions(card); }
     card.querySelectorAll("[data-social-vote]").forEach(b => b.setAttribute("aria-pressed", String((post.viewer_vote || null) === b.dataset.socialVote)));
     if ("content" in patch) { const text = card.querySelector(".social-post-text"); if (text) text.textContent = post.content; }
   });
@@ -491,6 +493,7 @@ function bindSocialPostActions(root) {
     finally { pendingVotes.delete(postId); }
   });
   bind("[data-social-comments]", button => toggleSocialComments(button.dataset.socialComments));
+  bind("[data-social-voters]", button => openVotersModal(button.dataset.postId, button.dataset.socialVoters));
   bind("[data-social-repost]", async button => {
     if (button.dataset.busy === "1") return;
     button.dataset.busy = "1"; const label = button.textContent; button.textContent = "↻ Reposted";
@@ -529,6 +532,112 @@ function bindSocialPostActions(root) {
   });
 }
 
+function renderVoterRows() {
+  const host = $("#socialVoterList");
+  if (!host) return;
+  const queryText = String($("#socialVoterSearch")?.value || "").trim().toLowerCase();
+  const visible = voterModalRows.filter(voter => !queryText || `${voter.display_name || ""} ${voter.username || ""}`.toLowerCase().includes(queryText));
+  if (!visible.length) {
+    if (voterModalError) {
+      host.innerHTML = `<div class="social-voter-empty"><span aria-hidden="true">!</span><b>Could not load voters.</b><small>${esc(voterModalError)}</small><button type="button" class="btn btn-outline btn-small" id="socialVoterRetry">Try again</button></div>`;
+    } else {
+      const message = voterModalRows.length
+        ? "No loaded voters match that search. Load more voters or try another name."
+        : voterModalHiddenCount
+          ? "Voter profiles are hidden by their privacy settings."
+          : voterModalHasMore
+            ? "No visible voters on this page. Load more to continue."
+            : "No one has voted this way yet.";
+      host.innerHTML = `<div class="social-voter-empty"><span aria-hidden="true">${voterModalHiddenCount ? "◌" : "✦"}</span><b>${message}</b><small>Profile visibility and block settings are respected.</small></div>`;
+    }
+  } else {
+    host.innerHTML = visible.map(voter => `<button type="button" class="social-voter-row" data-voter-profile="${esc(voter.username)}"><span class="social-voter-avatar">${socialAvatar(voter)}</span><span class="social-voter-copy"><b>${esc(voter.display_name || "HackVerse builder")}${voter.is_verified ? ' <i class="social-verified-mark">✓</i>' : ""}</b><small>@${esc(voter.username)}</small></span><span class="social-voter-type">${voter.vote_type === "downvote" ? "Downvoted" : "Upvoted"}</span><time>${esc(socialTime(voter.voted_at))}</time></button>`).join("");
+  }
+  const privacy = $("#socialVoterPrivacyNote");
+  if (privacy) privacy.textContent = voterModalHiddenCount ? `${voterModalHiddenCount} ${voterModalHiddenCount === 1 ? "profile is" : "profiles are"} hidden by privacy or block settings.` : "Only profiles you are allowed to view are shown.";
+  const more = $("#socialVoterLoadMore");
+  if (more) { more.hidden = !voterModalHasMore; more.disabled = voterModalLoading; more.textContent = voterModalLoading ? "Loading…" : "Load more"; }
+}
+
+async function loadVoterPage({ reset = false } = {}) {
+  if (!voterModalPostId || voterModalLoading) return;
+  const host = $("#socialVoterList");
+  const offset = reset ? 0 : voterModalOffset;
+  const requestedPostId = voterModalPostId;
+  const requestedType = voterModalType;
+  const requestId = ++voterModalRequestId;
+  if (reset) {
+    voterModalRows = []; voterModalOffset = 0; voterModalHasMore = false; voterModalHiddenCount = 0; voterModalError = "";
+    if (host) host.innerHTML = '<div class="social-voter-skeleton"><i></i><i></i><i></i></div>';
+  }
+  voterModalLoading = true;
+  renderVoterRows();
+  try {
+    const data = await socialRequest("voters", { postId: requestedPostId, voteType: requestedType, offset });
+    if (requestId !== voterModalRequestId || voterModalPostId !== requestedPostId || voterModalType !== requestedType || $("#socialVotersModal")?.hidden) return;
+    voterModalError = "";
+    voterModalRows.push(...(data.voters || []));
+    voterModalOffset = Number(data.nextOffset ?? (offset + (data.voters || []).length));
+    voterModalHasMore = Boolean(data.hasMore);
+    voterModalHiddenCount += Number(data.hiddenCount || 0);
+  } catch (error) {
+    if (requestId === voterModalRequestId) voterModalError = error.message || "Please try again.";
+  } finally {
+    if (requestId === voterModalRequestId) {
+      voterModalLoading = false;
+      renderVoterRows();
+    }
+  }
+}
+
+function selectVoterType(type) {
+  if (!['upvote', 'downvote'].includes(type) || voterModalType === type) return;
+  // Invalidate an in-flight page for the previous tab before starting this one.
+  // Otherwise a fast tab change could be ignored while the old request is pending.
+  voterModalRequestId += 1;
+  voterModalLoading = false;
+  voterModalType = type;
+  $("#socialVotersModal")?.querySelectorAll("[data-voter-type]").forEach(button => {
+    const active = button.dataset.voterType === type;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  void loadVoterPage({ reset: true });
+}
+
+function openVotersModal(postId, type = "upvote") {
+  if (!requireAccount()) return;
+  const post = socialPostCache.get(postId);
+  if (!post) { toast("This post is no longer available. Refresh the feed and try again."); return; }
+  voterModalPostId = postId;
+  voterModalType = ["upvote", "downvote"].includes(type) ? type : "upvote";
+  voterModalRequestId += 1; voterModalLoading = false;
+  voterModalRows = []; voterModalOffset = 0; voterModalHasMore = false; voterModalHiddenCount = 0; voterModalError = "";
+  voterModalReturnFocus = document.activeElement;
+  $("#socialVotersTitle").textContent = "Post votes";
+  $("#socialVotersDescription").textContent = "Explore the builders who reacted to this post. Select a member to open their profile.";
+  $("#socialUpvoterCount").textContent = Number(post.upvote_count || 0);
+  $("#socialDownvoterCount").textContent = Number(post.downvote_count || 0);
+  $("#socialVoterSearch").value = "";
+  $("#socialVotersModal").querySelectorAll("[data-voter-type]").forEach(button => {
+    const active = button.dataset.voterType === voterModalType;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  $("#socialVotersModal").hidden = false;
+  void loadVoterPage({ reset: true });
+}
+
+function closeVotersModal() {
+  const modal = $("#socialVotersModal");
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  voterModalRequestId += 1;
+  voterModalPostId = null; voterModalRows = []; voterModalLoading = false;
+  voterModalReturnFocus?.focus?.({ preventScroll: true });
+  voterModalReturnFocus = null;
+}
+
 function navigateToPost(postId) {
   if (!postId) return;
   navigateToRoute(`/post/${encodeURIComponent(postId)}`);
@@ -552,17 +661,22 @@ async function loadSocialFeed({ reset = false } = {}) {
   const host = $("#socialPostList"); if (!host || socialFeedLoading) return;
   if (!currentUser) { host.innerHTML = '<div class="empty-note">Sign in to explore community posts.</div>'; return; }
   const cacheKey = socialFeedCacheKey();
+  let cacheIsFresh = false;
   if (reset) {
     socialFeedCursor = null;
     try {
       const cached = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
       if (cached?.savedAt && Date.now() - cached.savedAt < 5 * 60 * 1000 && Array.isArray(cached.posts)) {
         host.innerHTML = cached.posts.map(renderSocialPost).join("") || '<div class="empty-note">No posts yet. Share an idea, a question or a lesson learned.</div>';
-        socialFeedCursor = null;
-        $("#socialLoadMore").hidden = true;
+        socialFeedCursor = cached.nextCursor || null;
+        $("#socialLoadMore").hidden = !socialFeedCursor;
         bindSocialPostActions(host);
+        cacheIsFresh = Date.now() - cached.savedAt < 45 * 1000;
       } else host.innerHTML = '<div class="loading-card">Loading posts…</div>';
     } catch { host.innerHTML = '<div class="loading-card">Loading posts…</div>'; }
+    // A recent feed is already painted from session cache. Avoid a second request
+    // every time the user briefly visits another route and returns to Posts.
+    if (cacheIsFresh) return;
   }
   socialFeedLoading = true;
   try {
@@ -578,12 +692,21 @@ async function loadSocialFeed({ reset = false } = {}) {
   } catch (error) { if (reset && !host.querySelector("[data-social-post]")) host.innerHTML = `<div class="empty-note">Could not load posts. ${esc(error.message)}</div>`; else if (!reset) toast(error.message); }
   finally { socialFeedLoading = false; }
 }
-const renderCommentRow = (comment, { pending = false } = {}) => `<div class="social-comment-row${pending ? " is-pending" : ""}" ${comment.id ? `data-comment-id="${esc(comment.id)}"` : ""}>${socialAvatar(comment.author)}<div><b>${esc(comment.author?.display_name || "Builder")}</b><p>${esc(comment.content)}</p><small>${pending ? "Sending…" : esc(socialTime(comment.created_at))}</small></div></div>`;
+const renderCommentRow = (comment, { pending = false } = {}) => {
+  const author = comment.author || {};
+  const authorName = esc(author.display_name || "Builder");
+  const profileLink = /^[A-Za-z0-9_]{3,24}$/.test(String(author.username || ""))
+    ? `<button type="button" class="social-comment-person" data-social-profile="${esc(author.username)}">${socialAvatar(author)}<b>${authorName}</b>${author.is_verified ? '<span class="social-verified-mark">✓</span>' : ''}</button>`
+    : `<span class="social-comment-person">${socialAvatar(author)}<b>${authorName}</b></span>`;
+  return `<div class="social-comment-row${pending ? " is-pending" : ""}" ${comment.id ? `data-comment-id="${esc(comment.id)}"` : ""}><div class="social-comment-body">${profileLink}<p>${esc(comment.content)}</p><small>${pending ? "Sending…" : esc(socialTime(comment.created_at))}</small></div></div>`;
+};
 async function toggleSocialComments(postId) {
   const panel = document.querySelector(`[data-social-comment-panel="${CSS.escape(postId)}"]`);
   if (!panel) return;
   if (!panel.hidden) { panel.hidden = true; return; }
   panel.hidden = false;
+  // Put the cursor in the composer on the same interaction; the list hydrates below it.
+  requestAnimationFrame(() => panel.querySelector(".social-comment-form input")?.focus({ preventScroll: true }));
   // The form is available immediately; the existing comments stream in underneath it.
   if (!panel.querySelector("form")) {
     panel.innerHTML = '<div class="social-comment-list"><div class="empty-note">Loading comments…</div></div><form class="social-comment-form"><input maxlength="1200" required placeholder="Write a thoughtful comment…"><button class="btn btn-primary btn-small" type="submit">Send</button></form>';
@@ -601,6 +724,7 @@ async function toggleSocialComments(postId) {
       try {
         const { comment } = await socialRequest("comment", { postId, content });
         row.outerHTML = renderCommentRow({ ...comment, author: comment.author || me });
+        bindSocialPostActions(panel);
         const post = socialPostCache.get(postId);
         updatePostCards(postId, { comment_count: Number(post?.comment_count || 0) + 1 });
       } catch (error) { row.remove(); input.value = content; toast(error.message); }
@@ -613,6 +737,7 @@ async function toggleSocialComments(postId) {
       const hasPending = Boolean(list.querySelector(".is-pending"));
       const shown = new Set([...list.querySelectorAll("[data-comment-id]")].map(el => el.dataset.commentId));
       list.insertAdjacentHTML("afterbegin", comments.filter(c => !shown.has(c.id)).map(c => renderCommentRow(c)).join("") || (hasPending ? "" : '<div class="empty-note">No comments yet. Start a constructive conversation.</div>'));
+      bindSocialPostActions(panel);
     } catch (error) { list.querySelector(".empty-note")?.remove(); list.insertAdjacentHTML("afterbegin", `<div class="empty-note">${esc(error.message)}</div>`); }
   }
 }
@@ -932,11 +1057,13 @@ async function loadAccountWorkspace() {
     privateProfile = snap.exists() ? snap.data() : null;
     let publicData = pubSnap.exists() ? pubSnap.data() : null;
     const savedProfile = privateProfile?.profileData || null;
+    const savedHasConsentField = Object.prototype.hasOwnProperty.call(savedProfile || {}, "profileConsentAt");
+    const legacyPublicConsent = !savedHasConsentField && String(savedProfile?.profileVisibility || "").toLowerCase() === "public";
     const shouldBePublic = evaluateProfilePublication({
       visibility: savedProfile?.profileVisibility,
-      
       displayName: savedProfile?.displayName,
-      username: savedProfile?.username
+      username: savedProfile?.username,
+      consent: Boolean(savedProfile?.profileConsentAt) || legacyPublicConsent
     }).canPublish;
     // Repair older/partially completed saves where the private user row exists
     // but the public directory projection was never committed.
@@ -999,7 +1126,10 @@ function openProfileEditor(mandatory = false) {
   const consentFieldExists = Object.prototype.hasOwnProperty.call(p, "profileConsentAt")
     || Object.prototype.hasOwnProperty.call(storedProfileData, "profileConsentAt");
   const savedConsentAt = p.profileConsentAt || storedProfileData.profileConsentAt;
-  $("#profilePublicConsent").checked = true;
+  const legacyPublicConsent = !consentFieldExists && String(p.profileVisibility || storedProfileData.profileVisibility || "").toLowerCase() === "public";
+  $("#profilePublicConsent").checked = Boolean(savedConsentAt || legacyPublicConsent);
+  const consentLabel = $("#profilePublicConsent")?.closest("label");
+  if (consentLabel) consentLabel.hidden = false;
   $("#profileMessage").textContent = "";
   $("#profileModalTitle").textContent = mandatory ? "Complete your builder profile." : "Update your builder profile.";
   $("#profileModalHint").textContent = "Start with your name and username, then choose who can discover you in Step 02. Save your progress and add other details whenever you are ready.";
@@ -1055,13 +1185,19 @@ async function saveProfile(event) {
     return;
   }
   const requestedVisibility = $("#profileVisibility").value || "public";
-  const consent = true; // legacy contact-publication flag; actual email/phone visibility is controlled in Step 04
-  // Do not silently turn a user's selected Public profile into a private one.
-  // The directory opt-in is deliberately explicit, but must be visible and the
-  // user must be told exactly what is missing before we save anything.
+  const consent = $("#profilePublicConsent").checked;
+  // Do not silently publish a profile without the member's explicit directory opt-in.
   const visibility = requestedVisibility;
-  const publication = evaluateProfilePublication({ visibility, displayName: name, username });
+  const publication = evaluateProfilePublication({ visibility, displayName: name, username, consent });
   const canPublish = publication.canPublish;
+  if (publication.reason === "consent") {
+    const visibilityStep = $$("#profileForm .profile-step")[1];
+    if (visibilityStep) visibilityStep.open = true;
+    message.textContent = "To appear in the public Builders directory, confirm the directory visibility consent in Step 02. Your profile will not be published until you opt in.";
+    $("#profilePublicConsent")?.focus();
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+    return;
+  }
   if (publication.reason === "identity") {
     const basicsStep = $$("#profileForm .profile-step")[0];
     if (basicsStep) basicsStep.open = true;
@@ -1092,10 +1228,10 @@ async function saveProfile(event) {
     github: validUrl($("#profileGithub").value), linkedin: validUrl($("#profileLinkedin").value),
     portfolio: validUrl($("#profilePortfolio").value), website: validUrl($("#profileWebsite")?.value) || validUrl($("#profilePortfolio").value),
     lookingForTeam: $("#profileLooking").value === "true",
-    publicEmail: consent && $("#profileEmailVisibility").value === "public" ? (currentUser.email || "") : "",
-    publicEmailLower: consent && $("#profileEmailVisibility").value === "public" ? (currentUser.email || "").toLowerCase() : "",
-    publicPhone: consent && $("#profilePhoneVisibility").value === "public" ? phone : "",
-    publicPhoneDigits: consent && $("#profilePhoneVisibility").value === "public" ? phone.replace(/\D/g, "") : "",
+    publicEmail: $("#profileEmailVisibility").value === "public" ? (currentUser.email || "") : "",
+    publicEmailLower: $("#profileEmailVisibility").value === "public" ? (currentUser.email || "").toLowerCase() : "",
+    publicPhone: $("#profilePhoneVisibility").value === "public" ? phone : "",
+    publicPhoneDigits: $("#profilePhoneVisibility").value === "public" ? phone.replace(/\D/g, "") : "",
     profileVisibility: visibility,
     hackathonsParticipatedCount: Number(publicProfile?.hackathonsParticipatedCount ?? privateProfile?.hackathonsParticipatedCount ?? 0),
     profileConsentAt: consent ? (privateProfile?.profileConsentAt || serverTimestamp()) : null,
@@ -1319,6 +1455,7 @@ function displayOpportunityRecords(records) {
   allEventsVisible = 24; populateEventFilterOptions(); renderEvents(); renderSaved();
 }
 async function loadEvents({ forceRefresh = false } = {}) {
+  if (eventsLoadInProgress) return;
   const grid = $("#eventGrid");
   if (!currentUser) { events = []; updateEventAccessUI(); renderEvents(); renderSaved(); return; }
   if (!db) {
@@ -1334,6 +1471,7 @@ async function loadEvents({ forceRefresh = false } = {}) {
     if (cached) { displayOpportunityRecords(cached); renderedCache = true; }
   }
   if (!renderedCache) grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
+  eventsLoadInProgress = true;
   try {
     // Render the first page immediately; hydrate later pages in the background
     // so the homepage does not wait for every directory record.
@@ -1360,6 +1498,9 @@ async function loadEvents({ forceRefresh = false } = {}) {
       grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Supabase database rules and connection.</div>';
       $("#eventGridAll").innerHTML = '<div class="loading-card">The opportunity directory could not be loaded.</div>';
     }
+  } finally {
+    eventsLoadInProgress = false;
+    lastOpportunityRefreshAt = Date.now();
   }
 }
 
@@ -4360,8 +4501,8 @@ function initAdvancedUI(){
     const base=publicProfile||privateProfile?.profileData;
     if(!base){toast("Complete your profile first.");return;}
     const nextVisibility=e.target.value;
-    const publication=evaluateProfilePublication({visibility:nextVisibility,displayName:base.displayName,username:base.username});
-    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Add your name and username to publish your public profile.");return;}
+    const publication=evaluateProfilePublication({visibility:nextVisibility,displayName:base.displayName,username:base.username,consent:Boolean(base.profileConsentAt || privateProfile?.profileData?.profileConsentAt)});
+    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast(publication.reason==="consent"?"Open Edit profile and confirm public Builders directory consent first.":"Add your name and username to publish your public profile.");return;}
     const next={...base,profileVisibility:nextVisibility};
     try{
       await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:nextVisibility,profileData:next,updatedAt:serverTimestamp()},{merge:true});
@@ -4453,7 +4594,14 @@ function handleRoute({ force = false } = {}) {
   });
   if (blocked) { aiPanel.hidden = true; aiAssistant.classList.remove("ai-on-wish-page"); }
   $$('[data-route]').forEach(a => a.classList.toggle("active", a.dataset.route === view));
-  document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
+  const nav = document.querySelector(".desktop-nav");
+  nav?.classList.remove("mobile-open");
+  $("#menuToggle")?.setAttribute("aria-expanded", "false");
+  $("#menuToggle")?.setAttribute("aria-label", "Open navigation");
+  $("#navMoreMenu").hidden = true;
+  $("#navMoreBtn").setAttribute("aria-expanded", "false");
+  const hasMoreActiveRoute = Boolean($("#navMoreMenu [data-route].active"));
+  $("#navMoreBtn")?.classList.toggle("active", hasMoreActiveRoute);
   const titles = { home: "HackVerse", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
   document.title = `${titles[view] || "HackVerse"} — HackVerse`;
   if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
@@ -4487,8 +4635,9 @@ function bindUI() {
     };
     const forceRevealOnResume = () => {
       pageReady = true; minimumElapsed = true;
-      dismissSplash(true);
-      handleRoute();
+      // A background-tab timer may be throttled. Remove the overlay directly so
+      // it can never leave a black screen over an otherwise restored app.
+      if (bootSplash.isConnected) { dismissed = true; bootSplash.remove(); }
     };
     if (!pageReady) window.addEventListener("load", () => { pageReady = true; dismissSplash(); }, { once: true });
     window.addEventListener("pageshow", forceRevealOnResume);
@@ -4511,8 +4660,12 @@ function bindUI() {
     event.preventDefault();
     navigateToRoute(target.pathname + target.search);
   });
-  document.addEventListener("visibilitychange",()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);});
-  window.setInterval(()=>{if(!document.hidden&&activeConversationId&&currentMessages.some(m=>m.attachment?.storagePath))hydrateChatAttachmentUrls(activeConversationId,currentMessages);},10*60*1000);
+  document.addEventListener("visibilitychange",()=>{
+    if (document.hidden || !activeConversationId || !currentMessages.some(m=>m.attachment?.storagePath)) return;
+    if (Date.now() - lastChatAttachmentHydratedAt < 60 * 1000) return;
+    lastChatAttachmentHydratedAt = Date.now();
+    void hydrateChatAttachmentUrls(activeConversationId,currentMessages);
+  });
   $("#year").textContent = new Date().getFullYear();
   initAdvancedUI();
   $("#appDialogClose").onclick=closeInAppDialog;
@@ -4565,6 +4718,17 @@ function bindUI() {
   $("#cancelSocialPost").onclick=()=>{$("#socialPostForm").hidden=true;$("#focusPostComposer").setAttribute("aria-expanded","false");};
   $("#refreshSocialFeed").onclick=()=>loadSocialFeed({reset:true});
   $("#socialLoadMore").onclick=()=>loadSocialFeed();
+  $("#socialVotersClose").onclick=closeVotersModal;
+  $("#socialVotersModal").addEventListener("click", event => {
+    if (event.target.id === "socialVotersModal") { closeVotersModal(); return; }
+    const typeButton = event.target.closest("[data-voter-type]");
+    if (typeButton) { selectVoterType(typeButton.dataset.voterType); return; }
+    const profileButton = event.target.closest("[data-voter-profile]");
+    if (profileButton) { const username = profileButton.dataset.voterProfile; closeVotersModal(); navigateToProfile(username); return; }
+    if (event.target.closest("#socialVoterRetry")) { void loadVoterPage({ reset: true }); }
+  });
+  $("#socialVoterSearch").addEventListener("input", renderVoterRows);
+  $("#socialVoterLoadMore").onclick=()=>loadVoterPage();
   $$('[data-social-feed]').forEach(button=>button.addEventListener("click",()=>{socialFeedType=button.dataset.socialFeed;$$('[data-social-feed]').forEach(x=>x.classList.toggle("active",x===button));loadSocialFeed({reset:true});}));
   $("#communityReportForm").addEventListener("submit",submitCommunityReport);
   $("#reportTargetType").addEventListener("change",updateReportFields);
@@ -4580,21 +4744,19 @@ function bindUI() {
   $("#projectForm").addEventListener("submit", createProject);
   $$("[data-close]").forEach(button => button.addEventListener("click", () => { const id = button.dataset.close; if (id === "profileModal") closeProfileModal(); else hideModal(id); }));
   $$(".modal-backdrop").forEach(modal => modal.addEventListener("click", e => { if (e.target === modal) { if (modal.id === "profileModal") closeProfileModal(); else hideModal(modal.id); } }));
-  document.addEventListener("keydown", e => { if (e.key === "Escape") { closeMainNav(); } if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(currentRouteName()==="aiwish") navigateToRoute("home"); else { $("#aiPanel").hidden = true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") { closeMainNav(); closeVotersModal(); } if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(currentRouteName()==="aiwish") navigateToRoute("home"); else { $("#aiPanel").hidden = true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
   $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
   $("#refreshEventsBtn").onclick = () => requireAccount() && loadEvents({ forceRefresh: true });
-  // Refresh at the same 30-minute cadence as the local cache. Manual refresh always bypasses it.
-  // Discovery runs every six hours, so frequent full-directory reads are unnecessary.
-  let eventRefreshInProgress = false;
+  // Refresh cached opportunities only when the user returns to a relevant route
+  // and the last successful hydration is old. No background polling or duplicate reads.
   const refreshOpportunityFeed = async () => {
-    if (!currentUser || !db || document.hidden || eventRefreshInProgress) return;
-    eventRefreshInProgress = true;
-    try { await loadEvents(); } finally { eventRefreshInProgress = false; }
+    if (!currentUser || !db || document.hidden || !["home", "opportunities"].includes(currentRouteName())) return;
+    if (Date.now() - lastOpportunityRefreshAt < 30 * 60 * 1000) return;
+    await loadEvents();
   };
-  window.setInterval(refreshOpportunityFeed, 30 * 60 * 1000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshOpportunityFeed(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) void refreshOpportunityFeed(); });
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
