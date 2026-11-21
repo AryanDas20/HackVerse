@@ -120,6 +120,14 @@ async function requireSession() {
   return session;
 }
 
+function applyArrayContainsFilter(request, field, value) {
+  // `participants` has a dedicated indexed SQL column; profile skills and
+  // interests live inside the JSONB document payload.
+  return field === "participants"
+    ? request.contains("participants", [value])
+    : request.contains("data", { [field]: [value] });
+}
+
 async function fetchRows(collectionRef, constraints = []) {
   await requireSession();
 
@@ -146,7 +154,7 @@ async function fetchRows(collectionRef, constraints = []) {
       case ">=": request = request.gte(scalarColumn, String(constraint.value)); break;
       case "<": request = request.lt(scalarColumn, String(constraint.value)); break;
       case "<=": request = request.lte(scalarColumn, String(constraint.value)); break;
-      case "array-contains": request = request.contains("participants", [constraint.value]); break;
+      case "array-contains": request = applyArrayContainsFilter(request, field, constraint.value); break;
       case "in":
         if (Array.isArray(constraint.value) && constraint.value.length) request = request.in(scalarColumn, constraint.value.map(String));
         break;
@@ -288,8 +296,12 @@ function rowFor(ref, data) {
 }
 
 export async function setDoc(ref, value, options = {}) {
-  const existing = await getDoc(ref);
-  const next = options.merge && existing.exists() ? mergeDeep(existing.data() || {}, value) : clone(value || {});
+  // A normal set is a single upsert. Only merge-style writes need the extra read.
+  let next = clone(value || {});
+  if (options.merge) {
+    const existing = await getDoc(ref);
+    if (existing.exists()) next = mergeDeep(existing.data() || {}, value);
+  }
   const row = rowFor(ref, next);
   const { error } = await supabaseClient.from("documents").upsert(row, { onConflict: "path" });
   if (error) throw error;
@@ -325,23 +337,27 @@ export async function runTransaction(_db, callback) {
 
 export function onSnapshot(target, callback, errorCallback) {
   let stopped = false;
+  let inFlight = false;
   let previous = "";
   const tick = async () => {
-    if (stopped) return;
+    if (stopped || inFlight || document.hidden) return;
+    inFlight = true;
     try {
       const snapshot = await getDocs(target);
+      if (stopped) return;
       const signature = JSON.stringify(snapshot.docs.map(d => [d.id, d.data()]));
       if (signature !== previous) { previous = signature; callback(snapshot); }
     } catch (error) { errorCallback?.(error); }
+    finally { inFlight = false; }
   };
   // Poll much less aggressively for normal collections, pause background polling,
   // and keep only the live typing indicator on a short interval. The former
   // universal 3-second timer multiplied network traffic across every open view.
   tick();
   const path = target?.__kind === "query" ? target.collectionRef?.path : target?.path;
-  const intervalMs = String(path || "").endsWith("/typing") ? 3500
-    : String(path || "").endsWith("/messages") ? 9000
-    : String(path || "") === "conversations" ? 15000 : 20000;
+  const intervalMs = String(path || "").endsWith("/typing") ? 2000
+    : String(path || "").endsWith("/messages") ? 2800
+    : String(path || "") === "conversations" ? 7500 : 15000;
   const timer = setInterval(() => { if (!document.hidden) tick(); }, intervalMs);
   const onVisible = () => { if (!document.hidden) tick(); };
   document.addEventListener("visibilitychange", onVisible);

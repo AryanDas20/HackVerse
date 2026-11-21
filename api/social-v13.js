@@ -139,7 +139,7 @@ async function handler(req, res) {
     client = clients(); user = await authenticate(client, req);
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const action = String(body.action || "");
-    const readActions = new Set(["feed","profile","profile-tab","post-detail","comments","my-reports","preferences","blocked-users"]);
+    const readActions = new Set(["feed","profile","profile-stats","profile-tab","post-detail","comments","voters","my-reports","preferences","blocked-users"]);
     // Hot interaction paths run the rate-limit check alongside their reads; every write awaits it first.
     const deferredLimit = new Set(["vote","comment","repost","unrepost"]);
     let limitCheck = Promise.resolve();
@@ -209,6 +209,97 @@ async function handler(req, res) {
     if (action === "post-detail") {
       const { post, author, viewerVote } = await loadVisiblePost(client, body.postId, user.id, { withVote: true });
       return res.status(200).json({ post: { ...post, viewer_vote: viewerVote, author } });
+    }
+
+    if (action === "voters") {
+      await rateLimit(client, user, "voters", 20, 60);
+      const post = await visiblePost(client, body.postId, user.id);
+      const { data: voteRows, error: voteError, count: voteCount } = await client.from("votes")
+        .select("user_id,value,created_at", { count: "exact" })
+        .eq("post_id", post.id).order("created_at", { ascending: false }).limit(500);
+      if (voteError) throw voteError;
+      const ids = [...new Set((voteRows || []).map(row => row.user_id))];
+      const [profileResult, followResult, blockResult] = await Promise.all([
+        ids.length ? client.from("profiles").select("id,username,display_name,avatar_url,profile_visibility,is_private").in("id", ids) : Promise.resolve({ data: [], error: null }),
+        ids.length ? client.from("follows").select("following_id").eq("follower_id", user.id).eq("status", "active").in("following_id", ids) : Promise.resolve({ data: [], error: null }),
+        client.from("user_blocks").select("blocker_id,blocked_id").or(`blocker_id.eq.${user.id},blocked_id.eq.${user.id}`).limit(1000)
+      ]);
+      for (const result of [profileResult, followResult, blockResult]) if (result.error) throw result.error;
+      const profiles = new Map((profileResult.data || []).map(profile => [profile.id, profile]));
+      const followed = new Set((followResult.data || []).map(row => row.following_id));
+      const blocked = new Set((blockResult.data || []).map(row => row.blocker_id === user.id ? row.blocked_id : row.blocker_id));
+      const output = { upvoters: [], downvoters: [], hiddenUpvotes: 0, hiddenDownvotes: 0 };
+      for (const vote of voteRows || []) {
+        const profile = profiles.get(vote.user_id);
+        const visibility = profile?.profile_visibility || (profile?.is_private ? "private" : "public");
+        const isVisible = profile && !blocked.has(vote.user_id) && (vote.user_id === user.id || visibility === "public" || followed.has(vote.user_id));
+        if (!isVisible) {
+          if (vote.value === "upvote") output.hiddenUpvotes += 1; else output.hiddenDownvotes += 1;
+          continue;
+        }
+        const person = { username: profile.username || "", display_name: profile.display_name || "HackVerse member", avatar_url: safeHttpUrl(profile.avatar_url) };
+        if (vote.value === "upvote") output.upvoters.push(person); else output.downvoters.push(person);
+      }
+      return res.status(200).json({ ...output, upvoteCount: Number(post.upvote_count || 0), downvoteCount: Number(post.downvote_count || 0), totalCount: Number(voteCount || 0), truncated: Number(voteCount || 0) > (voteRows || []).length, postId: post.id });
+    }
+
+    if (action === "profile-stats") {
+      // This endpoint is account-scoped: it only returns the authenticated
+      // member's own activity, including private hackathon participation.
+      const [profileResult, buildResult, projectResult, historyResult, socialPostResult] = await Promise.all([
+        client.from("profiles").select("post_count,upvote_count,follower_count,following_count").eq("id", user.id).maybeSingle(),
+        client.from("documents").select("doc_id,data").eq("collection_path", "builderPosts").eq("owner_uid", user.id).limit(1000),
+        client.from("documents").select("doc_id").eq("collection_path", "projects").eq("owner_uid", user.id).limit(1000),
+        client.from("documents").select("doc_id,data").eq("collection_path", "hackathonHistory").eq("owner_uid", user.id).limit(1000),
+        client.from("posts").select("id,upvote_count,comment_count").eq("author_id", user.id).eq("is_deleted", false).limit(1000)
+      ]);
+      for (const result of [profileResult, buildResult, projectResult, historyResult, socialPostResult]) {
+        if (result.error) throw result.error;
+      }
+      const buildRows = buildResult.data || [];
+      const buildIds = buildRows.map(row => row.doc_id).filter(Boolean);
+      let legacyVotes = [], legacyComments = [];
+      if (buildIds.length) {
+        const [votesResult, commentsResult] = await Promise.all([
+          client.from("documents").select("doc_id").eq("collection_path", "builderPostVotes").in("data->>postId", buildIds).limit(10000),
+          client.from("documents").select("doc_id").eq("collection_path", "builderPostComments").in("data->>postId", buildIds).limit(10000)
+        ]);
+        if (votesResult.error) throw votesResult.error;
+        if (commentsResult.error) throw commentsResult.error;
+        legacyVotes = votesResult.data || [];
+        legacyComments = commentsResult.data || [];
+      }
+      const socialPosts = socialPostResult.data || [];
+      const history = (historyResult.data || []).map(row => row.data || {});
+      const profile = profileResult.data || {};
+      const builds = buildRows.length;
+      const projects = (projectResult.data || []).length;
+      const posts = Number(profile.post_count || 0);
+      const socialLikes = profile.upvote_count != null
+        ? Number(profile.upvote_count)
+        : socialPosts.reduce((sum, row) => sum + Number(row.upvote_count || 0), 0);
+      const socialComments = socialPosts.reduce((sum, row) => sum + Number(row.comment_count || 0), 0);
+      const likesReceived = socialLikes + legacyVotes.length;
+      const commentsReceived = socialComments + legacyComments.length;
+      const winnerCount = history.filter(row => /winner|1st place|first place/i.test(String(row.outcome || ""))).length;
+      const finalistCount = history.filter(row => /runner.?up|finalist|2nd place|second place/i.test(String(row.outcome || ""))).length;
+      const recognitionCount = history.filter(row => /top\s*10|special mention|honou?rable mention/i.test(String(row.outcome || ""))).length;
+      const pointsBreakdown = {
+        builds: builds * 100,
+        projects: projects * 60,
+        posts: posts * 20,
+        likes: likesReceived * 5,
+        hackathons: history.length * 50,
+        achievements: winnerCount * 100 + finalistCount * 50 + recognitionCount * 25
+      };
+      const points = Object.values(pointsBreakdown).reduce((sum, value) => sum + value, 0);
+      return res.status(200).json({
+        stats: {
+          builds, projects, posts, likesReceived, commentsReceived, hackathons: history.length,
+          followers: Number(profile.follower_count || 0), following: Number(profile.following_count || 0),
+          points, pointsBreakdown, achievements: { winners: winnerCount, finalists: finalistCount, otherRecognition: recognitionCount }
+        }
+      });
     }
 
     if (action === "profile") {
@@ -282,21 +373,6 @@ async function handler(req, res) {
       const { data, error } = await client.from("posts").insert({ ...post, author_id: user.id }).select("*").single();
       if (error) throw error;
       return res.status(201).json({ post: data });
-    }
-
-    if (action === "voter-list") {
-      const postId = String(body.postId || "");
-      const value = String(body.value || "");
-      if (!/[0-9a-f-]{36}/i.test(postId) || !["upvote", "downvote"].includes(value)) return fail(res,400,"Choose a valid post and vote type.");
-      await visiblePost(client, postId, user.id);
-      const { data: votes, error: voteError } = await client.from("votes").select("user_id,created_at").eq("post_id",postId).eq("value",value).order("created_at",{ascending:false}).limit(100);
-      if (voteError) throw voteError;
-      const ids = [...new Set((votes || []).map(row => row.user_id).filter(Boolean))];
-      if (!ids.length) return res.status(200).json({ voters: [] });
-      const { data: profiles, error: profileError } = await client.from("profiles").select("id,username,display_name,avatar_url").in("id",ids);
-      if (profileError) throw profileError;
-      const byId = new Map((profiles || []).map(profile => [profile.id, profile]));
-      return res.status(200).json({ voters: ids.map(id => byId.get(id)).filter(profile => profile && profile.username).map(profile => ({ username: profile.username, display_name: profile.display_name, avatar_url: profile.avatar_url })) });
     }
 
     if (action === "vote") {

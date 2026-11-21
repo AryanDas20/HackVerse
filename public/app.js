@@ -6,22 +6,25 @@ import {
   serverTimestamp, addDoc, setDoc, deleteDoc, onSnapshot, updateDoc, runTransaction, writeBatch, httpsCallable
 } from './data-layer.js';
 import { supabaseConfig } from './supabase-config.js';
-import { createCareerToolkit } from './career-toolkit.js';
+import { evaluateProfilePublication } from "./profile-policy.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const CONFIGURED = Boolean(supabaseConfig.url && !String(supabaseConfig.url).startsWith("YOUR_") && supabaseConfig.anonKey && !String(supabaseConfig.anonKey).startsWith("YOUR_"));
 let currentUser = null, authMode = "signin", isAdminUser = false;
-const careerToolkit = createCareerToolkit(() => currentUser);
-let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [];
+let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [], peopleDirectoryRows = [];
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null, chatReturnRoute = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
+let peopleCursor = null, peopleHasMore = false, peopleLoading = false, peopleSearchKey = "", peopleSearchRequest = 0;
 let allEventsVisible = 24, currentConversations = [], currentMessages = [], selectedGroupMembers = new Map(), matchedTeamCandidates = [];
 let stopTypingListener = null, typingStopTimer = null, voiceRecorder = null, voiceChunks = [], activeChatFilter = "all", replyingToMessageId = null, aiAvailableBuilders = [], isSendingChatMessage = false;
 let aiMode = "chat", activeAiConversationId = null, activeAiConversationMode = "chat", currentAiMessages = [], pendingAiActions = [], isAiSending = false, pendingAiUserMessage = "", aiAvailableBuilderUids = [];
 let emailVerificationGuard = false, pendingChatFile = null;
 let builderPosts = [], builderPostVotes = [], builderPostReposts = [], builderPostComments = [], builderPostSaves = [], builderFollows = [], hackathonHistory = [];
-let builderFeedFilter = "latest", feedLoadInProgress = false;
+let builderFeedFilter = "latest", feedLoadInProgress = false, lastBuilderFeedLoadedAt = 0;
+let builderCommentsLoading = new Set(), builderCommentsLoaded = new Set(), pendingBuilderVotes = new Set();
+let profileStats = null, profileStatsLoading = false, profileNudgeTimer = null;
+let pendingAudioObjectUrl = "", pendingAudioObjectFile = null;
 let socialFeedType = "explore", socialFeedCursor = null, socialFeedLoading = false, publicProfilePageData = null, publicProfileTab = "posts", publicProfileTabCursor = null, publicProfileTabLoading = false;
 let dialogResolver = null;
 
@@ -30,7 +33,7 @@ const listFrom = value => String(value || "").split(",").map(x => x.trim()).filt
 const normalizedList = value => listFrom(value).map(x => x.toLowerCase()).filter((x, i, a) => a.indexOf(x) === i);
 const validUrl = value => { if (!value) return ""; try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) ? u.href : ""; } catch { return ""; } };
 
-const APP_ROUTE_NAMES = new Set(["home", "posts", "feed", "opportunities", "career-match", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings"]);
+const APP_ROUTE_NAMES = new Set(["home", "posts", "feed", "opportunities", "people", "messages", "aiwish", "career-match", "profile", "saved", "reports", "notifications", "settings"]);
 function routePath(route) {
   const value = String(route || "home").trim();
   if (value === "/" || value === "home") return "/";
@@ -195,15 +198,26 @@ function makeShareCardBlob(item) {
       const type = String(item.type || "update").toUpperCase();
       ctx.fillStyle = "#ff647f"; rounded(112, 278, Math.min(300, Math.max(178, 30 + type.length * 15)), 54, 27); ctx.fill();
       ctx.fillStyle = "#201722"; ctx.font = "800 20px Arial, sans-serif"; ctx.fillText(type, 138, 313);
-      ctx.fillStyle = "#fffaf8"; ctx.font = "800 58px Arial, sans-serif";
-      const titleLines = shareCanvasText(ctx, item.title || "A new idea from HackVerse", 112, 430, 820, 72, 3);
-      const descY = 430 + Math.max(1, titleLines) * 72 + 46;
-      ctx.fillStyle = "rgba(255,250,248,.78)"; ctx.font = "400 29px Arial, sans-serif";
-      shareCanvasText(ctx, item.description || "Explore this update and connect with the builder community.", 112, descY, 820, 42, 2);
-      ctx.fillStyle = "rgba(255,255,255,.10)"; rounded(112, 820, 820, 112, 24); ctx.fill();
-      ctx.fillStyle = "#ffcf82"; ctx.font = "700 20px Arial, sans-serif"; ctx.fillText("OPEN THE LINK", 144, 860);
-      ctx.fillStyle = "#fffaf8"; ctx.font = "500 19px Arial, sans-serif";
-      shareCanvasText(ctx, item.url || location.origin, 144, 899, 750, 25, 2);
+      ctx.fillStyle = "#fffaf8"; ctx.font = "800 52px Arial, sans-serif";
+      const titleLines = shareCanvasText(ctx, item.title || "A new idea from HackVerse", 112, 420, 820, 64, 2);
+      const descY = 420 + Math.max(1, titleLines) * 64 + 34;
+      ctx.fillStyle = "rgba(255,250,248,.78)"; ctx.font = "400 26px Arial, sans-serif";
+      shareCanvasText(ctx, item.description || "Explore this update and connect with the builder community.", 112, descY, 820, 38, 2);
+      const details = Array.isArray(item.details) ? item.details.filter(row => row?.label && row?.value).slice(0,4) : [];
+      if (details.length) {
+        ctx.fillStyle = "rgba(255,255,255,.075)"; rounded(112, 700, 820, 112, 20); ctx.fill();
+        details.forEach((detail, index) => {
+          const col = index % 2, row = Math.floor(index / 2), x = 140 + col * 400, y = 744 + row * 48;
+          ctx.fillStyle = "#ffcf82"; ctx.font = "700 14px Arial, sans-serif";
+          ctx.fillText(String(detail.label).toUpperCase().slice(0,22), x, y);
+          ctx.fillStyle = "#fffaf8"; ctx.font = "500 18px Arial, sans-serif";
+          shareCanvasText(ctx, String(detail.value), x + 118, y, 250, 22, 1);
+        });
+      }
+      ctx.fillStyle = "rgba(255,255,255,.10)"; rounded(112, 840, 820, 96, 22); ctx.fill();
+      ctx.fillStyle = "#ffcf82"; ctx.font = "700 19px Arial, sans-serif"; ctx.fillText("OPEN THE LINK", 144, 878);
+      ctx.fillStyle = "#fffaf8"; ctx.font = "500 17px Arial, sans-serif";
+      shareCanvasText(ctx, item.url || location.origin, 144, 910, 750, 22, 1);
       ctx.fillStyle = "rgba(255,255,255,.58)"; ctx.font = "500 18px Arial, sans-serif"; ctx.fillText("Built for people who build.", 112, 978);
       canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Could not create the share image.")), "image/png");
     } catch (error) { reject(error); }
@@ -223,7 +237,7 @@ async function shareExternally(item) {
   const normalized = { ...item, url };
   const payload = {
     title: normalized.title || "HackVerse",
-    text: `${normalized.description || "Explore this on HackVerse."}\n${url}`,
+    text: shareTextForItem(normalized),
     url
   };
   // Invoke the platform share sheet before awaiting any image generation so mobile browsers
@@ -251,12 +265,13 @@ async function sendSharedItemToConversation(item, conversationId, forwarded = fa
   if (!currentUser || !db || !conversationId) throw new Error("Choose a chat before sharing.");
   const title = String(item.title || "HackVerse update").slice(0, 180);
   const description = String(item.description || "").slice(0, 600);
+  const details = Array.isArray(item.details) ? item.details.slice(0, 6).map(row => ({ label: String(row?.label || "").slice(0, 40), value: String(row?.value || "").slice(0, 100) })).filter(row => row.label && row.value) : [];
   const url = validUrl(item.url) || `${location.origin}/`;
-  const text = `${forwarded ? "Forwarded" : "Shared"} ${item.type || "update"}: ${title}\n${description}\n${url}`.slice(0, 2000);
+  const text = `${forwarded ? "Forwarded" : "Shared"} ${item.type || "update"}:\n${shareTextForItem({ ...item, title, description, details, url })}`.slice(0, 2000);
   await addDoc(collection(db, "conversations", conversationId, "messages"), {
     authorUid: currentUser.uid,
     authorName: publicProfile?.displayName || currentUser.displayName || "Member",
-    text, kind: "share", forwarded: Boolean(forwarded), sharedItem: { type: item.type || "update", title, description, url, sourceId: String(item.sourceId || "").slice(0, 120) },
+    text, kind: "share", forwarded: Boolean(forwarded), sharedItem: { type: item.type || "update", title, description, details, url, sourceId: String(item.sourceId || "").slice(0, 120) },
     createdAt: serverTimestamp()
   });
   await updateDoc(doc(db, "conversations", conversationId), {
@@ -267,8 +282,9 @@ async function sendSharedItemToConversation(item, conversationId, forwarded = fa
 function shareTextForItem(item) {
   const title = String(item.title || "HackVerse update");
   const description = String(item.description || "See this update on HackVerse.");
+  const details = Array.isArray(item.details) ? item.details.slice(0, 6).map(row => `${String(row?.label || "")}: ${String(row?.value || "")}`).filter(line => !line.startsWith(": ")) : [];
   const url = validUrl(item.url) || `${location.origin}/`;
-  return `${title}\n${description}\n${url}`.slice(0, 1800);
+  return [title, description, ...details, url].filter(Boolean).join("\n").slice(0, 1800);
 }
 function closeShareContactPicker() {
   const picker = $("#shareContactPicker");
@@ -378,6 +394,7 @@ function openShareMenu(item) {
     <button class="modal-close" type="button" data-share-action-close aria-label="Close">×</button>
     <div class="eyebrow">SHARE WITH YOUR NETWORK</div><h2 id="shareActionTitle">Share this update</h2>
     <p class="muted">Choose a contact in WhatsApp, your device share sheet, or a HackVerse conversation.</p>
+    ${Array.isArray(item.details) && item.details.length ? `<div class="share-opportunity-preview">${item.details.slice(0,4).map(row => `<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>` : ""}
     <div class="share-action-list">
       <a class="share-action-option" href="${esc(whatsappUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-action-icon">↗</span><span><b>WhatsApp</b><small>Choose a contact in WhatsApp</small></span><span class="share-action-arrow">→</span></a>
       <button class="share-action-option" type="button" data-share-native><span class="share-action-icon">⇧</span><span><b>More apps and contacts</b><small>Open your device share sheet</small></span><span class="share-action-arrow">→</span></button>
@@ -401,7 +418,54 @@ function openShareMenu(item) {
 // the visible cards directly, so interactions feel instant and never need a full feed reload.
 const socialPostCache = new Map();
 const pendingVotes = new Set();
-const renderPostCounts = post => `<button type="button" class="social-vote-count" data-voter-list="upvote" data-post-id="${esc(post.id)}">▲ ${Number(post.upvote_count || 0)} upvotes</button><button type="button" class="social-vote-count" data-voter-list="downvote" data-post-id="${esc(post.id)}">▼ ${Number(post.downvote_count || 0)} downvotes</button><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span>`;
+let activeVoterType = "upvote";
+let voterModalPostId = "";
+let voterLists = { upvoters: [], downvoters: [], hiddenUpvotes: 0, hiddenDownvotes: 0, truncated: false };
+async function openVoterModal(postId, initialType = "upvote") {
+  if (!currentUser) { openAuth(); toast("Sign in to view voter details."); return; }
+  voterModalPostId = String(postId || ""); activeVoterType = initialType === "downvote" ? "downvote" : "upvote";
+  voterLists = { upvoters: [], downvoters: [], hiddenUpvotes: 0, hiddenDownvotes: 0, truncated: false };
+  const modal = $("#voterModal"); if (!modal) return;
+  modal.hidden = false;
+  $("#voterModalTitle").textContent = "People who voted";
+  $("#voterModalSummary").textContent = "Loading voter details…";
+  $("#voterList").innerHTML = '<div class="empty-note">Loading voter details…</div>';
+  $("#voterSearch").value = "";
+  $$('[data-voter-type]', modal).forEach(button => button.classList.toggle("active", button.dataset.voterType === activeVoterType));
+  try {
+    const data = await socialRequest("voters", { postId: voterModalPostId });
+    if (voterModalPostId !== String(postId || "")) return;
+    voterLists = {
+      upvoters: Array.isArray(data.upvoters) ? data.upvoters : [],
+      downvoters: Array.isArray(data.downvoters) ? data.downvoters : [],
+      hiddenUpvotes: Number(data.hiddenUpvotes || 0),
+      hiddenDownvotes: Number(data.hiddenDownvotes || 0),
+      truncated: Boolean(data.truncated)
+    };
+    $("#voterUpCount").textContent = String(Number(data.upvoteCount ?? voterLists.upvoters.length + voterLists.hiddenUpvotes));
+    $("#voterDownCount").textContent = String(Number(data.downvoteCount ?? voterLists.downvoters.length + voterLists.hiddenDownvotes));
+    const hiddenTotal = voterLists.hiddenUpvotes + voterLists.hiddenDownvotes;
+    $("#voterModalSummary").textContent = `${Number(data.upvoteCount || 0) + Number(data.downvoteCount || 0)} total votes · ${hiddenTotal ? `${hiddenTotal} profile${hiddenTotal === 1 ? " is" : "s are"} hidden by privacy settings` : "Public voter profiles are shown below"}${voterLists.truncated ? " · showing the most recent 500 votes" : ""}`;
+    renderVoterList();
+  } catch (error) {
+    $("#voterModalSummary").textContent = "Could not load voter details.";
+    $("#voterList").innerHTML = `<div class="empty-note">${esc(error.message || "Please try again.")}</div><button type="button" class="btn btn-outline" id="retryVoterLoad">Retry</button>`;
+    $("#retryVoterLoad")?.addEventListener("click", () => openVoterModal(postId, activeVoterType), { once: true });
+  }
+}
+function renderVoterList() {
+  const host = $("#voterList"); if (!host) return;
+  const list = activeVoterType === "downvote" ? voterLists.downvoters : voterLists.upvoters;
+  const hidden = activeVoterType === "downvote" ? voterLists.hiddenDownvotes : voterLists.hiddenUpvotes;
+  const term = String($("#voterSearch")?.value || "").trim().toLowerCase();
+  const visible = list.filter(person => `${person.display_name || ""} ${person.username || ""}`.toLowerCase().includes(term));
+  const label = activeVoterType === "downvote" ? "downvotes" : "upvotes";
+  if (!visible.length && !hidden && !voterLists.truncated) { host.innerHTML = `<div class="empty-note">No ${label} to show${term ? " for that search" : " yet"}.</div>`; return; }
+  host.innerHTML = visible.map(person => `<button type="button" class="voter-row" data-voter-profile="${esc(person.username || "")}" ${person.username ? "" : "disabled"}><span class="voter-avatar">${person.avatar_url ? `<img src="${esc(person.avatar_url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(String(person.display_name || "HV").split(/\s+/).slice(0,2).map(part=>part[0]||"").join("").toUpperCase())}</span><span class="voter-copy"><b>${esc(person.display_name || "HackVerse member")}</b><small>@${esc(person.username || "member")}</small></span><span class="voter-profile-arrow">View profile ↗</span></button>`).join("") + (hidden ? `<p class="voter-private-note">${hidden} ${hidden === 1 ? "member keeps" : "members keep"} their profile private or unavailable. Their identity is not displayed.</p>` : "") + (voterLists.truncated ? `<p class="voter-private-note">This list is limited to the 500 most recent votes. The displayed total count is complete.</p>` : "");
+}
+function closeVoterModal() { const modal = $("#voterModal"); if (modal) modal.hidden = true; voterModalPostId = ""; }
+
+const renderPostCounts = post => `<button type="button" class="social-count-link" data-social-voter-open="${esc(post.id)}" data-voter-type="upvote" aria-label="View ${Number(post.upvote_count || 0)} upvoters">▲ ${Number(post.upvote_count || 0)} upvotes</button><button type="button" class="social-count-link" data-social-voter-open="${esc(post.id)}" data-voter-type="downvote" aria-label="View ${Number(post.downvote_count || 0)} downvoters">▼ ${Number(post.downvote_count || 0)} downvotes</button><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span>`;
 const socialFeedCacheKey = () => currentUser ? `hv-social-feed-v2:${currentUser.uid}:${socialFeedType}` : "";
 function patchFeedCache(postId, patch, { remove = false } = {}) {
   const key = socialFeedCacheKey(); if (!key) return;
@@ -454,15 +518,6 @@ function bindSocialPostActions(root) {
     button.addEventListener("click", () => handler(button));
   });
   bind("[data-social-profile]", button => navigateToProfile(button.dataset.socialProfile));
-  bind("[data-voter-list]", async button => {
-    try {
-      const result = await socialRequest("voter-list", { postId: button.dataset.postId, value: button.dataset.voterList });
-      const people = result.voters || [];
-      const dialog = document.createElement("dialog"); dialog.className = "hv-voter-dialog";
-      dialog.innerHTML = `<form method="dialog"><button class="hv-voter-close" aria-label="Close">×</button></form><h3>${button.dataset.voterList === "upvote" ? "People who upvoted" : "People who downvoted"}</h3><div class="hv-voter-list">${people.length ? people.map(person => `<button type="button" data-voter-profile="${esc(person.username || "")}"><span class="hv-voter-avatar">${esc((person.display_name || "B").slice(0,1).toUpperCase())}</span><span><b>${esc(person.display_name || "HackVerse builder")}</b><small>@${esc(person.username || "member")}</small></span><i>View profile ↗</i></button>`).join("") : '<p class="muted">No votes in this category yet.</p>'}</div>`;
-      document.body.append(dialog); dialog.addEventListener("click", e => { const profile=e.target.closest("[data-voter-profile]"); if(profile){dialog.close();navigateToProfile(profile.dataset.voterProfile);} }); dialog.addEventListener("close",()=>dialog.remove()); dialog.showModal();
-    } catch (error) { toast(error.message || "Could not load voter details."); }
-  });
   bind("[data-social-detail]", button => navigateToPost(button.dataset.socialDetail));
   bind("[data-social-vote]", async button => {
     const postId = button.dataset.postId, value = button.dataset.socialVote;
@@ -607,6 +662,35 @@ async function toggleSocialComments(postId) {
     } catch (error) { list.querySelector(".empty-note")?.remove(); list.insertAdjacentHTML("afterbegin", `<div class="empty-note">${esc(error.message)}</div>`); }
   }
 }
+async function reconcileLegacyBuilderDirectory() {
+  if (!currentUser) return;
+  const storageKey = "hv-public-directory-reconcile-v19";
+  try {
+    const lastRun = Number(localStorage.getItem(storageKey) || 0);
+    if (Date.now() - lastRun < 24 * 60 * 60 * 1000) return;
+    const token = await currentUser.getIdToken();
+    const response = await fetch("/api/profile-directory-reconcile", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `Directory refresh failed (${response.status}).`);
+    localStorage.setItem(storageKey, String(Date.now()));
+    const ownProfile = await getDoc(doc(db, "publicProfiles", currentUser.uid));
+    if (ownProfile.exists()) {
+      publicProfile = ownProfile.data();
+      renderMyProfile();
+    }
+    if (Number(result.restored || 0) > 0) {
+      if (currentRouteName() === "people") void searchPeople();
+      console.info(`Restored ${Number(result.restored)} legacy public Builder profiles.`);
+    }
+  } catch (error) {
+    console.warn("Legacy Builder directory refresh deferred", error);
+  }
+}
+
 async function syncSocialProfile(profile) {
   if (!profile?.username || !currentUser) return;
   try { await socialRequest("sync-profile", { username: profile.username, displayName: profile.displayName, bio: profile.bio, avatarUrl: profile.avatarUrl, website: profile.website || profile.portfolio, coverUrl: profile.coverUrl, location: [profile.city, profile.country].filter(Boolean).join(", "), pronouns: profile.pronouns, githubUrl: profile.github, linkedinUrl: profile.linkedin, portfolioUrl: profile.portfolio, visibility: profile.profileVisibility }); }
@@ -634,7 +718,7 @@ async function createSocialPost(event) {
       mediaUrl=prepared.publicUrl; mediaType="image";
     }
     await socialRequest("create-post", { content, mediaUrl, mediaType, visibility: $("#socialPostVisibility").value });
-    $("#socialPostForm").reset(); message.textContent = "Post published."; $("#socialPostForm").hidden = true; $("#focusPostComposer").setAttribute("aria-expanded", "false"); toast("Post published."); await loadSocialFeed({ reset: true });
+    $("#socialPostForm").reset(); message.textContent = "Post published."; $("#socialPostForm").hidden = true; $("#focusPostComposer").setAttribute("aria-expanded", "false"); toast("Post published."); void loadProfileStats(); await loadSocialFeed({ reset: true });
   } catch (error) { message.textContent = error.message; }
   finally { button.disabled = false; }
 }
@@ -745,6 +829,8 @@ function initSupabase() {
     $("#authButton").textContent = user ? "Sign out" : "Sign in";
     $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
     if (!user) {
+      people = []; peopleDirectoryRows = []; peopleCursor = null; peopleHasMore = false; peopleLoading = false; peopleSearchRequest += 1;
+      clearTimeout(profileNudgeTimer); profileNudgeTimer = null; profileStats = null; profileStatsLoading = false; lastBuilderFeedLoadedAt = 0; builderCommentsLoaded.clear(); builderCommentsLoading.clear(); pendingBuilderVotes.clear(); if (voiceRecorder?.state === "recording") voiceRecorder.stop();
       privateProfile = null; publicProfile = null; events = []; savedIds.clear(); currentConversations=[]; currentMessages=[]; pendingChatFile = null; builderPosts=[]; builderPostVotes=[]; builderPostReposts=[]; builderPostComments=[]; builderPostSaves=[]; builderFollows=[]; hackathonHistory=[]; renderPendingChatAttachment(); renderNotificationCenter(); renderBuilderFeed(); renderHackathonHistory(); profileIsMandatory = false; hideModal("profileModal"); hideModal("eventModal");
       $("#eventModalContent").innerHTML = ""; detachRealtimeListeners(); renderSaved(); renderMyProfile(); renderProjects([]); renderConversationList([]);
       $("#chatPlaceholder").hidden = false; $("#chatActive").hidden = true; activeAiConversationId = null; currentAiMessages = []; pendingAiActions = []; updateAiAccessUI(); renderAiMessages();
@@ -837,6 +923,52 @@ async function resetPassword() {
   catch (error) { $("#authMessage").textContent = friendlyError(error); }
 }
 
+function profileMissingEssentials(profile = publicProfile || privateProfile || {}) {
+  profile = { ...(profile?.profileData || {}), ...(profile || {}) };
+  const missing = [];
+  if (!String(profile.displayName || currentUser?.displayName || "").trim()) missing.push("your name");
+  if (!/^[A-Za-z0-9_]{3,24}$/.test(String(profile.username || "").replace(/^@/, ""))) missing.push("a username");
+  if (String(profile.bio || "").trim().length < 20) missing.push("a short introduction (20+ characters)");
+  const skills = Array.isArray(profile.skills) ? profile.skills : listFrom(profile.skills || "");
+  if (!skills.length) missing.push("at least one skill");
+  return missing;
+}
+function scheduleProfileNudge() {
+  clearTimeout(profileNudgeTimer);
+  if (!currentUser) return;
+  const key = `hv-profile-nudge-${currentUser.uid}`;
+  if (sessionStorage.getItem(key)) return;
+  const missing = profileMissingEssentials();
+  if (!missing.length) return;
+  profileNudgeTimer = window.setTimeout(async () => {
+    if (!currentUser || document.hidden || !profileMissingEssentials().length || !$("#appDialog")?.hidden) {
+      if (currentUser && document.hidden) scheduleProfileNudge();
+      return;
+    }
+    const stillMissing = profileMissingEssentials();
+    const choice = await chooseInApp(
+      "Finish the essentials on your profile",
+      `A few details help teammates understand and find you: ${stillMissing.join(", ")}. You can add everything else later.`,
+      [{ value: "later", label: "Not now", variant: "outline" }, { value: "complete", label: "Complete profile", variant: "primary" }]
+    );
+    sessionStorage.setItem(key, "shown");
+    if (choice === "complete") openProfileEditor(false);
+  }, 60_000);
+}
+async function loadProfileStats() {
+  if (!currentUser || profileStatsLoading) return;
+  profileStatsLoading = true;
+  try {
+    const result = await socialRequest("profile-stats");
+    profileStats = result.stats || null;
+    if (currentRouteName() === "profile") renderMyProfile();
+  } catch (error) {
+    console.warn("Profile activity stats unavailable", error);
+    profileStats = profileStats || null;
+    if (currentRouteName() === "profile") renderMyProfile();
+  } finally { profileStatsLoading = false; }
+}
+
 async function loadAccountWorkspace() {
   try {
     const [snap, pubSnap] = await Promise.all([
@@ -844,13 +976,36 @@ async function loadAccountWorkspace() {
       getDoc(doc(db, "publicProfiles", currentUser.uid))
     ]);
     privateProfile = snap.exists() ? snap.data() : null;
-    publicProfile = pubSnap.exists() ? pubSnap.data() : (privateProfile?.profileVisibility && privateProfile.profileVisibility !== "public" ? (privateProfile?.profileData || null) : null);
+    let publicData = pubSnap.exists() ? pubSnap.data() : null;
+    const savedProfile = privateProfile?.profileData || null;
+    const shouldBePublic = evaluateProfilePublication({
+      visibility: savedProfile?.profileVisibility,
+      consent: Boolean(savedProfile?.profileConsentAt),
+      displayName: savedProfile?.displayName,
+      username: savedProfile?.username
+    }).canPublish;
+    // Repair older/partially completed saves where the private user row exists
+    // but the public directory projection was never committed.
+    if (!publicData && shouldBePublic) {
+      try {
+        const repaired = { ...savedProfile, uid: currentUser.uid, profileVisibility: "public" };
+        await setDoc(doc(db, "publicProfiles", currentUser.uid), repaired, { merge: true });
+        const verify = await getDoc(doc(db, "publicProfiles", currentUser.uid));
+        if (verify.exists() && verify.data()?.profileVisibility === "public") publicData = verify.data();
+      } catch (repairError) {
+        console.warn("Public Builder profile recovery deferred", repairError);
+      }
+    }
+    publicProfile = publicData || savedProfile;
     renderMyProfile(); loadSettingsUI(); renderNotificationCenter();
+    void loadProfileStats();
+    scheduleProfileNudge();
     // Saved items and projects are not required to render the first screen.
     void loadSaved();
     hideModal("profileModal");
     profileIsMandatory = false;
-    if (publicProfile?.username && publicProfile?.profileConsentAt) void syncSocialProfile(publicProfile);
+    if (publicProfile?.username) void syncSocialProfile(publicProfile);
+    void reconcileLegacyBuilderDirectory();
     beginInboxListener();
     void loadProjects();
     void loadHackathonHistory();
@@ -858,6 +1013,16 @@ async function loadAccountWorkspace() {
   } catch (error) {
     console.error("Could not load account", error); toast(friendlyError(error));
   }
+}
+
+function syncProfileVisibilityChoices(value = "public") {
+  const visibility = ["public", "followers", "private"].includes(value) ? value : "private";
+  const nativeSelect = $("#profileVisibility");
+  if (nativeSelect) nativeSelect.value = visibility;
+  $$('input[name="profileVisibilityChoice"]').forEach(input => {
+    input.checked = input.value === visibility;
+    input.closest(".profile-visibility-option")?.classList.toggle("is-selected", input.checked);
+  });
 }
 
 function openProfileEditor(mandatory = false) {
@@ -875,15 +1040,21 @@ function openProfileEditor(mandatory = false) {
   $("#profileAvailability").value = p.availability || "Open to opportunities"; $("#profileMode").value = p.preferredMode || "Any format";
   $("#profileAvatar").value = p.avatarUrl || ""; $("#profileAvatarFile").value = ""; $("#profileAvatarPreviewWrap").hidden = !p.avatarUrl; if(p.avatarUrl) $("#profileAvatarPreview").src = p.avatarUrl; $("#profileGithub").value = p.github || "";
   $("#profileLinkedin").value = p.linkedin || ""; $("#profilePortfolio").value = p.portfolio || "";
-  $("#profilePhone").value = privateProfile?.phone || ""; $("#profilePhoneVisibility").value = privateProfile?.phoneVisibility || "private"; $("#profileEmailVisibility").value = privateProfile?.emailVisibility || "private"; $("#profileVisibility").value = privateProfile?.profileVisibility || p.profileVisibility || "public"; $("#profileLooking").value = String(p.lookingForTeam !== false);
-  $("#profilePublicConsent").checked = Boolean(p.profileConsentAt);
+  $("#profilePhone").value = privateProfile?.phone || ""; $("#profilePhoneVisibility").value = privateProfile?.phoneVisibility || "private"; $("#profileEmailVisibility").value = privateProfile?.emailVisibility || "private"; syncProfileVisibilityChoices(privateProfile?.profileVisibility || p.profileVisibility || "public"); $("#profileLooking").value = String(p.lookingForTeam !== false);
+  const storedProfileData = privateProfile?.profileData || {};
+  const consentFieldExists = Object.prototype.hasOwnProperty.call(p, "profileConsentAt")
+    || Object.prototype.hasOwnProperty.call(storedProfileData, "profileConsentAt");
+  const savedConsentAt = p.profileConsentAt || storedProfileData.profileConsentAt;
+  const legacyPublicChoice = !consentFieldExists && (p.profileVisibility === "public" || privateProfile?.profileVisibility === "public");
+  const existingPublicDirectoryRecord = publicProfile?.uid === currentUser?.uid && publicProfile?.profileVisibility === "public";
+  $("#profilePublicConsent").checked = Boolean(savedConsentAt || legacyPublicChoice || existingPublicDirectoryRecord);
   $("#profileMessage").textContent = "";
   $("#profileModalTitle").textContent = mandatory ? "Complete your builder profile." : "Update your builder profile.";
-  $("#profileModalHint").textContent = "Your profile is optional. Save what you have now, then add education, skills, links or contact details later.";
+  $("#profileModalHint").textContent = "Start with your name and username, then choose who can discover you in Step 02. Save your progress and add other details whenever you are ready.";
   $("#profileModalClose").hidden = false;
   $("#profileSignOutBtn").hidden = true;
   const steps = $$("#profileForm .profile-step");
-  steps.forEach((step, index) => { step.open = index === 0; });
+  steps.forEach((step, index) => { step.open = index === 0 || index === 1; });
   showModal("profileModal");
 }
 
@@ -933,7 +1104,30 @@ async function saveProfile(event) {
   }
   const consent = $("#profilePublicConsent").checked;
   const requestedVisibility = $("#profileVisibility").value || "public";
-  const visibility = consent ? requestedVisibility : "private";
+  // Do not silently turn a user's selected Public profile into a private one.
+  // The directory opt-in is deliberately explicit, but must be visible and the
+  // user must be told exactly what is missing before we save anything.
+  const visibility = requestedVisibility;
+  const publication = evaluateProfilePublication({ visibility, consent, displayName: name, username });
+  const canPublish = publication.canPublish;
+  if (publication.reason === "consent") {
+    const discoveryStep = $("#profileDiscoveryStep");
+    if (discoveryStep) discoveryStep.open = true;
+    message.textContent = "To appear in Builders, open Step 02, choose Public, and tick ‘Show my builder profile in the public Builders directory’.";
+    $("#profilePublicConsent")?.focus();
+    discoveryStep?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+    return;
+  }
+  if (publication.reason === "identity") {
+    const basicsStep = $$("#profileForm .profile-step")[0];
+    if (basicsStep) basicsStep.open = true;
+    message.textContent = "Add your full name and a valid 3–24 character username to publish your profile in Builders.";
+    $("#profileName")?.focus();
+    basicsStep?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
+    return;
+  }
   const skills = listFrom($("#profileSkills").value);
   const college = $("#profileCollege").value.trim();
   const course = $("#profileCourse").value.trim();
@@ -964,7 +1158,6 @@ async function saveProfile(event) {
     profileConsentAt: consent ? (privateProfile?.profileConsentAt || serverTimestamp()) : null,
     updatedAt: serverTimestamp()
   };
-  const canPublish = Boolean(consent && name && usernameLower && visibility === "public");
   const privateData = {
     email: currentUser.email || "", phone,
     profileVisibility: visibility, profileData: profile,
@@ -977,14 +1170,13 @@ async function saveProfile(event) {
     ...(privateProfile ? {} : { role: "participant", createdAt: serverTimestamp() })
   };
   try {
+    const publicRef = doc(db, "publicProfiles", uid);
     await runTransaction(db, async transaction => {
       const userRef = doc(db, "users", uid);
-      const publicRef = doc(db, "publicProfiles", uid);
       const userSnap = await transaction.get(userRef);
-      let usernameSnap = null;
       if (usernameLower) {
         const usernameRef = doc(db, "usernames", usernameLower);
-        usernameSnap = await transaction.get(usernameRef);
+        const usernameSnap = await transaction.get(usernameRef);
         if (usernameSnap.exists() && usernameSnap.data().uid !== uid) throw new Error("USERNAME_TAKEN");
         if (!usernameSnap.exists()) transaction.set(usernameRef, { uid, createdAt: serverTimestamp() });
       }
@@ -994,23 +1186,42 @@ async function saveProfile(event) {
       if (canPublish) transaction.set(publicRef, profile, { merge: true });
       else transaction.delete(publicRef);
     });
+    // Verify the public directory projection before reporting a successful
+    // public save. This catches RLS/schema problems instead of silently hiding
+    // the member after the private account record has been saved.
+    if (canPublish) {
+      const publishedSnap = await getDoc(publicRef);
+      const published = publishedSnap.exists() ? publishedSnap.data() : null;
+      if (!published || published.uid !== uid || published.profileVisibility !== "public") {
+        throw new Error("Your account details were saved, but your public Builder profile could not be confirmed. Check the publicProfiles database permissions and try again.");
+      }
+    }
     const authUpdates = {};
     if (name) authUpdates.displayName = name;
     if (profile.avatarUrl) authUpdates.photoURL = profile.avatarUrl;
     if (Object.keys(authUpdates).length) await updateAuthProfile(currentUser, authUpdates).catch(() => {});
     privateProfile = { ...(privateProfile || {}), ...privateData, profileComplete: Boolean(name && usernameLower) };
-    publicProfile = name || usernameLower ? profile : null;
+    publicProfile = profile;
     profileIsMandatory = false;
+    clearTimeout(profileNudgeTimer);
+    if (currentUser) sessionStorage.setItem(`hv-profile-nudge-${currentUser.uid}`, "saved");
     hideModal("profileModal");
     renderMyProfile();
+    void loadProfileStats();
     beginInboxListener();
     void loadProjects();
     void loadHackathonHistory();
-    if (consent && name && usernameLower) {
-      void syncSocialProfile(profile);
-      if (visibility === "public") void searchPeople();
+    // Sync visibility to the social profile table for both public and private
+    // changes; otherwise an older public social record could remain discoverable.
+    if (username) await syncSocialProfile(profile);
+    if (canPublish) {
+      // Refresh the directory immediately if it is open; also warm the list so
+      // it is current when the member navigates there next.
+      if (currentRouteName() === "people") void searchPeople();
+      toast("Your profile is published in the Builders directory.");
+    } else {
+      toast("Your profile is saved privately. Choose Public and confirm the directory setting in Step 02 to appear in Builders.");
     }
-    toast(canPublish ? "Your public builder profile is saved." : "Progress saved privately. You can publish your profile whenever you are ready.");
   } catch (error) {
     console.error(error);
     message.textContent = friendlyError(error);
@@ -1117,9 +1328,21 @@ function opportunityQualityScore(event) {
 }
 function deduplicateVisibleOpportunities(records) {
   const sorted = [...records].sort((a,b) => opportunityQualityScore(b) - opportunityQualityScore(a));
-  const unique = [];
+  const unique = [], byUrl = new Map(), byTitle = new Map();
   for (const record of sorted) {
-    if (!unique.some(existing => sameOpportunityIdentity(record, existing))) unique.push(record);
+    const urls = [record.sourceUrl, record.officialEventUrl, record.officialRegistrationUrl].map(canonicalOpportunityUrl).filter(Boolean);
+    const titleKey = `${eventCategoryValue(record)}|${normalizeOpportunityText(record.title)}`;
+    const urlDuplicate = urls.some(url => {
+      const existing = byUrl.get(url);
+      return existing && eventCategoryValue(existing) === eventCategoryValue(record);
+    });
+    const titleCandidates = byTitle.get(titleKey) || [];
+    const titleDuplicate = titleCandidates.some(existing => sameOpportunityIdentity(record, existing));
+    if (urlDuplicate || titleDuplicate) continue;
+    unique.push(record);
+    urls.forEach(url => byUrl.set(url, record));
+    if (!byTitle.has(titleKey)) byTitle.set(titleKey, []);
+    byTitle.get(titleKey).push(record);
   }
   return unique;
 }
@@ -1161,31 +1384,31 @@ async function loadEvents({ forceRefresh = false } = {}) {
     return;
   }
   updateEventAccessUI();
+  let renderedCache = false;
   if (!forceRefresh) {
     const cached = readOpportunityCache();
-    // Render cached data immediately for responsiveness, but still refresh from
-    // Supabase database. The previous early return could leave the dashboard showing an
-    // older opportunity count for up to 30 minutes after a discovery run.
-    if (cached) displayOpportunityRecords(cached);
+    // Render cached data immediately while the first live page refreshes.
+    if (cached) { displayOpportunityRecords(cached); renderedCache = true; }
   }
-  grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
+  if (!renderedCache) grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
-    // Read public listings in bounded pages rather than silently stopping at 500.
+    // Render the first page immediately; hydrate later pages in the background
+    // so the homepage does not wait for every directory record.
     const loadedDocs = [];
     let cursor = null;
-    // Three bounded pages are enough for a useful first load without letting a
-    // very large directory trigger dozens of sequential network round-trips.
-    for (let page = 0; page < 3; page++) {
-      const constraints = [where("visibility", "==", "public"), limit(500)];
-      if (cursor) constraints.push(startAfter(cursor));
-      const snapshot = await getDocs(query(collection(db, "hackathons"), ...constraints));
-      loadedDocs.push(...snapshot.docs);
-      if (snapshot.docs.length < 500) break;
-      cursor = snapshot.docs[snapshot.docs.length - 1];
-    }
-    const records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
-    writeOpportunityCache(records);
+    const firstSnapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(500)));
+    loadedDocs.push(...firstSnapshot.docs);
+    let records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
     displayOpportunityRecords(records);
+    cursor = firstSnapshot.docs.length === 500 ? firstSnapshot.docs[firstSnapshot.docs.length - 1] : null;
+    for (let page = 1; cursor && page < 3; page++) {
+      const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), startAfter(cursor), limit(500)));
+      loadedDocs.push(...snapshot.docs);
+      records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
+      displayOpportunityRecords(records);
+      cursor = snapshot.docs.length === 500 ? snapshot.docs[snapshot.docs.length - 1] : null;
+    }
+    writeOpportunityCache(records);
   } catch (error) {
     console.error("Opportunity feed read failed", error);
     const stale = (() => { try { const cached = JSON.parse(localStorage.getItem(OPPORTUNITY_CACHE_KEY) || "null"); return Array.isArray(cached?.records) ? cached.records : null; } catch { return null; } })();
@@ -1434,9 +1657,9 @@ function renderEvents() {
   renderLearningCatalog();
   const preview = $("#eventGrid"); const full = $("#eventGridAll");
   if (preview) {
+    const homeList = events.filter(event => event.status !== "expired").slice(0, 6);
     $("#homeOpportunityCount").textContent = `${events.length} unique active opportunities · ${list.length} match current filters`;
-    const top = list.slice(0,6);
-    preview.innerHTML = top.length ? top.map(opportunityCard).join("") : `<div class="loading-card">${db ? (events.length ? "No opportunities match this selection. Explore all opportunities and adjust filters." : "No opportunities have been published yet. New discoveries will appear here automatically.") : "Connect Supabase to load the live opportunity feed."}</div>`;
+    preview.innerHTML = homeList.length ? homeList.map(opportunityCard).join("") : `<div class="loading-card">${db ? (events.length ? "No active opportunities are available right now. Explore the full directory for more." : "No opportunities have been published yet. New discoveries will appear here automatically.") : "Connect Supabase to load the live opportunity feed."}</div>`;
   }
   if (full) {
     $("#allOpportunityCount").textContent = `${list.length} opportunit${list.length === 1 ? "y" : "ies"} found`;
@@ -1454,8 +1677,16 @@ function renderEvents() {
 function shareOpportunity(eventId) {
   const event = events.find(row => row.id === eventId); if (!event) return;
   const url = validUrl(event.officialRegistrationUrl || event.officialEventUrl || event.sourceUrl) || `${location.origin}/opportunities`;
-  const desc = [event.organizer || event.sourceName, event.summary || event.description, event.registrationDeadline ? `Deadline: ${dateLabel(event.registrationDeadline)}` : ""].filter(Boolean).join(" · ").slice(0, 500);
-  openShareMenu({ type: "opportunity", title: event.title || "HackVerse opportunity", description: desc, url, sourceId: event.id, visibility: "public" });
+  const place = event.location || [event.city,event.region || event.state,event.country].filter(Boolean).join(", ");
+  const prize = event.prize || (Number(event.prizePool) > 0 ? `${event.currency || ""} ${event.prizePool}`.trim() : "");
+  const details = [
+    ["Organiser", event.organizer || event.sourceName], ["Type", eventCategoryValue(event).replace(/-/g," ")],
+    ["Format", eventModeValue(event)], ["Location", place], ["Deadline", event.registrationDeadline ? dateLabel(event.registrationDeadline) : ""],
+    ["Starts", event.startAt ? dateLabel(event.startAt) : ""], ["Prize", prize],
+    ["Tracks", (event.tracks || event.tags || []).slice(0,4).join(", ")], ["Eligibility", event.eligibility]
+  ].filter(([,value]) => value && String(value).trim() && String(value) !== "Not specified").slice(0, 6).map(([label,value]) => ({ label, value: String(value).slice(0,100) }));
+  const desc = String(event.summary || event.description || "Explore the official opportunity details on HackVerse.").slice(0, 500);
+  openShareMenu({ type: "opportunity", title: event.title || "HackVerse opportunity", description: desc, details, url, sourceId: event.id, visibility: "public" });
 }
 function viewEvent(eventId) {
   if (!requireAccount()) return;
@@ -1510,39 +1741,86 @@ function renderSaved() {
   preview.querySelectorAll("[data-share-opportunity]").forEach(button => button.addEventListener("click", () => shareOpportunity(button.dataset.shareOpportunity)));
 }
 
-function renderPeopleEmpty() { $("#peopleGrid").innerHTML = '<div class="loading-card">Connect Supabase and create a profile to begin discovering teammates.</div>'; }
-async function searchPeople() {
+function renderPeopleEmpty() {
+  $("#peopleGrid").innerHTML = '<div class="loading-card">Connect Supabase and create a profile to begin discovering teammates.</div>';
+  const more = $("#loadMorePeopleBtn"); if (more) more.hidden = true;
+}
+function searchPeople(loadMore = false) {
   clearTimeout(peopleSearchTimer);
+  const term = $("#peopleSearch").value.trim().toLowerCase().replace(/^@/, "");
+  const role = $("#peopleRole").value;
+  const lookingOnly = $("#lookingForTeamOnly").checked;
+  const requestKey = `${term}|${role}|${lookingOnly ? "1" : "0"}`;
+  if (loadMore && (requestKey !== peopleSearchKey || !peopleHasMore || peopleLoading)) return;
+  if (!loadMore) {
+    peopleSearchKey = requestKey;
+    peopleCursor = null;
+    peopleHasMore = false;
+    peopleDirectoryRows = [];
+    people = [];
+  }
+  const requestId = ++peopleSearchRequest;
+  const pageSize = 48;
+  $("#peopleResultCount").textContent = loadMore ? `Loading more builders…` : "Searching public builder profiles…";
+  const moreButton = $("#loadMorePeopleBtn");
+  if (moreButton) { moreButton.hidden = true; moreButton.disabled = true; }
   peopleSearchTimer = setTimeout(async () => {
     if (!db) { renderPeopleEmpty(); return; }
-    const term = $("#peopleSearch").value.trim().toLowerCase().replace(/^@/, "");
-    const role = $("#peopleRole").value; const lookingOnly = $("#lookingForTeamOnly").checked;
-    $("#peopleResultCount").textContent = "Searching public builder profiles…";
+    peopleLoading = true;
     try {
       let snapshots = [];
       if (!term) {
-        snapshots = [await getDocs(query(collection(db, "publicProfiles"), orderBy("updatedAt", "desc"), limit(24)))];
+        const constraints = [orderBy("updatedAt", "desc")];
+        if (loadMore && peopleCursor) constraints.push(startAfter(peopleCursor));
+        constraints.push(limit(pageSize));
+        const page = await getDocs(query(collection(db, "publicProfiles"), ...constraints));
+        snapshots = [page];
+        peopleCursor = page.docs.at(-1) || (loadMore ? peopleCursor : null);
+        peopleHasMore = page.docs.length === pageSize;
       } else {
         const prefixes = ["usernameLower", "nameLower", "collegeLower", "collegeShortLower", "courseLower", "publicEmailLower"];
-        const requests = prefixes.map(field => getDocs(query(collection(db, "publicProfiles"), orderBy(field), startAt(term), endAt(term + "\uf8ff"), limit(18))));
-        requests.push(getDocs(query(collection(db, "publicProfiles"), where("skillsLower", "array-contains", term), limit(18))));
-        requests.push(getDocs(query(collection(db, "publicProfiles"), where("interestsLower", "array-contains", term), limit(18))));
-        const phoneDigits = term.replace(/\D/g, ""); if (phoneDigits.length >= 7) requests.push(getDocs(query(collection(db, "publicProfiles"), orderBy("publicPhoneDigits"), startAt(phoneDigits), endAt(phoneDigits + "\uf8ff"), limit(18))));
+        const requests = prefixes.map(field => getDocs(query(collection(db, "publicProfiles"), orderBy(field), startAt(term), endAt(term + "\uf8ff"), limit(40))));
+        requests.push(getDocs(query(collection(db, "publicProfiles"), where("skillsLower", "array-contains", term), limit(40))));
+        requests.push(getDocs(query(collection(db, "publicProfiles"), where("interestsLower", "array-contains", term), limit(40))));
+        const phoneDigits = term.replace(/\D/g, "");
+        if (phoneDigits.length >= 7) requests.push(getDocs(query(collection(db, "publicProfiles"), orderBy("publicPhoneDigits"), startAt(phoneDigits), endAt(phoneDigits + "\uf8ff"), limit(40))));
         snapshots = await Promise.all(requests);
+        peopleHasMore = false;
+        peopleCursor = null;
       }
-      const dedupe = new Map();
-      snapshots.forEach(snap => snap.docs.forEach(d => dedupe.set(d.id, { uid: d.id, ...d.data() })));
-      people = [...dedupe.values()].filter(p => p.uid !== currentUser?.uid);
-      if (role !== "all") people = people.filter(p => (p.rolesInterested || []).some(r => r.toLowerCase() === role.toLowerCase()));
-      if (lookingOnly) people = people.filter(p => p.lookingForTeam === true);
+      if (requestId !== peopleSearchRequest) return;
+      const incoming = new Map();
+      snapshots.forEach(snap => snap.docs.forEach(d => incoming.set(d.id, { uid: d.id, ...d.data() })));
+      if (!term && loadMore) {
+        const merged = new Map(peopleDirectoryRows.map(profile => [profile.uid, profile]));
+        incoming.forEach((profile, uid) => merged.set(uid, profile));
+        peopleDirectoryRows = [...merged.values()];
+      } else {
+        peopleDirectoryRows = [...incoming.values()];
+      }
+      people = peopleDirectoryRows.filter(profile => profile.uid !== currentUser?.uid);
+      if (role !== "all") people = people.filter(profile => (profile.rolesInterested || []).some(value => String(value).toLowerCase() === role.toLowerCase()));
+      if (lookingOnly) people = people.filter(profile => profile.lookingForTeam === true);
       if (term) {
         const digits = term.replace(/\D/g, "");
-        people = people.filter(p => [p.displayName, p.username, p.college, p.collegeShort, p.course, p.publicEmail, p.publicPhone, p.bio, ...(p.skills || []), ...(p.rolesInterested || []), ...(p.interests || [])].join(" ").toLowerCase().includes(term)
-          || (digits.length >= 7 && String(p.publicPhoneDigits || "").startsWith(digits)));
+        people = people.filter(profile => [profile.displayName, profile.username, profile.college, profile.collegeShort, profile.course, profile.publicEmail, profile.publicPhone, profile.bio, ...(profile.skills || []), ...(profile.rolesInterested || []), ...(profile.interests || [])].join(" ").toLowerCase().includes(term)
+          || (digits.length >= 7 && String(profile.publicPhoneDigits || "").startsWith(digits)));
       }
       renderPeople();
-    } catch (error) { console.error("People search failed", error); $("#peopleResultCount").textContent = "Could not search profiles. Check your Supabase database rules and indexes."; $("#peopleGrid").innerHTML = '<div class="loading-card">Profile search is temporarily unavailable.</div>'; }
-  }, 220);
+      if (moreButton) {
+        moreButton.hidden = Boolean(term) || !peopleHasMore;
+        moreButton.disabled = false;
+      }
+    } catch (error) {
+      if (requestId !== peopleSearchRequest) return;
+      console.error("People search failed", error);
+      $("#peopleResultCount").textContent = "Could not search profiles. Check your Supabase database rules and indexes.";
+      $("#peopleGrid").innerHTML = '<div class="loading-card">Profile search is temporarily unavailable.</div>';
+      if (moreButton) { moreButton.hidden = true; moreButton.disabled = false; }
+    } finally {
+      if (requestId === peopleSearchRequest) peopleLoading = false;
+    }
+  }, loadMore ? 0 : 220);
 }
 function overlapScore(profile) {
   if (!publicProfile) return 0;
@@ -1553,7 +1831,7 @@ function overlapScore(profile) {
 function renderPeople() {
   const grid = $("#peopleGrid"); const role = $("#peopleRole").value; const lookingOnly = $("#lookingForTeamOnly").checked;
   const sorted = [...people].sort((a,b) => overlapScore(b) - overlapScore(a));
-  $("#peopleResultCount").textContent = `${sorted.length} builder${sorted.length === 1 ? "" : "s"} found`;
+  $("#peopleResultCount").textContent = `${sorted.length} builder${sorted.length === 1 ? "" : "s"}${peopleHasMore ? " shown — more available" : " found"}`;
   if (!sorted.length) { grid.innerHTML = '<div class="loading-card">No public profiles match your search yet. Try another skill or keyword.</div>'; return; }
   grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackVerse member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p>${Number(p.hackathonsParticipatedCount || 0) ? `<span class="builder-experience-chip">✦ ${Number(p.hackathonsParticipatedCount)} hackathons</span>` : ""}<div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div class="person-actions"><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Chat</button><button class="save-btn" data-contact-member="${esc(p.uid)}" ${p.publicEmail || p.publicPhone ? "" : "disabled"}>Contact</button></div></div></article>`).join("");
   grid.querySelectorAll("[data-view-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewMember));
@@ -1582,12 +1860,27 @@ function detachRealtimeListeners() {
   if (stopInboxListener) stopInboxListener(); if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
   stopInboxListener = null; stopMessageListener = null; stopTypingListener = null; activeConversationId = null; activeConversation = null;
 }
+function inboxCacheKey(uid = currentUser?.uid) { return uid ? `hv-inbox-cache-v1:${uid}` : ""; }
+function messagesCacheKey(conversationId, uid = currentUser?.uid) { return uid && conversationId ? `hv-messages-cache-v1:${uid}:${conversationId}` : ""; }
+function cacheConversationMessages(conversationId = activeConversationId) {
+  const key = messagesCacheKey(conversationId);
+  if (!key || !Array.isArray(currentMessages)) return;
+  try { sessionStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), messages: currentMessages })); } catch {}
+}
 function beginInboxListener() {
   if (!currentUser || !db) return;
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(inboxCacheKey()) || "null");
+    if (cached?.savedAt && Date.now() - cached.savedAt < 24 * 60 * 60 * 1000 && Array.isArray(cached.conversations)) {
+      currentConversations = cached.conversations;
+      renderConversationList(currentConversations);
+    }
+  } catch {}
   if (stopInboxListener) stopInboxListener();
   const inboxQuery = query(collection(db, "conversations"), where("participants", "array-contains", currentUser.uid), limit(100));
   stopInboxListener = onSnapshot(inboxQuery, snapshot => {
     currentConversations = snapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(c => !c.deleted).sort((a,b) => tsMillis(b.updatedAt || b.lastMessageAt) - tsMillis(a.updatedAt || a.lastMessageAt));
+    try { sessionStorage.setItem(inboxCacheKey(), JSON.stringify({ savedAt: Date.now(), conversations: currentConversations })); } catch {}
     renderConversationList(currentConversations);
     if (currentRouteName() === "notifications") renderNotificationCenter();
     const notificationBaselineKey=`hv-inbox-baseline-${currentUser.uid}`;
@@ -1685,8 +1978,18 @@ function selectConversation(conversation) {
     renderPendingChatAttachment();
   }
   activeConversation = conversation; activeConversationId = conversation.id; replyingToMessageId = null; currentMessages = [];
-  $("#messageList").innerHTML = '<div class="loading-card">Loading conversation…</div>';
+  let restoredMessages = false;
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(messagesCacheKey(conversation.id)) || "null");
+    if (cached?.savedAt && Date.now() - cached.savedAt < 24 * 60 * 60 * 1000 && Array.isArray(cached.messages)) {
+      currentMessages = cached.messages;
+      restoredMessages = true;
+    }
+  } catch {}
+  $("#messageList").innerHTML = restoredMessages ? "" : '<div class="loading-card">Loading conversation…</div>';
+  if (restoredMessages) renderMessages(currentMessages, { forceBottom: true });
   $("#chatPlaceholder").hidden = true; $("#chatActive").hidden = false; $(".chat-workspace")?.classList.add("has-active-chat"); renderChatHeading(); updateReplyPreview();
+  if (restoredMessages && currentMessages.some(message => message.attachment?.storagePath)) void hydrateChatAttachmentUrls(conversation.id, currentMessages);
   if (stopMessageListener) stopMessageListener(); if (stopTypingListener) stopTypingListener();
   lastTypingPublishedAt = 0;
   const conversationId = conversation.id;
@@ -1714,6 +2017,7 @@ function selectConversation(conversation) {
       const arrivingIds = new Set(firstMessagesSnapshot ? [] : nextMessages.filter(message => !oldIds.has(message.id)).map(message => message.id));
       const addedAttachments = nextMessages.filter(message => message.attachment?.storagePath && !message.attachment?.url);
       currentMessages = nextMessages;
+      cacheConversationMessages(conversationId);
       renderMessages(currentMessages, { animateIds: arrivingIds, forceBottom: firstMessagesSnapshot });
       firstMessagesSnapshot = false;
       if (addedAttachments.length) hydrateChatAttachmentUrls(conversationId, nextMessages).catch(error => console.warn("Chat attachment preview unavailable", error));
@@ -1767,7 +2071,7 @@ function renderMessages(messages, options = {}) {
     const deliveryLabel=readByAll?"Read":deliveredByAll?"Delivered":"Sent";
     const status = mine ? `<span class="message-ticks ${readByAll?"read":deliveredByAll?"delivered":""}" title="${deliveryLabel}">${readByAll?"✓✓":deliveredByAll?"✓✓":"✓"}</span>` : "";
     const messageText = m.sharedItem ? "" : (m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || ""));
-    const shared = m.sharedItem ? `<a class="chat-shared-card" href="${esc(validUrl(m.sharedItem.url) || "/")}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-kicker">${esc(m.sharedItem.type || "Shared item")} · HACKVERSE</span><b>${esc(m.sharedItem.title || "Shared update")}</b><small>${esc(m.sharedItem.description || "Open this shared item.")}</small><span class="chat-shared-link">Open link ↗</span></a>` : "";
+    const shared = m.sharedItem ? `<a class="chat-shared-card" href="${esc(validUrl(m.sharedItem.url) || "/")}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-kicker">${esc(m.sharedItem.type || "Shared item")} · HACKVERSE</span><b>${esc(m.sharedItem.title || "Shared update")}</b><small>${esc(m.sharedItem.description || "Open this shared item.")}</small>${Array.isArray(m.sharedItem.details) && m.sharedItem.details.length ? `<span class="chat-shared-details">${m.sharedItem.details.slice(0,4).map(row => `<i><b>${esc(row.label || "")}</b> ${esc(row.value || "")}</i>`).join("")}</span>` : ""}<span class="chat-shared-link">Open link ↗</span></a>` : "";
     const forwarded = m.forwarded ? '<small class="message-forwarded">↪ Forwarded</small>' : "";
     return `<article class="message-row ${mine ? "mine" : "theirs"} ${animateIds.has(m.id) ? "is-new" : ""}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${forwarded}${reply}${shared}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}${isPinnedHere?'<small class="message-pinned-label">⌖ Pinned on this device</small>':""}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-pin-message="${esc(m.id)}" title="Pin on this device">${isPinnedHere?"⌖":"♧"}</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine&&canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}${!mine?`<button type="button" data-report-message="${esc(m.id)}" title="Report message">⚑</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete for me or everyone">⌫</button><button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
   }).join("");
@@ -1842,7 +2146,7 @@ async function publishTyping() {
   if (now - lastTypingPublishedAt < 1400) return;
   lastTypingPublishedAt = now;
   const conversationId = activeConversationId;
-  try{await setDoc(doc(db,"conversations",conversationId,"typing",currentUser.uid),{uid:currentUser.uid,displayName:publicProfile?.displayName||currentUser.displayName||"Member",updatedAt:serverTimestamp()},{merge:true});}catch{}
+  try{await setDoc(doc(db,"conversations",conversationId,"typing",currentUser.uid),{uid:currentUser.uid,displayName:publicProfile?.displayName||currentUser.displayName||"Member",updatedAt:serverTimestamp()});}catch{}
   clearTimeout(typingStopTimer); typingStopTimer=setTimeout(()=>{if(activeConversationId===conversationId&&currentUser)deleteDoc(doc(db,"conversations",conversationId,"typing",currentUser.uid)).catch(()=>{});},4500);
 }
 async function chatMediaRequest(payload) {
@@ -1945,6 +2249,7 @@ async function submitChatMessage(payload) {
     // reconcile this optimistic row with the canonical database snapshot.
     if (activeConversationId === conversationId && savedMessageRef?.id) {
       currentMessages = [...currentMessages, { ...body, id: savedMessageRef.id, createdAt: Date.now() }];
+      cacheConversationMessages(conversationId);
       renderMessages(currentMessages);
       const messageList = $("#messageList");
       if (messageList) messageList.scrollTop = messageList.scrollHeight;
@@ -1952,17 +2257,12 @@ async function submitChatMessage(payload) {
 
     // A message is already safely stored at this point. A preview update failure
     // must not invite a retry that would create a duplicate message.
-    try {
-      await updateDoc(conversationRef, {
-        lastMessage: (messageText || body.attachment?.name || "Attachment").slice(0, 180),
-        lastMessageSender: currentUser.uid,
-        lastMessageAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
-    } catch (metadataError) {
-      console.warn("Message sent, but conversation preview update failed", metadataError);
-      toast("Message sent. The chat preview may take a moment to refresh.");
-    }
+    void updateDoc(conversationRef, {
+      lastMessage: (messageText || body.attachment?.name || "Attachment").slice(0, 180),
+      lastMessageSender: currentUser.uid,
+      lastMessageAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }).catch(metadataError => console.warn("Message sent, but conversation preview update failed", metadataError));
 
     if (activeConversationId === conversationId) {
       if (input && input.value === draftAtSend) input.value = "";
@@ -1996,10 +2296,25 @@ function renderPendingChatAttachment() {
   if (!preview) return;
   const file = pendingChatFile;
   preview.hidden = !file;
-  if (!file) { preview.replaceChildren(); return; }
+  if (!file) {
+    preview.replaceChildren();
+    if (pendingAudioObjectUrl) URL.revokeObjectURL(pendingAudioObjectUrl);
+    pendingAudioObjectUrl = ""; pendingAudioObjectFile = null;
+    return;
+  }
   const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-  const label = isPdf ? "PDF document" : file.type.startsWith("image/") ? "Image" : file.type.startsWith("video/") ? "Video" : file.type.startsWith("audio/") ? "Audio" : "File attachment";
-  preview.innerHTML = `<div class="chat-attachment-preview-icon" aria-hidden="true">${isPdf ? "PDF" : file.type.startsWith("image/") ? "IMG" : file.type.startsWith("video/") ? "VID" : file.type.startsWith("audio/") ? "AUD" : "FILE"}</div><div class="chat-attachment-preview-details"><b>${esc(file.name)}</b><span>${esc(label)} · ${esc(formatFileSize(file.size))}</span><small>Ready to send · This file has not been uploaded yet</small></div><button type="button" id="removePendingChatFile" class="chat-attachment-remove" aria-label="Remove attachment" title="Remove attachment">×</button>`;
+  const isAudio = file.type.startsWith("audio/");
+  const label = isPdf ? "PDF document" : file.type.startsWith("image/") ? "Image" : file.type.startsWith("video/") ? "Video" : isAudio ? "Voice note / audio" : "File attachment";
+  if (isAudio) {
+    if (pendingAudioObjectFile !== file) {
+      if (pendingAudioObjectUrl) URL.revokeObjectURL(pendingAudioObjectUrl);
+      pendingAudioObjectUrl = URL.createObjectURL(file);
+      pendingAudioObjectFile = file;
+    }
+  } else if (pendingAudioObjectUrl) {
+    URL.revokeObjectURL(pendingAudioObjectUrl); pendingAudioObjectUrl = ""; pendingAudioObjectFile = null;
+  }
+  preview.innerHTML = `<div class="chat-attachment-preview-icon" aria-hidden="true">${isPdf ? "PDF" : file.type.startsWith("image/") ? "IMG" : file.type.startsWith("video/") ? "VID" : isAudio ? "♫" : "FILE"}</div><div class="chat-attachment-preview-details"><b>${esc(file.name)}</b><span>${esc(label)} · ${esc(formatFileSize(file.size))}</span>${isAudio ? `<audio class="chat-audio-preview" controls preload="metadata" src="${esc(pendingAudioObjectUrl)}"></audio>` : ""}<small>Preview ready · Press Send when you are ready</small></div><button type="button" id="removePendingChatFile" class="chat-attachment-remove" aria-label="Remove attachment" title="Remove attachment">×</button>`;
   $("#removePendingChatFile").onclick = () => { pendingChatFile = null; $("#chatFileInput").value = ""; renderPendingChatAttachment(); };
 }
 function handleChatFile(file) {
@@ -2013,13 +2328,40 @@ function handleChatFile(file) {
   toast("Attachment added to your draft. Press Send when you are ready.");
 }
 async function toggleVoiceRecording() {
-  if(voiceRecorder?.state==="recording"){voiceRecorder.stop();$("#voiceRecordBtn").classList.remove("recording");$("#voiceRecordBtn").innerHTML="◉<span>Voice</span>";return;}
-  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast("Voice recording is not supported in this browser.");return;}
-  if(!activeConversationId||!requireAccount())return;
-  try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});voiceChunks=[];voiceRecorder=new MediaRecorder(stream);voiceRecorder.ondataavailable=e=>{if(e.data.size)voiceChunks.push(e.data);};voiceRecorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());const blob=new Blob(voiceChunks,{type:voiceRecorder.mimeType||"audio/webm"});const file=new File([blob],`voice-${Date.now()}.webm`,{type:blob.type});try{toast("Uploading voice note…");const attachment=await uploadChatFile(file,"voice");await submitChatMessage({text:"",kind:"voice",attachment});}catch(error){toast(error.message||friendlyError(error));}};voiceRecorder.start();$("#voiceRecordBtn").classList.add("recording");$("#voiceRecordBtn").innerHTML="■<span>Stop</span>";}
-  catch(error){toast(`Microphone access unavailable: ${error.message}`);}
+  if (voiceRecorder?.state === "recording") {
+    voiceRecorder.stop();
+    $("#voiceRecordBtn").classList.remove("recording");
+    $("#voiceRecordBtn").innerHTML = "◉<span>Voice</span>";
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    toast("Voice recording is not supported in this browser."); return;
+  }
+  if (!activeConversationId || !requireAccount()) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    voiceChunks = [];
+    const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(type => MediaRecorder.isTypeSupported?.(type)) || "";
+    voiceRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    voiceRecorder.ondataavailable = event => { if (event.data.size) voiceChunks.push(event.data); };
+    voiceRecorder.onstop = () => {
+      stream.getTracks().forEach(track => track.stop());
+      const blob = new Blob(voiceChunks, { type: voiceRecorder?.mimeType || "audio/webm" });
+      if (!blob.size) { toast("No audio was captured. Please try again."); return; }
+      const extension = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
+      pendingChatFile = new File([blob], `voice-note-${Date.now()}.${extension}`, { type: blob.type || "audio/webm" });
+      $("#chatFileInput").value = "";
+      renderPendingChatAttachment();
+      toast("Voice note recorded. Listen to the preview, then press Send.");
+      voiceChunks = [];
+      voiceRecorder = null;
+    };
+    voiceRecorder.start();
+    $("#voiceRecordBtn").classList.add("recording");
+    $("#voiceRecordBtn").innerHTML = "■<span>Stop</span>";
+    toast("Recording voice note… Press Stop when finished.");
+  } catch (error) { toast(`Microphone access unavailable: ${error.message}`); }
 }
-
 async function editMessage(messageId) {
   const message = currentMessages.find(m => m.id === messageId); if (!message || message.authorUid !== currentUser?.uid) return;
   const created = tsMillis(message.createdAt); if (!created || Date.now()-created > 15*60*1000) { toast("Messages can only be edited within 15 minutes."); return; }
@@ -2434,7 +2776,7 @@ function renderMyProfile() {
       <div class="profile-detail-grid">
         <section class="profile-detail-card"><small>MEMBER SINCE</small><b>${p.joinedAt ? esc(new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"long",year:"numeric"})) : "HackVerse member"}</b><span>@${esc(p.username)}</span></section>
         <section class="profile-detail-card"><small>HACKATHON EXPERIENCE</small><b>${Number(p.hackathonsParticipatedCount || 0)} participated</b><span>Private entries are included in your own count</span></section>
-        <section class="profile-detail-card"><small>BUILDER NETWORK</small><b>${builderFollows.filter(row => row.followingUid === currentUser?.uid).length} followers</b><span>Following ${builderFollows.filter(row => row.followerUid === currentUser?.uid).length} builders</span></section>
+        <section class="profile-detail-card"><small>BUILDER NETWORK</small><b>${Number(profileStats?.followers ?? builderFollows.filter(row => row.followingUid === currentUser?.uid).length)} followers</b><span>Following ${Number(profileStats?.following ?? builderFollows.filter(row => row.followerUid === currentUser?.uid).length)} builders</span></section>
         <section class="profile-detail-card"><small>EDUCATION</small><b>${esc(p.college || "College not added")}</b><span>${esc([p.collegeShort,p.course].filter(Boolean).join(" · ") || "Course not added")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not added")}</span></section>
         <section class="profile-detail-card"><small>COLLABORATION</small><b>${esc(p.availability || "Availability not added")}</b><span>Preferred format: ${esc(p.preferredMode || "Any format")}</span><span>${p.lookingForTeam ? "Open to teammate invitations" : "Not currently looking for a team"}</span></section>
         <section class="profile-detail-card"><small>LOCATION</small><b>${esc([p.city,p.country].filter(Boolean).join(", ") || "Location not added")}</b><span>Visible according to your profile privacy settings</span></section>
@@ -2445,7 +2787,29 @@ function renderMyProfile() {
       <h4>Interests & domains</h4><div class="skill-tags">${interests.map(s => `<span>${esc(s)}</span>`).join("") || '<span>Add domains that motivate you</span>'}</div>
       <div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>
     </div>
-  </div>`;
+  </div>
+  <section class="profile-activity" aria-label="Your HackVerse activity">
+    <div class="profile-activity-heading"><div><div class="eyebrow">YOUR PROGRESS</div><h3>Builder activity & impact</h3><p>Track the work you publish and the impact you make in the community.</p></div><span class="profile-points-total"><b>${Number(profileStats?.points || 0).toLocaleString()}</b><small>BUILD POINTS</small></span></div>
+    <div class="profile-stats-grid">
+      <article class="profile-stat-card"><span>BUILDS</span><b>${Number(profileStats?.builds ?? builderPosts.filter(row => row.ownerUid === currentUser?.uid).length).toLocaleString()}</b><small>Build updates published</small></article>
+      <article class="profile-stat-card"><span>PROJECTS</span><b>${Number(profileStats?.projects ?? 0).toLocaleString()}</b><small>Project showcases</small></article>
+      <article class="profile-stat-card"><span>POSTS</span><b>${Number(profileStats?.posts ?? 0).toLocaleString()}</b><small>Community posts</small></article>
+      <article class="profile-stat-card"><span>LIKES RECEIVED</span><b>${Number(profileStats?.likesReceived ?? 0).toLocaleString()}</b><small>Upvotes across your work</small></article>
+      <article class="profile-stat-card"><span>COMMENTS RECEIVED</span><b>${Number(profileStats?.commentsReceived ?? 0).toLocaleString()}</b><small>Community conversations</small></article>
+      <article class="profile-stat-card"><span>HACKATHONS</span><b>${Number(profileStats?.hackathons ?? (hackathonHistory.length || p.hackathonsParticipatedCount || 0)).toLocaleString()}</b><small>Participation records</small></article>
+      <article class="profile-stat-card"><span>FOLLOWERS</span><b>${Number(profileStats?.followers ?? 0).toLocaleString()}</b><small>Builders following you</small></article>
+      <article class="profile-stat-card"><span>FOLLOWING</span><b>${Number(profileStats?.following ?? 0).toLocaleString()}</b><small>Builders in your network</small></article>
+    </div>
+    <div class="profile-achievement-strip"><span><b>${Number(profileStats?.achievements?.winners || 0)}</b> Wins</span><span><b>${Number(profileStats?.achievements?.finalists || 0)}</b> Finalist results</span><span><b>${Number(profileStats?.achievements?.otherRecognition || 0)}</b> Other recognitions</span></div>
+    <div class="profile-points-breakdown"><div><b>How your points are earned</b><small>Activity score · not a competition ranking</small></div><div class="points-breakdown-grid">
+      <span>Build updates <b>${Number(profileStats?.pointsBreakdown?.builds || 0).toLocaleString()} pts</b></span>
+      <span>Project showcases <b>${Number(profileStats?.pointsBreakdown?.projects || 0).toLocaleString()} pts</b></span>
+      <span>Community posts <b>${Number(profileStats?.pointsBreakdown?.posts || 0).toLocaleString()} pts</b></span>
+      <span>Likes received <b>${Number(profileStats?.pointsBreakdown?.likes || 0).toLocaleString()} pts</b></span>
+      <span>Hackathon participation <b>${Number(profileStats?.pointsBreakdown?.hackathons || 0).toLocaleString()} pts</b></span>
+      <span>Achievements <b>${Number(profileStats?.pointsBreakdown?.achievements || 0).toLocaleString()} pts</b></span>
+    </div><p>Earn 100 points per build, 60 per project showcase, 20 per community post, 5 per like, and 50 per hackathon. Winners, finalists and special recognitions earn additional points.</p></div>
+  </section>`;
 }
 
 async function loadProjects() {
@@ -2483,7 +2847,7 @@ async function createProject(event) {
       githubUrl: validUrl($("#projectGithub").value), visibility: $("#projectVisibility").value,
       createdAt: serverTimestamp(), updatedAt: serverTimestamp()
     });
-    hideModal("projectModal"); $("#projectForm").reset(); loadProjects(); toast("Project saved.");
+    hideModal("projectModal"); $("#projectForm").reset(); loadProjects(); void loadProfileStats(); toast("Project saved.");
   } catch (error) { msg.textContent = friendlyError(error); }
 }
 async function deleteProject(id) {
@@ -2513,6 +2877,7 @@ function renderBuilderPostCard(post, repost = null) {
   const privatePost = post.visibility === "private";
   const votes = postCount(builderPostVotes, postId);
   const comments = builderPostComments.filter(row => row.postId === postId).sort((a, b) => tsMillis(b.createdAt) - tsMillis(a.createdAt));
+  const commentCountLabel = post.commentCount != null ? Number(post.commentCount) : builderCommentsLoaded.has(postId) ? comments.length : "Comments";
   const voted = builderPostVotes.some(row => row.postId === postId && row.userUid === currentUser?.uid);
   const saved = builderPostSaves.some(row => row.postId === postId && row.userUid === currentUser?.uid);
   const reposted = builderPostReposts.some(row => row.postId === postId && row.userUid === currentUser?.uid);
@@ -2522,12 +2887,12 @@ function renderBuilderPostCard(post, repost = null) {
   const author = post.ownerName || "HackVerse builder";
   const when = tsMillis(repost?.createdAt || post.createdAt);
   const whenText = when ? new Date(when).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "Recently";
-  const commentMarkup = opened && !privatePost ? `<div class="builder-post-comments"><div class="builder-comment-list">${comments.length ? comments.map(comment => `<article class="builder-comment"><div class="builder-comment-avatar">${esc(initials(comment.authorName))}</div><div class="builder-comment-copy"><b>${esc(comment.authorName || "Builder")}</b><p>${esc(comment.body || "")}</p><small>${tsMillis(comment.createdAt) ? new Date(tsMillis(comment.createdAt)).toLocaleString() : "Just now"}</small></div>${comment.ownerUid === currentUser?.uid ? `<button type="button" class="builder-comment-delete" data-delete-post-comment="${esc(comment.id)}" aria-label="Delete comment">×</button>` : ""}</article>`).join("") : '<p class="builder-no-comments">Be the first to leave a thoughtful comment.</p>'}</div><form class="builder-comment-form" data-post-comment-form="${esc(postId)}"><textarea maxlength="1200" rows="2" required placeholder="Add a constructive comment…"></textarea><button class="btn btn-primary btn-small" type="submit">Comment</button></form></div>` : "";
+  const commentMarkup = opened && !privatePost ? `<div class="builder-post-comments"><div class="builder-comment-list">${builderCommentsLoading.has(postId) ? '<p class="builder-no-comments">Loading comments…</p>' : comments.length ? comments.map(comment => `<article class="builder-comment"><div class="builder-comment-avatar">${esc(initials(comment.authorName))}</div><div class="builder-comment-copy"><b>${esc(comment.authorName || "Builder")}</b><p>${esc(comment.body || "")}</p><small>${tsMillis(comment.createdAt) ? new Date(tsMillis(comment.createdAt)).toLocaleString() : "Just now"}</small></div>${comment.ownerUid === currentUser?.uid ? `<button type="button" class="builder-comment-delete" data-delete-post-comment="${esc(comment.id)}" aria-label="Delete comment">×</button>` : ""}</article>`).join("") : '<p class="builder-no-comments">Be the first to leave a thoughtful comment.</p>'}</div><form class="builder-comment-form" data-post-comment-form="${esc(postId)}"><textarea maxlength="1200" rows="2" required placeholder="Add a constructive comment…"></textarea><button class="btn btn-primary btn-small" type="submit">Comment</button></form></div>` : "";
   return `<article class="builder-post-card" id="builder-post-${esc(postId)}">
     ${repost ? `<div class="builder-repost-note">↻ ${esc(repost.userName || "A builder")} reposted this</div>` : ""}
     <div class="builder-post-author"><div class="builder-post-avatar">${post.ownerAvatar ? `<img src="${esc(validUrl(post.ownerAvatar))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(author))}</div><div class="builder-post-author-copy"><b>${esc(author)}</b><small>@${esc(post.ownerUsername || "builder")} · ${esc(whenText)}</small></div><div class="builder-post-badges"><span>${esc(post.category || "Project")}</span>${post.lookingForTeam ? '<span class="builder-looking-badge">Open to collaborators</span>' : ""}${privatePost ? '<span>Private</span>' : ""}</div></div>
     <div class="builder-post-content"><h3>${esc(post.title || "Untitled build")}</h3>${post.tagline ? `<p class="builder-post-tagline">${esc(post.tagline)}</p>` : ""}<p class="builder-post-body">${esc(post.body || "").replace(/\n/g, "<br>")}</p>${imageUrl ? `<a class="builder-post-cover-link" href="${esc(imageUrl)}" target="_blank" rel="noopener noreferrer"><img class="builder-post-cover" src="${esc(imageUrl)}" alt="${esc(post.title || "Project image")}" loading="lazy"></a>` : ""}<div class="builder-post-meta"><span>${esc(post.stage || "Building")}</span>${(post.techStack || []).slice(0, 10).map(tag => `<span>${esc(tag)}</span>`).join("")}</div><div class="builder-post-links">${builderPostLinks(post)}</div></div>
-    <div class="builder-post-stats"><span>▲ ${votes} upvote${votes === 1 ? "" : "s"}</span><span>${comments.length} comment${comments.length === 1 ? "" : "s"}</span><span>${postCount(builderPostReposts, postId)} repost${postCount(builderPostReposts, postId) === 1 ? "" : "s"}</span></div>
+    <div class="builder-post-stats"><span>▲ ${votes} upvote${votes === 1 ? "" : "s"}</span><span>${typeof commentCountLabel === "number" ? `${commentCountLabel} comment${commentCountLabel === 1 ? "" : "s"}` : commentCountLabel}</span><span>${postCount(builderPostReposts, postId)} repost${postCount(builderPostReposts, postId) === 1 ? "" : "s"}</span></div>
     <div class="builder-post-actions"><button type="button" class="${voted ? "is-active" : ""}" data-post-upvote="${esc(postId)}" aria-pressed="${voted}" ${privatePost ? "disabled" : ""}>▲ Upvote</button><button type="button" class="${opened ? "is-active" : ""}" data-post-comments="${esc(postId)}" aria-expanded="${opened}" ${privatePost ? "disabled" : ""}>▤ Comment</button><button type="button" data-post-repost="${esc(postId)}" class="${reposted ? "is-active" : ""}" ${privatePost ? "disabled" : ""}>↻ Repost</button><button type="button" data-post-save="${esc(postId)}" class="${saved ? "is-active" : ""}" ${privatePost ? "disabled" : ""}>${saved ? "▣ Saved" : "▢ Save"}</button><button type="button" data-post-share="${esc(postId)}">↗ Share</button>${isMine ? `<button type="button" data-edit-builder-post="${esc(postId)}">Edit</button><button type="button" class="builder-post-delete" data-delete-builder-post="${esc(postId)}">Delete</button>` : ""}</div>
     ${commentMarkup}
   </article>`;
@@ -2567,50 +2932,57 @@ function renderBuilderFeed() {
     root.querySelectorAll("[data-delete-post-comment]").forEach(button => button.addEventListener("click", () => deleteBuilderPostComment(button.dataset.deletePostComment)));
   }
 }
-async function loadBuilderFeed() {
+async function loadBuilderFeed({ force = false } = {}) {
   if (!currentUser || !db || feedLoadInProgress) return;
+  if (!force && builderPosts.length && Date.now() - lastBuilderFeedLoadedAt < 45_000) {
+    renderBuilderFeed();
+    return;
+  }
   feedLoadInProgress = true;
   const list = $("#builderFeedList");
-  if (list && !builderPosts.length) list.innerHTML = '<div class="loading-card">Loading builder posts…</div>';
-  const cacheKey = `hv-builder-feed-v2:${currentUser.uid}`;
+  if (builderPosts.length) renderBuilderFeed();
+  else if (list) list.innerHTML = '<div class="loading-card">Loading builder posts…</div>';
+  const cacheKey = `hv-builder-feed-v3:${currentUser.uid}`;
   try {
     if (!builderPosts.length) {
       try {
         const cached = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
-        if (cached?.savedAt && Date.now() - cached.savedAt < 3 * 60 * 1000 && Array.isArray(cached.posts)) {
+        if (cached?.savedAt && Date.now() - cached.savedAt < 5 * 60 * 1000 && Array.isArray(cached.posts)) {
           builderPosts = cached.posts;
           builderPostVotes = cached.votes || [];
           builderPostReposts = cached.reposts || [];
           builderPostComments = cached.comments || [];
           builderPostSaves = cached.saves || [];
           builderFollows = cached.follows || [];
+          builderCommentsLoaded = new Set(cached.loadedCommentPostIds || []);
+          lastBuilderFeedLoadedAt = cached.savedAt;
           renderBuilderFeed();
         }
       } catch {}
     }
-    // Fetch the feed page first. Engagement reads are then scoped to these post IDs,
-    // rather than downloading thousands of votes, comments and follows on every visit.
     const postsSnap = await getDocs(query(collection(db, "builderPosts"), orderBy("createdAt", "desc"), limit(60)));
     builderPosts = postsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderBuilderFeed();
     const postIds = builderPosts.map(post => post.id);
     const chunks = [];
     for (let index = 0; index < postIds.length; index += 30) chunks.push(postIds.slice(index, index + 30));
+    // Only fetch the compact engagement needed for the first paint. Comments are
+    // fetched per post when a member opens that thread.
     const relatedReadsPromise = chunks.length ? Promise.all(chunks.flatMap(ids => [
       getDocs(query(collection(db, "builderPostVotes"), where("postId", "in", ids), limit(1200))),
-      getDocs(query(collection(db, "builderReposts"), where("postId", "in", ids), limit(600))),
-      getDocs(query(collection(db, "builderPostComments"), where("postId", "in", ids), limit(600)))
+      getDocs(query(collection(db, "builderReposts"), where("postId", "in", ids), limit(600)))
     ])) : Promise.resolve([]);
     const savesRead = getDocs(query(collection(db, "builderPostSaves"), where("userUid", "==", currentUser.uid), limit(500)));
     const followersRead = getDocs(query(collection(db, "builderFollows"), where("followerUid", "==", currentUser.uid), limit(500)));
     const followedByRead = getDocs(query(collection(db, "builderFollows"), where("followingUid", "==", currentUser.uid), limit(500)));
     const [relatedReads, savesSnap, followsSnap, followedBySnap] = await Promise.all([relatedReadsPromise, savesRead, followersRead, followedByRead]);
-    const flatten = (snapshots) => snapshots.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    builderPostVotes = flatten(relatedReads.filter((_, index) => index % 3 === 0));
-    builderPostReposts = flatten(relatedReads.filter((_, index) => index % 3 === 1));
-    builderPostComments = flatten(relatedReads.filter((_, index) => index % 3 === 2));
+    const flatten = snapshots => snapshots.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    builderPostVotes = flatten(relatedReads.filter((_, index) => index % 2 === 0));
+    builderPostReposts = flatten(relatedReads.filter((_, index) => index % 2 === 1));
     builderPostSaves = savesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     builderFollows = [...followsSnap.docs, ...followedBySnap.docs].map(d => ({ id: d.id, ...d.data() })).filter((row, index, all) => all.findIndex(item => item.id === row.id) === index);
-    try { sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), posts: builderPosts, votes: builderPostVotes, reposts: builderPostReposts, comments: builderPostComments, saves: builderPostSaves, follows: builderFollows })); } catch {}
+    lastBuilderFeedLoadedAt = Date.now();
+    try { sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), posts: builderPosts, votes: builderPostVotes, reposts: builderPostReposts, comments: builderPostComments, loadedCommentPostIds: [...builderCommentsLoaded], saves: builderPostSaves, follows: builderFollows })); } catch {}
     renderBuilderFeed();
   } catch (error) {
     console.error("Builder feed failed to load", error);
@@ -2688,7 +3060,7 @@ async function createBuilderPost(event) {
       demoUrl: validUrl($("#builderPostDemo").value), repositoryUrl: validUrl($("#builderPostRepo").value), deckUrl: validUrl($("#builderPostDeck").value),
       videoUrl: validUrl($("#builderPostVideo").value), docsUrl: validUrl($("#builderPostDocs").value), otherUrl: validUrl($("#builderPostOther").value), imageUrl,
       lookingForTeam: $("#builderPostLookingForTeam").checked, visibility: $("#builderPostVisibility").value,
-      createdAt: existingPost?.createdAt || serverTimestamp(), updatedAt: serverTimestamp()
+      commentCount: Number(existingPost?.commentCount || 0), createdAt: existingPost?.createdAt || serverTimestamp(), updatedAt: serverTimestamp()
     };
     if (editingId) {
       await updateDoc(doc(db, "builderPosts", editingId), post);
@@ -2699,21 +3071,44 @@ async function createBuilderPost(event) {
     hideModal("builderPostModal"); form.reset(); form.dataset.editPostId = ""; $("#builderPostImagePreview").hidden = true;
     $("#builderPostTitle").textContent = "Share what you're building.";
     toast(editingId ? "Your project post was updated." : post.visibility === "public" ? "Your build is live in the Builder feed." : "Your private post was saved.");
-    if (editingId) renderBuilderFeed(); else await loadBuilderFeed();
+    if (editingId) renderBuilderFeed(); else await loadBuilderFeed({ force: true });
+    void loadProfileStats();
   } catch (error) { console.error("Publishing builder post failed", error); message.textContent = friendlyError(error); }
   finally { submit.disabled = false; submit.textContent = $("#builderPostForm").dataset.editPostId ? "Save post changes →" : "Publish to Builder feed →"; }
 }
 async function toggleBuilderPostVote(postId) {
-  if (!requireAccount()) return;
+  if (!requireAccount() || pendingBuilderVotes.has(postId)) return;
   const existing = builderPostVotes.find(row => row.postId === postId && row.userUid === currentUser.uid);
+  const previousVotes = builderPostVotes.slice();
+  pendingBuilderVotes.add(postId);
+  if (existing) builderPostVotes = builderPostVotes.filter(row => row.id !== existing.id);
+  else builderPostVotes.push({ id: `${postId}_${currentUser.uid}`, ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: Date.now(), pending: true });
+  renderBuilderFeed();
   try {
-    if (existing) { await deleteDoc(doc(db, "builderPostVotes", existing.id)); builderPostVotes = builderPostVotes.filter(row => row.id !== existing.id); }
-    else { const ref = doc(db, "builderPostVotes", `${postId}_${currentUser.uid}`); await setDoc(ref, { ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: serverTimestamp() }); builderPostVotes.push({ id: ref.id, ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: Date.now() }); }
-    renderBuilderFeed();
-  } catch (error) { toast(friendlyError(error)); }
+    if (existing) await deleteDoc(doc(db, "builderPostVotes", existing.id));
+    else await setDoc(doc(db, "builderPostVotes", `${postId}_${currentUser.uid}`), { ownerUid: currentUser.uid, userUid: currentUser.uid, postId, createdAt: serverTimestamp() });
+    builderPostVotes = builderPostVotes.map(row => row.postId === postId && row.userUid === currentUser.uid ? { ...row, pending: false } : row);
+  } catch (error) {
+    builderPostVotes = previousVotes;
+    toast(friendlyError(error));
+  } finally { pendingBuilderVotes.delete(postId); renderBuilderFeed(); }
+}
+async function loadBuilderPostComments(postId) {
+  if (!currentUser || !db || builderCommentsLoaded.has(postId) || builderCommentsLoading.has(postId)) return;
+  builderCommentsLoading.add(postId);
+  renderBuilderFeed();
+  try {
+    const snap = await getDocs(query(collection(db, "builderPostComments"), where("postId", "==", postId), limit(100)));
+    builderPostComments = builderPostComments.filter(row => row.postId !== postId).concat(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    builderCommentsLoaded.add(postId);
+    const cacheKey = `hv-builder-feed-v3:${currentUser.uid}`;
+    try { sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), posts: builderPosts, votes: builderPostVotes, reposts: builderPostReposts, comments: builderPostComments, loadedCommentPostIds: [...builderCommentsLoaded], saves: builderPostSaves, follows: builderFollows })); } catch {}
+  } catch (error) { toast(`Comments could not load: ${friendlyError(error)}`); }
+  finally { builderCommentsLoading.delete(postId); renderBuilderFeed(); }
 }
 async function toggleBuilderPostComments(postId) {
-  if (openPostCommentIds.has(postId)) openPostCommentIds.delete(postId); else openPostCommentIds.add(postId);
+  if (openPostCommentIds.has(postId)) openPostCommentIds.delete(postId);
+  else { openPostCommentIds.add(postId); void loadBuilderPostComments(postId); }
   renderBuilderFeed();
   if (openPostCommentIds.has(postId)) document.querySelector(`[data-post-comment-form="${CSS.escape(postId)}"] textarea`)?.focus();
 }
@@ -2721,17 +3116,35 @@ async function submitBuilderPostComment(event) {
   event.preventDefault(); if (!requireAccount()) return;
   const form = event.currentTarget; const postId = form.dataset.postCommentForm; const input = form.querySelector("textarea"); const body = input.value.trim();
   if (!body) return;
+  const draftId = `pending-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+  const optimistic = { id: draftId, ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Builder", authorUsername: publicProfile?.username || "builder", body: body.slice(0, 1200), createdAt: Date.now(), pending: true };
+  builderPostComments.unshift(optimistic);
+  builderCommentsLoaded.add(postId);
+  openPostCommentIds.add(postId);
+  input.value = "";
+  renderBuilderFeed();
   try {
-    const ref = await addDoc(collection(db, "builderPostComments"), { ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Builder", authorUsername: publicProfile?.username || "builder", body: body.slice(0, 1200), createdAt: serverTimestamp() });
-    builderPostComments.unshift({ id: ref.id, ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: publicProfile?.displayName || currentUser.displayName || "Builder", body, createdAt: Date.now() });
-    openPostCommentIds.add(postId); renderBuilderFeed();
-  } catch (error) { toast(friendlyError(error)); }
+    const ref = await addDoc(collection(db, "builderPostComments"), { ownerUid: currentUser.uid, postId, authorUid: currentUser.uid, authorName: optimistic.authorName, authorUsername: optimistic.authorUsername, body: optimistic.body, createdAt: serverTimestamp() });
+    builderPostComments = builderPostComments.map(row => row.id === draftId ? { ...row, id: ref.id, pending: false } : row);
+    const post = builderPosts.find(row => row.id === postId);
+    if (post) post.commentCount = Math.max(Number(post.commentCount || 0), builderPostComments.filter(row => row.postId === postId).length);
+    renderBuilderFeed();
+  } catch (error) {
+    builderPostComments = builderPostComments.filter(row => row.id !== draftId);
+    renderBuilderFeed();
+    toast(friendlyError(error));
+  }
 }
 async function deleteBuilderPostComment(id) {
   if (!requireAccount()) return;
   const comment = builderPostComments.find(row => row.id === id); if (!comment || comment.ownerUid !== currentUser.uid) return;
-  try { await deleteDoc(doc(db, "builderPostComments", id)); builderPostComments = builderPostComments.filter(row => row.id !== id); renderBuilderFeed(); }
-  catch (error) { toast(friendlyError(error)); }
+  const previous = builderPostComments.slice();
+  builderPostComments = builderPostComments.filter(row => row.id !== id);
+  const post = builderPosts.find(row => row.id === comment.postId);
+  if (post && post.commentCount != null) post.commentCount = Math.max(0, Number(post.commentCount) - 1);
+  renderBuilderFeed();
+  try { await deleteDoc(doc(db, "builderPostComments", id)); }
+  catch (error) { builderPostComments = previous; if (post) post.commentCount = Math.max(0, Number(post.commentCount || 0) + 1); renderBuilderFeed(); toast(friendlyError(error)); }
 }
 async function repostBuilderPost(postId) {
   if (!requireAccount()) return;
@@ -2826,7 +3239,7 @@ async function saveHackathonHistory(event) {
       visibility: $("#historyVisibility").value, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
     };
     await addDoc(collection(db, "hackathonHistory"), record);
-    $("#hackathonHistoryForm").reset(); hideModal("hackathonHistoryModal"); await loadHackathonHistory(); toast("Hackathon participation added to your profile.");
+    $("#hackathonHistoryForm").reset(); hideModal("hackathonHistoryModal"); await loadHackathonHistory(); void loadProfileStats(); toast("Hackathon participation added to your profile.");
   } catch (error) { message.textContent = friendlyError(error); }
   finally { submit.disabled = false; submit.textContent = "Save participation →"; }
 }
@@ -3153,7 +3566,7 @@ function validateAiActions(actions) {
   if (!Array.isArray(actions)) return [];
 
   const pages = new Set([
-    "home","opportunities","career-match","feed","saved","people","messages",
+    "home","opportunities","feed","saved","people","messages",
     "aiwish","profile","notifications","settings"
   ]);
 
@@ -3947,9 +4360,12 @@ async function applyAiActions() {
 }
 
 function readAppPrefs(){try{return JSON.parse(localStorage.getItem("hackverse-app-preferences")||"{}");}catch{return {};}}
-function applyAppPrefs(){const p=readAppPrefs();const theme=p.theme||localStorage.getItem("hackverse-theme")||"dark";document.body.classList.toggle("light",theme==="light");document.documentElement.style.colorScheme=theme==="light"?"light":"dark";const themeMeta=document.querySelector('meta[name="theme-color"]');if(themeMeta)themeMeta.content=theme==="light"?"#FFFFFF":"#222222";const toggle=$("#themeToggle");if(toggle){toggle.setAttribute("aria-label",theme==="light"?"Switch to dark mode":"Switch to light mode");toggle.title=theme==="light"?"Switch to dark mode":"Switch to light mode";}document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");document.body.dataset.fontFamily=p.fontFamily||"dm";}
-function saveAppPrefs(){const p={theme:$("#settingTheme").value,motion:$("#settingMotion").value,fontFamily:$("#settingFontFamily").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked};localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
-function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme||localStorage.getItem("hackverse-theme")||(document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";}
+function applyAppPrefs(overrides=null){const p=overrides&&typeof overrides==="object"?overrides:readAppPrefs();const theme=p.theme||localStorage.getItem("hackverse-theme")||"light";document.body.classList.toggle("light",theme==="light");document.documentElement.style.colorScheme=theme==="light"?"light":"dark";const themeMeta=document.querySelector('meta[name="theme-color"]');if(themeMeta)themeMeta.content=theme==="light"?"#FFFFFF":"#222222";const toggle=$("#themeToggle");if(toggle){toggle.setAttribute("aria-label",theme==="light"?"Switch to dark mode":"Switch to light mode");toggle.title=theme==="light"?"Switch to dark mode":"Switch to light mode";}document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");document.body.dataset.fontFamily=p.fontFamily||"dm";}
+function readSettingsDraft(){return {theme:$("#settingTheme").value,motion:$("#settingMotion").value,fontFamily:$("#settingFontFamily").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked,careerAi:$("#prefCareerAi")?.checked!==false,careerContext:$("#prefCareerContext")?.checked!==false};}
+function previewSettings(){const p=readSettingsDraft();applyAppPrefs(p);$("#settingsSaveStatus").textContent="Previewing unsaved preferences. Save to keep them on this browser; profile visibility saves immediately.";}
+function saveAppPrefs(){const p=readSettingsDraft();localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs(p);renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
+function discardSettingsDraft(){loadSettingsUI();applyAppPrefs();$("#settingsSaveStatus").textContent="Unsaved preference changes discarded. Profile visibility changes are saved immediately.";}
+function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme||localStorage.getItem("hackverse-theme")||(document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";if($("#prefCareerAi"))$("#prefCareerAi").checked=p.careerAi!==false;if($("#prefCareerContext"))$("#prefCareerContext").checked=p.careerContext!==false;const providers=(currentUser?.providerData||[]).map(row=>row.providerId).filter(Boolean);if($("#settingsSecurityProviders"))$("#settingsSecurityProviders").textContent=providers.length?`Connected sign-in methods: ${providers.join(", ")}.`:"Sign in to review the methods connected to your account.";if($("#settingsGoogleState"))$("#settingsGoogleState").textContent=providers.includes("google")?"Connected to this account":"Not connected";if($("#settingsSupabaseState"))$("#settingsSupabaseState").textContent=currentUser?"Session active":"Sign in required";if($("#settingsSessionStatus"))$("#settingsSessionStatus").textContent=currentUser?(currentUser.emailVerified?"Email verified · Supabase session active":"Email confirmation status not verified · Supabase session active") : "No active session";}
 function upcomingSavedDeadlines(){if(!currentUser||readAppPrefs().opportunity===false)return [];const now=Date.now();return events.filter(e=>savedIds.has(e.id)).map(e=>({...e,deadlineMs:tsMillis(e.registrationDeadline)})).filter(e=>e.deadlineMs>now&&e.deadlineMs<=now+14*86400000).sort((a,b)=>a.deadlineMs-b.deadlineMs);}
 function notifyUpcomingDeadlines(){const prefs=readAppPrefs();if(!currentUser||!prefs.desktop||!("Notification" in window)||Notification.permission!=="granted")return;for(const e of upcomingSavedDeadlines()){const key=`hv-deadline-notified-${currentUser.uid}-${e.id}`;const stamp=String(e.deadlineMs);if(localStorage.getItem(key)===stamp)continue;localStorage.setItem(key,stamp);try{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));const n=new Notification("Saved opportunity deadline",{body:`${e.title||"A saved opportunity"} closes in ${days} day${days===1?"":"s"}.`,tag:`deadline-${e.id}`});n.onclick=()=>{window.focus();navigateToRoute("opportunities");viewEvent(e.id);};}catch{}}}
 function renderNotificationCenter(){
@@ -3973,11 +4389,11 @@ const tourSteps=[
  {route:"feed",selector:"#builderFeedPage .section-heading",title:"Builder feed",text:"Ship project launches, demos and progress updates. Builders can upvote, comment, repost, save and share public posts. You can control post visibility when publishing."},
  {route:"home",selector:".hero-copy",title:"Welcome to HackVerse",text:"Your builder network starts here. Discover opportunities, build your profile, meet collaborators and turn your ideas into real projects. The top navigation opens dedicated sections rather than stacking every feature on one screen."},
  {route:"opportunities",selector:"#opportunitiesContent, #opportunitiesSignInGate",title:"Opportunity radar",text:"Explore hackathons, case competitions, coding events, bootcamps and courses. Filter by skill, country, format, eligibility, cost and deadline. Event listings and details require a signed-in member account."},
- {route:"career-match",selector:"#careerMatchPage",title:"Career Match",text:"Compare your PDF resume with a placement job description. See matched and missing skills, trace each gap to the job description, and follow a focused 14-day learning plan."},
  {route:"people",selector:"#people .section-heading",title:"Community directory",text:"Search discoverable builders by their public profile, interests and skills. Open a profile to understand a builder's background, then start a direct conversation or invite them to a project group."},
  {route:"people",selector:"#smartTeamBtn",title:"Automatic team builder",text:"Describe your project, choose team size and roles, and run the matching engine. Balanced mode spreads complementary skills across teams; you can review and select people before creating chats."},
  {route:"messages",selector:".chat-workspace",title:"Messaging workspace",text:"Your chat area supports direct and group conversations, live message updates, replies, reactions, edit/delete, files, voice notes, read receipts and typing indicators. Open a name or group details to view member profiles."},
  {route:"aiwish",selector:"#aiWishPage",title:"AI Wish workspace",text:"Describe a website task in plain language. AI Wish prepares supported changes and waits for your approval before applying them."},
+ {route:"career-match",selector:"#careerMatchPage",title:"Career Match studio",text:"Upload a resume, compare it with a target job, prioritise skill gaps, follow a practical learning roadmap, practise interviews and track real applications. The score is an evidence-based estimate, not a hiring prediction."},
  {route:"profile",selector:"#myProfilePanel",title:"Your builder profile",text:"Your profile is your professional identity on HackVerse. Add skills, education, interests, links and availability, then showcase the projects you build. Your public visibility is controlled in Settings."},
  {route:"notifications",selector:"#activitySummary",title:"Notification centre",text:"Track unread chats and saved opportunity deadlines here. Desktop alerts work while HackVerse is open and your browser has granted notification permission."},
  {route:"settings",selector:".settings-grid",title:"Settings and personalisation",text:"Choose the theme, motion level, text size, notification preferences and profile visibility. Changes are stored in this browser, while your profile visibility is stored with your Supabase profile."},
@@ -3994,25 +4410,36 @@ function initAdvancedUI(){
   $("#notificationSettingsBtn").onclick=()=>{navigateToRoute("settings");setTimeout(()=>showSettingsTab("notifications"),100);};
   $("#openNotificationPreferences").onclick=$("#notificationSettingsBtn").onclick;
   $("#markAllReadBtn").onclick=async()=>{if(!requireAccount())return;await Promise.all(currentConversations.map(c=>markConversationRead(c.id)));toast("Your conversation activity is marked as read.");};
-  $("#saveSettingsBtn").onclick=saveAppPrefs;["#settingTheme","#settingMotion","#settingFontFamily","#settingTextSize","#prefReduceMotion"].forEach(sel=>$(sel).addEventListener("change",()=>{const p=readAppPrefs();p.theme=$("#settingTheme").value;p.motion=$("#settingMotion").value;p.textSize=$("#settingTextSize").value;p.fontFamily=$("#settingFontFamily").value;p.reduceMotion=$("#prefReduceMotion").checked;localStorage.setItem("hackverse-app-preferences",JSON.stringify({...p}));if(p.theme)localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();}));
+  $("#saveSettingsBtn").onclick=saveAppPrefs;
+  $("#cancelSettingsBtn").onclick=discardSettingsDraft;
+  ["#settingTheme","#settingMotion","#settingFontFamily","#settingTextSize","#prefReduceMotion","#prefInApp","#prefDesktop","#prefOpportunity","#prefSound","#prefCareerAi","#prefCareerContext"].forEach(sel=>$(sel)?.addEventListener("change",previewSettings));
   $("#privacyEditProfile").onclick=$("#settingsEditProfile").onclick=()=>currentUser?openProfileEditor(false):openAuth();
   $("#settingsSignOut").onclick=()=>currentUser&&signOut(auth).then(()=>toast("Signed out.")).catch(e=>toast(friendlyError(e)));
+  $("#settingsPasswordReset").onclick=async()=>{if(!currentUser?.email){toast("Sign in with an email account first.");return;}try{await sendPasswordResetEmail(auth,currentUser.email);toast("Password reset email sent. Check your inbox.");}catch(error){toast(friendlyError(error));}};
   $("#settingProfileVisibility").addEventListener("change",async e=>{
     if(!requireAccount())return;
     const base=publicProfile||privateProfile?.profileData;
     if(!base){toast("Complete your profile first.");return;}
-    if(e.target.value!=="private"&&!base.profileConsentAt){e.target.value="private";toast("Open your profile editor and opt in to community visibility before making your profile discoverable.");return;}
-    const next={...base,profileVisibility:e.target.value};
+    const nextVisibility=e.target.value;
+    const publication=evaluateProfilePublication({visibility:nextVisibility,consent:Boolean(base.profileConsentAt),displayName:base.displayName,username:base.username});
+    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Open Edit profile and confirm the public Builders directory setting. Your name and username must also be complete.");return;}
+    const next={...base,profileVisibility:nextVisibility};
     try{
-      await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:e.target.value,profileData:next,updatedAt:serverTimestamp()},{merge:true});
+      await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:nextVisibility,profileData:next,updatedAt:serverTimestamp()},{merge:true});
       const publicRef=doc(db,"publicProfiles",currentUser.uid);
-      if(e.target.value==="public")await setDoc(publicRef,next,{merge:true});else await deleteDoc(publicRef);
-      privateProfile={...(privateProfile||{}),profileVisibility:e.target.value,profileData:next};
-      publicProfile=next; await syncSocialProfile(next); renderMyProfile(); searchPeople(); toast("Profile visibility updated.");
-    }catch(error){e.target.value=base.profileVisibility||"public";toast(friendlyError(error));}
+      if(nextVisibility==="public"){
+        await setDoc(publicRef,next,{merge:true});
+        const verify=await getDoc(publicRef);
+        if(!verify.exists()||verify.data()?.profileVisibility!=="public")throw new Error("The public Builder profile could not be confirmed. Check publicProfiles database permissions.");
+      }else await deleteDoc(publicRef);
+      privateProfile={...(privateProfile||{}),profileVisibility:nextVisibility,profileData:next};
+      publicProfile=next;
+      await syncSocialProfile(next);
+      renderMyProfile(); searchPeople(); toast("Profile visibility updated.");
+    }catch(error){e.target.value=base.profileVisibility||"private";toast(friendlyError(error));}
   });
   $$('[data-settings-tab]').forEach(b=>b.onclick=()=>showSettingsTab(b.dataset.settingsTab));
-  $("#navTourBtn").onclick=()=>{ $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); document.querySelector(".desktop-nav")?.classList.remove("mobile-open"); document.body.classList.remove("hv-nav-open"); $("#menuToggle").setAttribute("aria-expanded","false"); startWebsiteTour(); };$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);
+  $("#navTourBtn").onclick=()=>{ $("#navMoreMenu").hidden=true; $("#navMoreBtn").setAttribute("aria-expanded","false"); startWebsiteTour(); };$("#settingsTourBtn").onclick=startWebsiteTour;$("#tourSkipBtn").onclick=endWebsiteTour;$("#tourBackBtn").onclick=()=>renderTourStep(activeTourIndex-1);$("#tourNextBtn").onclick=()=>activeTourIndex===tourSteps.length-1?endWebsiteTour():renderTourStep(activeTourIndex+1);
   $("#newDirectChatBtn").onclick=()=>{chatReturnRoute="people";navigateToRoute("people");setTimeout(()=>{const grid=$("#peopleGrid");if(grid){grid.hidden=false;$("#viewMembersBtn").textContent="Hide members";$("#viewMembersBtn").setAttribute("aria-expanded","true");searchPeople();}},0);};$("#chatMenuBtn").onclick=openChatActions;
   $$('[data-chat-filter]').forEach(b=>b.onclick=()=>{activeChatFilter=b.dataset.chatFilter;$$('[data-chat-filter]').forEach(x=>x.classList.toggle("active",x===b));renderConversationList(currentConversations);});
   $("#chatSearchToggle").onclick=()=>{$("#messageSearchWrap").hidden=!$("#messageSearchWrap").hidden;if(!$("#messageSearchWrap").hidden)$("#messageSearch").focus();};$("#chatDetailsBtn").onclick=openChatIdentity;
@@ -4028,6 +4455,20 @@ function initAdvancedUI(){
 }
 
 let lastRouteKey = "";
+let careerModulePromise = null;
+async function activateCareerMatch() {
+  if (!currentUser) return;
+  try {
+    careerModulePromise ||= import("./career-match.js");
+    const careerModule = await careerModulePromise;
+    await careerModule.initCareerMatch({ user: currentUser, toast });
+  } catch (error) {
+    console.error("Career Match could not be loaded", error);
+    const mount = $("#careerMatchMount");
+    if (mount) mount.innerHTML = `<div class="career-error-card"><b>Career Match could not load.</b><p>${esc(error?.message || "Please refresh the page and try again.")}</p><button type="button" class="career-secondary-btn" id="careerRetryLoad">Retry</button></div>`;
+    $("#careerRetryLoad")?.addEventListener("click", () => { careerModulePromise = null; void activateCareerMatch(); });
+  }
+}
 function handleRoute({ force = false } = {}) {
   // Unknown paths fall back to home with a clean URL instead of staying on a broken address.
   if (!isAppRoutePath(location.pathname)) history.replaceState({}, "", "/");
@@ -4077,12 +4518,7 @@ function handleRoute({ force = false } = {}) {
   if (blocked) { aiPanel.hidden = true; aiAssistant.classList.remove("ai-on-wish-page"); }
   $$('[data-route]').forEach(a => a.classList.toggle("active", a.dataset.route === view));
   document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
-  document.body.classList.remove("hv-nav-open");
-  const navToggle = document.querySelector("#menuToggle");
-  if (navToggle) { navToggle.setAttribute("aria-expanded", "false"); navToggle.setAttribute("aria-label", "Open navigation"); }
-  const moreMenu = document.querySelector("#navMoreMenu"); if (moreMenu) moreMenu.hidden = true;
-  const moreToggle = document.querySelector("#navMoreBtn"); if (moreToggle) moreToggle.setAttribute("aria-expanded", "false");
-  const titles = { home: "HackVerse", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", "career-match": "Career Match", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
+  const titles = { home: "HackVerse", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", "career-match": "Career Match", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
   document.title = `${titles[view] || "HackVerse"} — HackVerse`;
   if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
   if (blocked || !freshRoute) return;
@@ -4092,248 +4528,12 @@ function handleRoute({ force = false } = {}) {
   if (view === "public-profile" && profileMatch) void loadPublicProfilePage(profileMatch[1]);
   if (view === "post-detail" && postMatch) void loadSocialPostDetail(postMatch[1]);
   if (view === "reports") { updateReportFields(); void loadMyReports(); if (isAdminUser) void loadAdminReports(); }
-  if (view === "profile") { if (currentUser) { void loadHackathonHistory(); if (!builderPosts.length) void loadBuilderFeed(); } }
+  if (view === "profile") { if (currentUser) { void loadHackathonHistory(); if (!profileStats) void loadProfileStats(); if (!builderPosts.length) void loadBuilderFeed(); } }
   if (view === "saved") renderSaved();
   if (view === "people" && currentUser) searchPeople();
   if (view === "notifications") { renderNotificationCenter(); void loadSocialNotifications(); }
   if (view === "settings") loadSettingsUI();
-}
-
-async function extractCareerResumeText(file) {
-  if (!file || file.type !== "application/pdf" && !/\.pdf$/i.test(file.name || "")) {
-    throw new Error("Please choose a valid PDF resume.");
-  }
-  if (file.size > 8 * 1024 * 1024) throw new Error("Please upload a PDF smaller than 8 MB.");
-
-  const pdfjsLib = await import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.5.438/pdf.min.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let pdf;
-  try {
-    pdf = await pdfjsLib.getDocument({
-      data: bytes,
-      useSystemFonts: true,
-      disableFontFace: false,
-      isEvalSupported: false,
-      stopAtErrors: false
-    }).promise;
-  } catch (error) {
-    if (error?.name === "PasswordException") {
-      throw new Error("This PDF is password-protected. Please upload an unlocked copy of your resume.");
-    }
-    throw new Error("This PDF could not be opened. Please re-export it as a standard PDF and try again.");
-  }
-  if (!pdf.numPages) throw new Error("This PDF does not contain any pages.");
-  if (pdf.numPages > 8) throw new Error("Please upload a resume with 8 pages or fewer.");
-
-  // OCR is loaded only when needed, keeping normal text-PDF uploads fast.
-  let ocrWorker = null;
-  const ensureOcrWorker = async () => {
-    if (ocrWorker) return ocrWorker;
-    const tesseract = await import("https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js");
-    ocrWorker = await tesseract.createWorker("eng", 1, {
-      logger: message => {
-        if (message.status === "recognizing text") {
-          const pct = Math.round((message.progress || 0) * 100);
-          const status = document.querySelector("#careerMatchStatus");
-          if (status) status.textContent = `Reading scanned page with OCR… ${pct}%`;
-          careerToolkit.setProcessingStage("layout", `OCR is recognising scanned content… ${pct}% complete for the current page.`);
-        }
-      }
-    });
-    return ocrWorker;
-  };
-
-  const pages = [];
-  try {
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-      careerToolkit.setProcessingStage("extract", `Reading page ${pageNumber} of ${pdf.numPages} and checking its text layer.`);
-      const page = await pdf.getPage(pageNumber);
-      const content = await page.getTextContent({ includeMarkedContent: false, disableNormalization: false });
-      const items = content.items
-        .filter(item => typeof item.str === "string" && item.str.trim())
-        .map(item => ({
-          text: item.str.normalize("NFKC").replace(/[\uE000-\uF8FF]/g, "").trim(),
-          x: Number(item.transform?.[4] || 0),
-          y: Number(item.transform?.[5] || 0),
-          width: Math.max(0, Number(item.width || 0))
-        }))
-        .filter(item => item.text);
-
-      let pageText = "";
-      if (items.length) {
-        // Rebuild lines from coordinates; preserve wide column gaps as separators.
-        items.sort((a, b) => b.y - a.y || a.x - b.x);
-        const rows = [];
-        for (const item of items) {
-          let row = rows.find(candidate => Math.abs(candidate.y - item.y) <= 2.6);
-          if (!row) { row = { y: item.y, items: [] }; rows.push(row); }
-          row.items.push(item);
-        }
-        rows.sort((a, b) => b.y - a.y);
-        const pageLines = [];
-        for (const row of rows) {
-          row.items.sort((a, b) => a.x - b.x);
-          let segment = [], previousRight = null;
-          const flush = () => {
-            const line = segment.map(part => part.text).join(" ").replace(/\s+/g, " ").trim();
-            if (line) pageLines.push(line);
-            segment = [];
-          };
-          for (const item of row.items) {
-            const gap = previousRight == null ? 0 : item.x - previousRight;
-            if (gap > 48 && segment.length) flush();
-            segment.push(item);
-            previousRight = item.x + item.width;
-          }
-          flush();
-        }
-        pageText = pageLines.join("\n");
-      }
-
-      // Image-only pages, or pages with only a few selectable labels, are OCR'd.
-      // Mixed PDFs are handled page-by-page so their text pages are not OCR'd again.
-      if (pageText.replace(/\s/g, "").length < 35) {
-        const status = document.querySelector("#careerMatchStatus");
-        if (status) status.textContent = `Scanned/image page detected (${pageNumber}/${pdf.numPages}). Running OCR…`;
-        careerToolkit.setProcessingStage("layout", `Scanned page ${pageNumber} of ${pdf.numPages} detected. Running OCR to read the page image.`);
-        const worker = await ensureOcrWorker();
-        const viewport = page.getViewport({ scale: 2.2 });
-        const canvas = document.createElement("canvas");
-        const context = canvas.getContext("2d", { willReadFrequently: true });
-        canvas.width = Math.ceil(viewport.width);
-        canvas.height = Math.ceil(viewport.height);
-        await page.render({ canvasContext: context, viewport }).promise;
-        const recognised = await worker.recognize(canvas);
-        const ocrText = String(recognised?.data?.text || "").trim();
-        canvas.width = 0;
-        canvas.height = 0;
-        if (ocrText.length > pageText.length) pageText = ocrText;
-      }
-      if (pageText.trim()) pages.push(`PAGE ${pageNumber}\n${pageText.trim()}`);
-    }
-  } finally {
-    if (ocrWorker) await ocrWorker.terminate();
-  }
-
-  const extracted = pages.join("\n\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  if (extracted.length < 30) {
-    throw new Error("We couldn't read enough text from this PDF, even after OCR. Try a clearer scan, higher-resolution export, or an unlocked PDF.");
-  }
-  return extracted.slice(0, 60000);
-}
-
-function renderCareerMatchResults(result, resumeText = "", jobDescription = "", fileName = "") {
-  const percent = Math.max(0, Math.min(100, Number(result.alignmentPercent) || 0));
-  $("#careerMatchSummary").innerHTML = `
-    <div class="career-match-score-card"><div class="career-match-score-number" style="--score:${percent}%"><b>${percent}%</b></div><div class="career-match-score-copy"><small>SKILL ALIGNMENT</small><b>${percent >= 75 ? "Strong starting point" : percent >= 45 ? "Room to strengthen" : "Build your role fit"}</b><p>${Number(result.matchedCount) || 0} of ${Number(result.totalJobSkills) || 0} recognised job skills also appear in your resume.</p></div></div>
-    <div class="career-match-stat-card"><small>MATCHED</small><b>${Number(result.matchedCount) || 0}</b><small>skills demonstrated</small></div>
-    <div class="career-match-stat-card"><small>MISSING</small><b>${Number(result.missingCount) || 0}</b><small>skills to strengthen</small></div>`;
-  $("#careerMatchedCount").textContent = String(result.matchedSkills?.length || 0);
-  $("#careerMissingCount").textContent = String(result.missingSkills?.length || 0);
-  const matched = Array.isArray(result.matchedSkills) ? result.matchedSkills : [];
-  $("#careerMatchedSkills").innerHTML = matched.length ? matched.map(skill => `
-    <div class="career-match-skill-item"><div class="career-match-skill-item-top"><b>${esc(skill.name)}</b><small>${esc(skill.category || "Skill")}</small></div><p>Found in your resume${skill.mentions > 1 ? ` · ${Number(skill.mentions)} mentions` : ""}.</p>${(skill.resumeEvidence || []).slice(0,2).map(source => `<div class="career-match-evidence career-resume-evidence"><strong>RESUME · LINE ${Number(source.lineNumber) || "—"}</strong>${esc(source.text)}</div>`).join("")}</div>`).join("") : '<div class="career-match-empty">No recognised job-description skills were found in your resume yet.</div>';
-  const missing = Array.isArray(result.missingSkills) ? result.missingSkills : [];
-  $("#careerMissingSkills").innerHTML = missing.length ? missing.map(skill => `
-    <div class="career-match-skill-item"><div class="career-match-skill-item-top"><b>${esc(skill.name)}</b><small>${esc(skill.category || "Skill")}</small></div>
-      <span class="career-gap-priority ${esc(skill.priority || "mentioned")}">${skill.priority === "must-have" ? "Must-have" : skill.priority === "preferred" ? "Preferred" : "Mentioned"}</span>
-      ${(skill.sourceLines || []).map(source => `<div class="career-match-evidence"><strong>JOB DESCRIPTION · LINE ${Number(source.lineNumber) || "—"}</strong>${esc(source.text)}</div>`).join("")}
-      ${skill.resource ? `<a href="${esc(skill.resource)}" target="_blank" rel="noopener noreferrer">Open learning resource ↗</a>` : ""}
-    </div>`).join("") : '<div class="career-match-empty">No missing skills were found in the supported skill catalogue. Review the complete job description to check for requirements outside the catalogue.</div>';
-  const plan = Array.isArray(result.learningPlan) ? result.learningPlan : [];
-  $("#careerLearningPlan").innerHTML = plan.length ? plan.map(day => `
-    <article class="career-match-day"><span class="career-match-day-number">DAY ${Number(day.day) || "—"}</span><div><small>14-DAY SPRINT</small><b>${esc(day.focus || "Learning task")}</b><p>${esc(day.task || "")}</p>${day.resource ? `<a href="${esc(day.resource)}" target="_blank" rel="noopener noreferrer">Study resource ↗</a>` : ""}</div></article>`).join("") : '<div class="career-match-empty">Add the missing skills above to generate a learning sprint.</div>';
-  if (result.notice) toast(result.notice);
-  careerToolkit.updateAnalysis({ result, resumeText, jobDescription, fileName });
-  $("#careerMatchResults").hidden = false;
-}
-
-async function submitCareerMatch(event) {
-  event.preventDefault();
-  if (!requireAccount()) return;
-  const file = $("#careerResumeFile").files?.[0];
-  const jobDescription = $("#careerJobDescription").value.trim();
-  const status = $("#careerMatchStatus"), button = $("#careerAnalyseBtn");
-  status.classList.remove("is-error");
-  if (!file) { status.textContent = "Choose a resume PDF first."; status.classList.add("is-error"); return; }
-  if (!(file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))) { status.textContent = "Please choose a PDF file."; status.classList.add("is-error"); return; }
-  if (file.size > 8 * 1024 * 1024) { status.textContent = "The PDF must be 8 MB or smaller."; status.classList.add("is-error"); return; }
-  if (jobDescription.length < 30) { status.textContent = "Paste the full job description (at least 30 characters)."; status.classList.add("is-error"); return; }
-  button.disabled = true; button.setAttribute("aria-busy", "true"); button.textContent = "Reading your resume…";
-  $("#careerMatchResults").hidden = true;
-  let analysisSucceeded = false;
-  try {
-    careerToolkit.setProcessingStage("extract", "Opening the PDF and checking each page for selectable text or scanned content.");
-    status.textContent = "Extracting resume text in your browser…";
-    const resumeText = await extractCareerResumeText(file);
-    careerToolkit.setProcessingStage("match", "Comparing your resume with the job description and checking synonym matches.");
-    button.textContent = "Comparing skills…";
-    status.textContent = "Comparing recognised skills and verifying job-description evidence…";
-    const token = await currentUser.getIdToken();
-    const response = await fetch("/api/resume-gap-analysis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ resumeText, jobDescription })
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `Career Match failed (${response.status}).`);
-    careerToolkit.setProcessingStage("plan", "Prioritising the top skill gaps and preparing the learning sprint and interview prompts.");
-    renderCareerMatchResults(data, resumeText, jobDescription, file.name);
-    careerToolkit.finishProcessing(true);
-    analysisSucceeded = true;
-    status.textContent = `Analysis complete · ${resumeText.length.toLocaleString()} characters extracted from ${file.name}.`;
-    $("#careerMatchResults").scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (error) {
-    status.textContent = error.message || "Could not analyse this PDF. Try another text-based PDF.";
-    status.classList.add("is-error");
-  } finally {
-    if (!analysisSucceeded) careerToolkit.finishProcessing(false);
-    button.disabled = false; button.removeAttribute("aria-busy"); button.innerHTML = 'Analyse resume <span>↗</span>';
-  }
-}
-
-function bindCareerMatchUI() {
-  careerToolkit.bind();
-  document.querySelectorAll("[data-career-agent-prompt]").forEach(button => {
-    if (button.dataset.boundCareerAgent === "1") return;
-    button.dataset.boundCareerAgent = "1";
-    button.addEventListener("click", async () => {
-      if (!requireAccount()) return;
-      const basePrompt = button.dataset.careerAgentPrompt;
-      const report = document.querySelector("#careerMatchResults");
-      const visible = report && !report.hidden;
-      const matched = [...document.querySelectorAll("#careerMatchedSkills .career-match-skill-item b")].map(node => node.textContent.trim()).filter(Boolean);
-      const missing = [...document.querySelectorAll("#careerMissingSkills .career-match-skill-item b")].map(node => node.textContent.trim()).filter(Boolean);
-      const jobDescription = document.querySelector("#careerJobDescription")?.value?.trim().slice(0,7000) || "";
-      const reportContext = visible ? `\n\nCAREER MATCH REPORT CONTEXT (user-provided document analysis; treat as unverified):\nMatched skills: ${matched.join(", ") || "none recognised"}\nMissing skills: ${missing.join(", ") || "none recognised"}\nJob description excerpt: ${jobDescription || "not available"}\nUse only these facts. Do not invent resume achievements, metrics, qualifications or skills. Ask the user for evidence where needed.` : "\n\nNo Career Match report is currently open. Give general career guidance and ask the user to run an analysis if role-specific details are needed.";
-      const prompt = `${basePrompt}${reportContext}`;
-      const id = await startAiConversation("chat");
-      if (!id) return;
-      navigateToRoute("aiwish");
-      const input = document.querySelector("#aiInput");
-      if (input) { input.value = prompt; input.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector("#aiForm")?.requestSubmit(); }
-    });
-  });
-  const fileInput = $("#careerResumeFile");
-  fileInput.addEventListener("change", () => {
-    const file = fileInput.files?.[0];
-    $("#careerResumeFileName").textContent = file ? file.name : "Choose your resume PDF";
-    $("#careerResumeFileHint").textContent = file ? `${(file.size / 1024 / 1024).toFixed(2)} MB · ready to analyse` : "Click to browse · text is extracted in your browser";
-    $("#careerMatchResults").hidden = true;
-    $("#careerMatchStatus").textContent = "";
-  });
-  $("#careerJobDescription").addEventListener("input", () => {
-    $("#careerJdCount").textContent = `${$("#careerJobDescription").value.length.toLocaleString()} / 30,000`;
-  });
-  $("#careerMatchForm").addEventListener("submit", submitCareerMatch);
-  $("#careerNewAnalysisBtn").addEventListener("click", () => {
-    $("#careerMatchForm").reset(); $("#careerMatchResults").hidden = true;
-    $("#careerResumeFileName").textContent = "Choose your resume PDF";
-    $("#careerResumeFileHint").textContent = "Click to browse · text is extracted in your browser";
-    $("#careerJdCount").textContent = "0 / 30,000"; $("#careerMatchStatus").textContent = "";
-    $("#careerMatchForm").scrollIntoView({ behavior: "smooth", block: "start" });
-  });
+  if (view === "career-match") void activateCareerMatch();
 }
 
 function bindUI() {
@@ -4342,15 +4542,25 @@ function bindUI() {
     let pageReady = document.readyState === "complete";
     let minimumElapsed = false;
     let dismissed = false;
-    const dismissSplash = () => {
-      if (!pageReady || !minimumElapsed || dismissed) return;
+    const dismissSplash = (force = false) => {
+      if ((!pageReady || !minimumElapsed) && !force) return;
+      if (dismissed || !bootSplash.isConnected) return;
       dismissed = true;
       bootSplash.classList.add("is-hidden");
-      window.setTimeout(() => bootSplash.remove(), 520);
+      window.setTimeout(() => bootSplash.remove(), 320);
+    };
+    const forceRevealOnResume = () => {
+      pageReady = true; minimumElapsed = true;
+      dismissSplash(true);
+      handleRoute();
     };
     if (!pageReady) window.addEventListener("load", () => { pageReady = true; dismissSplash(); }, { once: true });
+    window.addEventListener("pageshow", forceRevealOnResume);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden && document.readyState === "complete") forceRevealOnResume(); });
     window.setTimeout(() => { minimumElapsed = true; dismissSplash(); }, 180);
-    window.setTimeout(() => { pageReady = true; minimumElapsed = true; dismissSplash(); }, 1100);
+    // A background tab may throttle the normal timer; the resume hooks above
+    // always remove the splash once the page is visible again.
+    window.setTimeout(() => { pageReady = true; minimumElapsed = true; dismissSplash(); }, 1000);
   }
 
   document.addEventListener("click", event => {
@@ -4370,8 +4580,13 @@ function bindUI() {
   $("#year").textContent = new Date().getFullYear();
   initAdvancedUI();
   $("#appDialogClose").onclick=closeInAppDialog;
+  $("#voterModalClose")?.addEventListener("click", closeVoterModal);
+  document.addEventListener("click", event => { const button = event.target.closest("[data-social-voter-open]"); if (button) void openVoterModal(button.dataset.socialVoterOpen, button.dataset.voterType); const profileButton = event.target.closest("[data-voter-profile]"); if (profileButton?.dataset.voterProfile) { closeVoterModal(); navigateToProfile(profileButton.dataset.voterProfile); } });
+  $("#voterModal")?.addEventListener("click", event => { if (event.target.id === "voterModal") closeVoterModal(); });
+  $("#voterSearch")?.addEventListener("input", renderVoterList);
+  $$('[data-voter-type]', $("#voterModal")).forEach(button => button.addEventListener("click", () => { activeVoterType = button.dataset.voterType; $$('[data-voter-type]', $("#voterModal")).forEach(item => item.classList.toggle("active", item === button)); renderVoterList(); }));
   $("#appDialog").addEventListener("click",event=>{if(event.target.id==="appDialog")closeInAppDialog();});
-  document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!$("#appDialog").hidden)closeInAppDialog();});
+  document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!$("#appDialog").hidden)closeInAppDialog();if(event.key==="Escape"&&!$("#voterModal")?.hidden)closeVoterModal();});
   $("#authButton").onclick = () => currentUser ? signOut(auth).then(() => toast("Signed out.")) : openAuth();
   $$('[data-open-auth]').forEach(button => button.addEventListener("click", () => openAuth()));
   $("#accountButton").onclick = () => currentUser ? navigateToRoute("profile") : openAuth("signup");
@@ -4383,6 +4598,7 @@ function bindUI() {
   $("#authModeToggle").onclick = () => setAuthMode(authMode === "signin" ? "signup" : "signin");
   $("#googleSignIn").onclick = googleSignIn; $("#resetPassword").onclick = resetPassword;
   $("#profileForm").addEventListener("submit", saveProfile);
+  $$('input[name="profileVisibilityChoice"]').forEach(input => input.addEventListener("change", () => syncProfileVisibilityChoices(input.value)));
   $("#profileAvatarFile").addEventListener("change",e=>uploadProfileAvatar(e.target.files?.[0]));
   $("#removeProfileAvatarBtn").onclick=()=>{$("#profileAvatar").value="";$("#profileAvatarFile").value="";$("#profileAvatarPreviewWrap").hidden=true;toast("Profile photo removed from the draft. Save your profile to apply.");};
   $("#profileSignOutBtn").onclick = () => signOut(auth).then(() => { hideModal("profileModal"); profileIsMandatory = false; toast("Signed out."); }).catch(error => toast(friendlyError(error)));
@@ -4396,6 +4612,7 @@ function bindUI() {
   $("#deleteGroupBtn").onclick=deleteCurrentGroup;
   $("#saveGroupInfoBtn").onclick=saveGroupInfo;
   $("#viewMembersBtn").onclick=()=>{const grid=$("#peopleGrid");const open=grid.hidden;grid.hidden=!open;$("#viewMembersBtn").textContent=open?"Hide members":"View members";$("#viewMembersBtn").setAttribute("aria-expanded",String(open));if(open&&currentUser)searchPeople();};
+  $("#loadMorePeopleBtn").onclick=()=>searchPeople(true);
   $("#chatTitle").onclick=openChatIdentity;
   $("#conversationSearch").addEventListener("input",()=>renderConversationList(currentConversations));
   $("#messageSearch").addEventListener("input",()=>renderMessages(currentMessages));
@@ -4463,20 +4680,16 @@ function bindUI() {
   const mainNav = document.querySelector(".desktop-nav");
   const closeMainNav = () => {
     mainNav?.classList.remove("mobile-open");
-    document.body.classList.remove("hv-nav-open");
     $("#menuToggle").setAttribute("aria-expanded", "false");
     $("#menuToggle").setAttribute("aria-label", "Open navigation");
     $("#navMoreMenu").hidden = true;
     $("#navMoreBtn").setAttribute("aria-expanded", "false");
   };
   $("#menuToggle").onclick = () => {
-    const open = !document.body.classList.contains("hv-nav-open");
-    document.body.classList.toggle("hv-nav-open", open);
-    mainNav?.classList.toggle("mobile-open", open);
+    const open = mainNav.classList.toggle("mobile-open");
     $("#menuToggle").setAttribute("aria-expanded", String(open));
     $("#menuToggle").setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
   };
-  document.addEventListener("keydown", event => { if (event.key === "Escape") closeMainNav(); });
   $("#navMoreBtn").onclick = () => {
     const menu = $("#navMoreMenu");
     menu.hidden = !menu.hidden;
@@ -4487,7 +4700,6 @@ function bindUI() {
     if (!mainNav?.classList.contains("mobile-open") && $("#navMoreMenu").hidden) return;
     if (!event.target.closest(".topbar")) closeMainNav();
   });
-  bindCareerMatchUI();
   handleRoute();
 }
 function runHeroSearch() { if (!requireAccount()) return; $("#eventSearch").value = $("#heroSearch").value; renderEvents(); navigateToRoute("opportunities"); }

@@ -9,8 +9,7 @@
   },
   "scripts": {
     "test": "node --test functions/test/*.test.cjs functions/test/*.test.js api/test/*.test.cjs",
-    "check": "node --check public/app.js && node --check public/career-toolkit.js && node --check public/data-layer.js && node --check api/social-v13.js && node --check api/agent37/chat.js && node --check api/resume-gap-analysis.js && node --check api/lib/resume-gap.js && node --check scripts/evaluate-resume-gap.cjs",
-    "seed:social": "node scripts/seed-social-v13.mjs",
-    "evaluate:career": "node scripts/evaluate-resume-gap.cjs"
+    "check": "node --check public/app.js && node --check public/career-match.js && node --check public/data-layer.js && node --check public/profile-policy.mjs && node --check api/social-v13.js && node --check api/agent37/chat.js && node --check api/profile-directory-reconcile.js && node --check api/lib/profile-directory.js",
+    "seed:social": "node scripts/seed-social-v13.mjs"
   }
 }

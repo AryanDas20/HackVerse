@@ -1,4 +1,4 @@
-# HackVerse v16 — Builder Network + Career Toolkit
+# HackVerse v13 — Builder Network
 
 HackVerse combines opportunity discovery, team matching, project showcases, direct chat, and a developer-focused social network. The v13 release separates **Posts** (updates, questions, learning, discussions) from **Builds** (project/demo showcases) and adds detailed individual profiles, moderation reports, and selectable home-feed defaults.
 
@@ -14,13 +14,6 @@ HackVerse combines opportunity discovery, team matching, project showcases, dire
 ## Feature map
 
 - **Home:** Choose the default landing feed: overview, public posts, following posts, Builds, or opportunities. The preference is saved locally and to the user preference table.
-- **Career Match / Placement Toolkit:** Member-only career preparation suite. PDF.js extracts selectable text in the browser and Tesseract.js OCR handles scanned/image-only pages; coordinate-based reconstruction is used to help retain multi-column/table reading order. The authenticated Vercel API matches a 130-skill deterministic catalogue with explicit aliases, labels likely must-have/preferred gaps, returns resume-side evidence for matches and exact job-description line evidence for gaps, and creates a 14-day sprint for the top three gaps. Resume text is not stored by this endpoint.
-- **Resume intelligence:** Browser-local structure/readability checklist, role keyword coverage map, job-description clarity signals and printable/exportable analysis report. The checklist is heuristic and is not a proprietary ATS score or hiring prediction.
-- **Skill sprint:** Tick off the 14-day learning plan, track progress and open official learning resources. Completion state is saved locally in the current browser.
-- **Interview Lab:** Role-aware technical, scenario, project and behavioural question deck; STAR answer guide; locally saved practice notes; two-minute practice timer; and a transparent structure self-review checklist.
-- **Career Studio:** Cover-letter drafting and resume-bullet structuring helpers. Templates use user-provided facts and matched skills; they remind users not to invent achievements, numbers or metrics.
-- **Portfolio audit:** Checklist covering live demo, README, screenshots, tests, honest impact, contribution ownership, repository hygiene and accessibility.
-- **Application tracker:** Add placement applications, dates, links, notes and stage changes. Application details are stored in this browser only and are not synced to Supabase or other devices.
 - **Posts:** Public, following and home feeds; cursor-based paging; text and image/video URLs or image upload; hashtags and mentions extraction; public/followers/private visibility; upvotes, downvotes, comments, reposts, share links, edit and soft delete.
 - **Post detail:** Stable `/post/:postId` URL with a dedicated page and working reload/deep-link rewrite.
 - **Builds:** Existing project showcase flow remains separate from general Posts.
@@ -52,7 +45,7 @@ npm run check
 npm test
 ```
 
-Serve the `public/` directory with a static server for frontend-only work, or use Vercel CLI to exercise `/api/*` routes locally. The API functions require the environment variables below. Career Match loads PDF.js 6.5.438 on demand from cdnjs and Tesseract.js on demand from jsDelivr for scanned pages; live PDF/OCR tests therefore need browser access to those CDNs.
+Serve the `public/` directory with a static server for frontend-only work, or use Vercel CLI to exercise `/api/*` routes locally. The API functions require the environment variables below.
 
 ### Environment variables
 
@@ -71,18 +64,6 @@ AGENT37_INSTANCE_ID=...
 ```
 
 The browser uses the public Supabase publishable/anon key in `public/supabase-config.js`. Never expose `SUPABASE_SERVICE_ROLE_KEY` in `public/`, frontend build variables, screenshots, or client logs.
-
-## Career Match benchmark
-
-The analyser uses deterministic skill aliases and keeps the original job-description line for each missing skill. Examples such as `ReactJS` and `React.js` map to the same canonical skill. The catalogue is in `api/lib/resume-gap.js`; add or refine aliases there when placement descriptions use terminology not covered by the current catalogue.
-
-Run the feature tests with `npm test`. The benchmark runner measures the micro-averaged Jaccard overlap between predicted and judge-labelled missing-skill sets, and exits successfully at 70% or higher. The judge answer key was not supplied with this repository, so the project does **not** claim that the 70% acceptance target has already been met. To evaluate it:
-
-1. Copy `benchmarks/resume-gap-answer-key.example.json` to `benchmarks/resume-gap-answer-key.json`.
-2. Add multiple judge-reviewed cases using the same resume text and job description given to the analyser. `expectedMissingSkills` accepts catalogue keys or skill names.
-3. Run `npm run evaluate:career`. A result below 70% means the catalogue or matching rules need to be improved before submission.
-
-Use varied cases: one-column and two-column PDFs, table-heavy resumes, icon-decorated resumes, scanned pages, mixed text/image pages, different role families and synonym spellings. The benchmark runner checks the skill engine using extracted text; it does not score PDF layout extraction itself. The current OCR language is English, and very poor scans or unusual typography may still require a clearer document.
 
 ## Supabase migration
 
