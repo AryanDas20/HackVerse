@@ -13,6 +13,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const CONFIGURED = Boolean(supabaseConfig.url && !String(supabaseConfig.url).startsWith("YOUR_") && supabaseConfig.anonKey && !String(supabaseConfig.anonKey).startsWith("YOUR_"));
 let currentUser = null, authMode = "signin", isAdminUser = false;
 let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [], peopleDirectoryRows = [];
+let opportunityCursor = null, opportunityHasMore = false, opportunityPageLoading = false;
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null, chatReturnRoute = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
 let peopleCursor = null, peopleHasMore = false, peopleLoading = false, peopleSearchKey = "", peopleSearchRequest = 0;
@@ -1361,7 +1362,7 @@ function writeOpportunityCache(records) {
   try { localStorage.setItem(OPPORTUNITY_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), records })); }
   catch (error) { console.warn("Opportunity cache could not be saved; live directory remains available.", error); }
 }
-function displayOpportunityRecords(records) {
+function displayOpportunityRecords(records, { preserveVisible = false } = {}) {
   const now = Date.now();
   const loaded = records.filter(e => {
     if (e.status === "expired") return false;
@@ -1373,9 +1374,9 @@ function displayOpportunityRecords(records) {
   });
   events = deduplicateVisibleOpportunities(loaded);
   events.sort((a,b) => tsMillis(b.updatedAt || b.ingestedAt || b.createdAt) - tsMillis(a.updatedAt || a.ingestedAt || a.createdAt));
-  allEventsVisible = 24; populateEventFilterOptions(); renderEvents(); renderSaved();
+  if (!preserveVisible) allEventsVisible = 24; populateEventFilterOptions(); renderEvents(); renderSaved();
 }
-async function loadEvents({ forceRefresh = false } = {}) {
+async function loadEventsInternal({ forceRefresh = false } = {}) {
   const grid = $("#eventGrid");
   if (!currentUser) { events = []; updateEventAccessUI(); renderEvents(); renderSaved(); return; }
   if (!db) {
@@ -1387,36 +1388,73 @@ async function loadEvents({ forceRefresh = false } = {}) {
   let renderedCache = false;
   if (!forceRefresh) {
     const cached = readOpportunityCache();
-    // Render cached data immediately while the first live page refreshes.
+    // Cached content remains interactive while a bounded live refresh runs.
     if (cached) { displayOpportunityRecords(cached); renderedCache = true; }
   }
-  if (!renderedCache) grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
+  if (!renderedCache && grid) grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
-    // Render the first page immediately; hydrate later pages in the background
-    // so the homepage does not wait for every directory record.
-    const loadedDocs = [];
-    let cursor = null;
-    const firstSnapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(500)));
-    loadedDocs.push(...firstSnapshot.docs);
-    let records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
+    // Fetch only the first 200 records for the initial render. Further pages
+    // are fetched on demand when the member reaches the end of loaded results.
+    // This keeps initial/resume work bounded without dropping older listings.
+    const pageSize = 200;
+    const firstSnapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(pageSize)));
+    const records = firstSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    opportunityCursor = firstSnapshot.docs.length === pageSize ? firstSnapshot.docs[firstSnapshot.docs.length - 1] : null;
+    opportunityHasMore = firstSnapshot.docs.length === pageSize;
     displayOpportunityRecords(records);
-    cursor = firstSnapshot.docs.length === 500 ? firstSnapshot.docs[firstSnapshot.docs.length - 1] : null;
-    for (let page = 1; cursor && page < 3; page++) {
-      const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), startAfter(cursor), limit(500)));
-      loadedDocs.push(...snapshot.docs);
-      records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
-      displayOpportunityRecords(records);
-      cursor = snapshot.docs.length === 500 ? snapshot.docs[snapshot.docs.length - 1] : null;
-    }
     writeOpportunityCache(records);
   } catch (error) {
     console.error("Opportunity feed read failed", error);
     const stale = (() => { try { const cached = JSON.parse(localStorage.getItem(OPPORTUNITY_CACHE_KEY) || "null"); return Array.isArray(cached?.records) ? cached.records : null; } catch { return null; } })();
     if (stale?.length) { displayOpportunityRecords(stale); toast("Showing your last loaded opportunities because the live refresh failed."); }
     else {
-      grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Supabase database rules and connection.</div>';
+      if (grid) grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Supabase database rules and connection.</div>';
       $("#eventGridAll").innerHTML = '<div class="loading-card">The opportunity directory could not be loaded.</div>';
     }
+  }
+}
+
+let opportunityLoadPromise = null;
+function loadEvents(options = {}) {
+  // Share an in-flight directory read across auth, route-resume and manual
+  // refresh callers so the same feed is never fetched concurrently twice.
+  if (opportunityLoadPromise) return opportunityLoadPromise;
+  const pending = loadEventsInternal(options);
+  opportunityLoadPromise = pending;
+  return pending.finally(() => {
+    if (opportunityLoadPromise === pending) opportunityLoadPromise = null;
+  });
+}
+
+async function loadMoreOpportunityPage() {
+  if (!currentUser || !db || !opportunityHasMore || !opportunityCursor || opportunityPageLoading) return;
+  const button = $("#loadMoreEvents");
+  const previousVisible = allEventsVisible;
+  opportunityPageLoading = true;
+  allEventsVisible += 24;
+  if (button) { button.disabled = true; button.textContent = "Loading more…"; }
+  try {
+    const snapshot = await getDocs(query(
+      collection(db, "hackathons"),
+      where("visibility", "==", "public"),
+      startAfter(opportunityCursor),
+      limit(200)
+    ));
+    const docs = snapshot.docs;
+    const existingIds = new Set(events.map(event => event.id));
+    const newRecords = docs.filter(d => !existingIds.has(d.id)).map(d => ({ id: d.id, ...d.data() }));
+    opportunityCursor = docs.length === 200 ? docs[docs.length - 1] : null;
+    opportunityHasMore = docs.length === 200;
+    displayOpportunityRecords([...events, ...newRecords], { preserveVisible: true });
+    writeOpportunityCache(events);
+  } catch (error) {
+    allEventsVisible = previousVisible;
+    toast("Could not load more opportunities. Please try again.");
+    console.error("Opportunity page read failed", error);
+  } finally {
+    opportunityPageLoading = false;
+    if (button) { button.disabled = false; button.textContent = "Load more"; }
+    renderEvents();
   }
 }
 
@@ -1658,7 +1696,7 @@ function renderEvents() {
   const preview = $("#eventGrid"); const full = $("#eventGridAll");
   if (preview) {
     const homeList = events.filter(event => event.status !== "expired").slice(0, 6);
-    $("#homeOpportunityCount").textContent = `${events.length} unique active opportunities · ${list.length} match current filters`;
+    $("#homeOpportunityCount").textContent = `${events.length} active opportunities loaded · ${list.length} match current filters`;
     preview.innerHTML = homeList.length ? homeList.map(opportunityCard).join("") : `<div class="loading-card">${db ? (events.length ? "No active opportunities are available right now. Explore the full directory for more." : "No opportunities have been published yet. New discoveries will appear here automatically.") : "Connect Supabase to load the live opportunity feed."}</div>`;
   }
   if (full) {
@@ -1666,7 +1704,7 @@ function renderEvents() {
     $("#allOpportunityHint").textContent = list.length ? "Use the filters above to narrow your search." : "Try removing one or more filters.";
     const shown = list.slice(0,allEventsVisible);
     full.innerHTML = shown.length ? shown.map(opportunityCard).join("") : `<div class="loading-card">${events.length ? "No opportunities match these filters." : "No public opportunities are available yet."}</div>`;
-    const pager = $("#eventPagination"); if (pager) pager.hidden = list.length <= allEventsVisible;
+    const pager = $("#eventPagination"); if (pager) pager.hidden = list.length <= allEventsVisible && !opportunityHasMore;
   }
   [preview,full].filter(Boolean).forEach(grid => {
     grid.querySelectorAll("[data-save]").forEach(button => button.addEventListener("click", () => saveEvent(button.dataset.save)));
@@ -4537,6 +4575,10 @@ function handleRoute({ force = false } = {}) {
 }
 
 function bindUI() {
+  const syncTabVisibility = () => document.documentElement.classList.toggle("hv-tab-hidden", document.hidden);
+  document.addEventListener("visibilitychange", syncTabVisibility, { passive: true });
+  window.addEventListener("pageshow", () => document.documentElement.classList.remove("hv-tab-hidden"), { passive: true });
+  syncTabVisibility();
   const bootSplash = $("#hvBootSplash");
   if (bootSplash) {
     let pageReady = document.readyState === "complete";
@@ -4552,7 +4594,8 @@ function bindUI() {
     const forceRevealOnResume = () => {
       pageReady = true; minimumElapsed = true;
       dismissSplash(true);
-      handleRoute();
+      // Real route changes are handled by popstate/link navigation. A tab resume
+      // must only dismiss the splash, not run the route lifecycle again.
     };
     if (!pageReady) window.addEventListener("load", () => { pageReady = true; dismissSplash(); }, { once: true });
     window.addEventListener("pageshow", forceRevealOnResume);
@@ -4652,18 +4695,41 @@ function bindUI() {
   document.addEventListener("keydown", e => { if (e.key === "Escape") { closeMainNav(); } if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(currentRouteName()==="aiwish") navigateToRoute("home"); else { $("#aiPanel").hidden = true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
-  $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
+  $("#loadMoreEvents").onclick=()=>{
+    const list=filteredEvents();
+    if(allEventsVisible<list.length){allEventsVisible+=24;renderEvents();return;}
+    if(opportunityHasMore) void loadMoreOpportunityPage();
+  };
   $("#refreshEventsBtn").onclick = () => requireAccount() && loadEvents({ forceRefresh: true });
   // Refresh at the same 30-minute cadence as the local cache. Manual refresh always bypasses it.
   // Discovery runs every six hours, so frequent full-directory reads are unnecessary.
   let eventRefreshInProgress = false;
-  const refreshOpportunityFeed = async () => {
+  let lastAutoOpportunityRefreshAt = Date.now();
+  const AUTO_FEED_REFRESH_MS = 30 * 60 * 1000;
+  const refreshOpportunityFeed = async ({ force = false } = {}) => {
     if (!currentUser || !db || document.hidden || eventRefreshInProgress) return;
+    const now = Date.now();
+    // Returning to the tab does not trigger a full feed reload every time.
+    if (!force && now - lastAutoOpportunityRefreshAt < AUTO_FEED_REFRESH_MS) return;
     eventRefreshInProgress = true;
-    try { await loadEvents(); } finally { eventRefreshInProgress = false; }
+    lastAutoOpportunityRefreshAt = now;
+    try { await loadEvents(); }
+    finally { eventRefreshInProgress = false; }
   };
-  window.setInterval(refreshOpportunityFeed, 30 * 60 * 1000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshOpportunityFeed(); });
+  let scheduledOpportunityRefresh = null;
+  const scheduleOpportunityRefresh = () => {
+    if (document.hidden) return;
+    clearTimeout(scheduledOpportunityRefresh);
+    // Let the resumed page paint and become interactive before background sync.
+    scheduledOpportunityRefresh = window.setTimeout(() => {
+      scheduledOpportunityRefresh = null;
+      void refreshOpportunityFeed();
+    }, 1200);
+  };
+  window.setInterval(scheduleOpportunityRefresh, AUTO_FEED_REFRESH_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) scheduleOpportunityRefresh();
+  });
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;

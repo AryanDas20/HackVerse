@@ -335,6 +335,40 @@ export async function runTransaction(_db, callback) {
   return result;
 }
 
+// Stagger live-query refreshes after a background tab resumes. Without this,
+// every listener immediately queried Supabase at once, creating a burst of
+// requests and JSON/render work on mobile and lower-powered devices.
+const visibleRefreshQueue = [];
+let visibleRefreshTimer = null;
+let visibleRefreshRunning = false;
+
+function enqueueVisibleRefresh(task, priority = 10) {
+  if (!visibleRefreshQueue.some(entry => entry.task === task)) {
+    visibleRefreshQueue.push({ task, priority });
+    visibleRefreshQueue.sort((a, b) => a.priority - b.priority);
+  }
+  if (visibleRefreshTimer === null && !visibleRefreshRunning) {
+    visibleRefreshTimer = setTimeout(drainVisibleRefreshQueue, 100);
+  }
+}
+
+async function drainVisibleRefreshQueue() {
+  visibleRefreshTimer = null;
+  if (document.hidden || visibleRefreshRunning || !visibleRefreshQueue.length) return;
+  visibleRefreshRunning = true;
+  const entry = visibleRefreshQueue.shift();
+  try { await entry.task(); } catch {}
+  visibleRefreshRunning = false;
+  if (visibleRefreshQueue.length && visibleRefreshTimer === null) {
+    visibleRefreshTimer = setTimeout(drainVisibleRefreshQueue, 140);
+  }
+}
+
+function removeVisibleRefresh(task) {
+  const index = visibleRefreshQueue.findIndex(entry => entry.task === task);
+  if (index >= 0) visibleRefreshQueue.splice(index, 1);
+}
+
 export function onSnapshot(target, callback, errorCallback) {
   let stopped = false;
   let inFlight = false;
@@ -350,18 +384,26 @@ export function onSnapshot(target, callback, errorCallback) {
     } catch (error) { errorCallback?.(error); }
     finally { inFlight = false; }
   };
-  // Poll much less aggressively for normal collections, pause background polling,
-  // and keep only the live typing indicator on a short interval. The former
-  // universal 3-second timer multiplied network traffic across every open view.
   tick();
   const path = target?.__kind === "query" ? target.collectionRef?.path : target?.path;
-  const intervalMs = String(path || "").endsWith("/typing") ? 2000
-    : String(path || "").endsWith("/messages") ? 2800
-    : String(path || "") === "conversations" ? 7500 : 15000;
+  const pathName = String(path || "");
+  const intervalMs = pathName.endsWith("/typing") ? 2500
+    : pathName.endsWith("/messages") ? 3500
+    : pathName === "conversations" ? 10000 : 20000;
   const timer = setInterval(() => { if (!document.hidden) tick(); }, intervalMs);
-  const onVisible = () => { if (!document.hidden) tick(); };
+  const priority = pathName.endsWith("/messages") ? 0
+    : pathName === "conversations" ? 1
+    : pathName.endsWith("/typing") ? 2 : 10;
+  const onVisible = () => {
+    if (!document.hidden && !stopped) enqueueVisibleRefresh(tick, priority);
+  };
   document.addEventListener("visibilitychange", onVisible);
-  return () => { stopped = true; clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    removeVisibleRefresh(tick);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
 }
 
 export class Timestamp {
