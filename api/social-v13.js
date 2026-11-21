@@ -139,7 +139,7 @@ async function handler(req, res) {
     client = clients(); user = await authenticate(client, req);
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const action = String(body.action || "");
-    const readActions = new Set(["feed","profile","profile-stats","profile-tab","post-detail","comments","voters","my-reports","preferences","blocked-users"]);
+    const readActions = new Set(["feed","profile","profile-stats","profile-tab","post-detail","comments","my-reports","preferences","blocked-users"]);
     // Hot interaction paths run the rate-limit check alongside their reads; every write awaits it first.
     const deferredLimit = new Set(["vote","comment","repost","unrepost"]);
     let limitCheck = Promise.resolve();
@@ -209,38 +209,6 @@ async function handler(req, res) {
     if (action === "post-detail") {
       const { post, author, viewerVote } = await loadVisiblePost(client, body.postId, user.id, { withVote: true });
       return res.status(200).json({ post: { ...post, viewer_vote: viewerVote, author } });
-    }
-
-    if (action === "voters") {
-      await rateLimit(client, user, "voters", 20, 60);
-      const post = await visiblePost(client, body.postId, user.id);
-      const { data: voteRows, error: voteError, count: voteCount } = await client.from("votes")
-        .select("user_id,value,created_at", { count: "exact" })
-        .eq("post_id", post.id).order("created_at", { ascending: false }).limit(500);
-      if (voteError) throw voteError;
-      const ids = [...new Set((voteRows || []).map(row => row.user_id))];
-      const [profileResult, followResult, blockResult] = await Promise.all([
-        ids.length ? client.from("profiles").select("id,username,display_name,avatar_url,profile_visibility,is_private").in("id", ids) : Promise.resolve({ data: [], error: null }),
-        ids.length ? client.from("follows").select("following_id").eq("follower_id", user.id).eq("status", "active").in("following_id", ids) : Promise.resolve({ data: [], error: null }),
-        client.from("user_blocks").select("blocker_id,blocked_id").or(`blocker_id.eq.${user.id},blocked_id.eq.${user.id}`).limit(1000)
-      ]);
-      for (const result of [profileResult, followResult, blockResult]) if (result.error) throw result.error;
-      const profiles = new Map((profileResult.data || []).map(profile => [profile.id, profile]));
-      const followed = new Set((followResult.data || []).map(row => row.following_id));
-      const blocked = new Set((blockResult.data || []).map(row => row.blocker_id === user.id ? row.blocked_id : row.blocker_id));
-      const output = { upvoters: [], downvoters: [], hiddenUpvotes: 0, hiddenDownvotes: 0 };
-      for (const vote of voteRows || []) {
-        const profile = profiles.get(vote.user_id);
-        const visibility = profile?.profile_visibility || (profile?.is_private ? "private" : "public");
-        const isVisible = profile && !blocked.has(vote.user_id) && (vote.user_id === user.id || visibility === "public" || followed.has(vote.user_id));
-        if (!isVisible) {
-          if (vote.value === "upvote") output.hiddenUpvotes += 1; else output.hiddenDownvotes += 1;
-          continue;
-        }
-        const person = { username: profile.username || "", display_name: profile.display_name || "HackVerse member", avatar_url: safeHttpUrl(profile.avatar_url) };
-        if (vote.value === "upvote") output.upvoters.push(person); else output.downvoters.push(person);
-      }
-      return res.status(200).json({ ...output, upvoteCount: Number(post.upvote_count || 0), downvoteCount: Number(post.downvote_count || 0), totalCount: Number(voteCount || 0), truncated: Number(voteCount || 0) > (voteRows || []).length, postId: post.id });
     }
 
     if (action === "profile-stats") {

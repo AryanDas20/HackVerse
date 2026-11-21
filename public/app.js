@@ -13,7 +13,6 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const CONFIGURED = Boolean(supabaseConfig.url && !String(supabaseConfig.url).startsWith("YOUR_") && supabaseConfig.anonKey && !String(supabaseConfig.anonKey).startsWith("YOUR_"));
 let currentUser = null, authMode = "signin", isAdminUser = false;
 let privateProfile = null, publicProfile = null, events = [], savedIds = new Set(), people = [], peopleDirectoryRows = [];
-let opportunityCursor = null, opportunityHasMore = false, opportunityPageLoading = false;
 let activeConversationId = null, activeConversation = null, stopConversationListener = null, stopMessageListener = null, chatReturnRoute = null;
 let stopInboxListener = null, profileIsMandatory = false, selectedMember = null, peopleSearchTimer = null;
 let peopleCursor = null, peopleHasMore = false, peopleLoading = false, peopleSearchKey = "", peopleSearchRequest = 0;
@@ -34,7 +33,7 @@ const listFrom = value => String(value || "").split(",").map(x => x.trim()).filt
 const normalizedList = value => listFrom(value).map(x => x.toLowerCase()).filter((x, i, a) => a.indexOf(x) === i);
 const validUrl = value => { if (!value) return ""; try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) ? u.href : ""; } catch { return ""; } };
 
-const APP_ROUTE_NAMES = new Set(["home", "posts", "feed", "opportunities", "people", "messages", "aiwish", "career-match", "profile", "saved", "reports", "notifications", "settings"]);
+const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings"]);
 function routePath(route) {
   const value = String(route || "home").trim();
   if (value === "/" || value === "home") return "/";
@@ -395,6 +394,7 @@ function openShareMenu(item) {
     <button class="modal-close" type="button" data-share-action-close aria-label="Close">×</button>
     <div class="eyebrow">SHARE WITH YOUR NETWORK</div><h2 id="shareActionTitle">Share this update</h2>
     <p class="muted">Choose a contact in WhatsApp, your device share sheet, or a HackVerse conversation.</p>
+    ${item.type === "opportunity" ? `<article class="share-opportunity-card"><div class="share-card-brand"><span>H</span> HACKVERSE <small>OPPORTUNITY CARD</small></div><h3>${esc(item.title)}</h3><p>${esc(item.description||"Discover this opportunity on HackVerse.")}</p>${Array.isArray(item.details)&&item.details.length?`<div class="share-card-facts">${item.details.slice(0,4).map(row=>`<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>`:""}<footer>DISCOVER · CONNECT · BUILD <span>↗</span></footer></article>` : ""}
     ${Array.isArray(item.details) && item.details.length ? `<div class="share-opportunity-preview">${item.details.slice(0,4).map(row => `<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>` : ""}
     <div class="share-action-list">
       <a class="share-action-option" href="${esc(whatsappUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-action-icon">↗</span><span><b>WhatsApp</b><small>Choose a contact in WhatsApp</small></span><span class="share-action-arrow">→</span></a>
@@ -419,54 +419,7 @@ function openShareMenu(item) {
 // the visible cards directly, so interactions feel instant and never need a full feed reload.
 const socialPostCache = new Map();
 const pendingVotes = new Set();
-let activeVoterType = "upvote";
-let voterModalPostId = "";
-let voterLists = { upvoters: [], downvoters: [], hiddenUpvotes: 0, hiddenDownvotes: 0, truncated: false };
-async function openVoterModal(postId, initialType = "upvote") {
-  if (!currentUser) { openAuth(); toast("Sign in to view voter details."); return; }
-  voterModalPostId = String(postId || ""); activeVoterType = initialType === "downvote" ? "downvote" : "upvote";
-  voterLists = { upvoters: [], downvoters: [], hiddenUpvotes: 0, hiddenDownvotes: 0, truncated: false };
-  const modal = $("#voterModal"); if (!modal) return;
-  modal.hidden = false;
-  $("#voterModalTitle").textContent = "People who voted";
-  $("#voterModalSummary").textContent = "Loading voter details…";
-  $("#voterList").innerHTML = '<div class="empty-note">Loading voter details…</div>';
-  $("#voterSearch").value = "";
-  $$('[data-voter-type]', modal).forEach(button => button.classList.toggle("active", button.dataset.voterType === activeVoterType));
-  try {
-    const data = await socialRequest("voters", { postId: voterModalPostId });
-    if (voterModalPostId !== String(postId || "")) return;
-    voterLists = {
-      upvoters: Array.isArray(data.upvoters) ? data.upvoters : [],
-      downvoters: Array.isArray(data.downvoters) ? data.downvoters : [],
-      hiddenUpvotes: Number(data.hiddenUpvotes || 0),
-      hiddenDownvotes: Number(data.hiddenDownvotes || 0),
-      truncated: Boolean(data.truncated)
-    };
-    $("#voterUpCount").textContent = String(Number(data.upvoteCount ?? voterLists.upvoters.length + voterLists.hiddenUpvotes));
-    $("#voterDownCount").textContent = String(Number(data.downvoteCount ?? voterLists.downvoters.length + voterLists.hiddenDownvotes));
-    const hiddenTotal = voterLists.hiddenUpvotes + voterLists.hiddenDownvotes;
-    $("#voterModalSummary").textContent = `${Number(data.upvoteCount || 0) + Number(data.downvoteCount || 0)} total votes · ${hiddenTotal ? `${hiddenTotal} profile${hiddenTotal === 1 ? " is" : "s are"} hidden by privacy settings` : "Public voter profiles are shown below"}${voterLists.truncated ? " · showing the most recent 500 votes" : ""}`;
-    renderVoterList();
-  } catch (error) {
-    $("#voterModalSummary").textContent = "Could not load voter details.";
-    $("#voterList").innerHTML = `<div class="empty-note">${esc(error.message || "Please try again.")}</div><button type="button" class="btn btn-outline" id="retryVoterLoad">Retry</button>`;
-    $("#retryVoterLoad")?.addEventListener("click", () => openVoterModal(postId, activeVoterType), { once: true });
-  }
-}
-function renderVoterList() {
-  const host = $("#voterList"); if (!host) return;
-  const list = activeVoterType === "downvote" ? voterLists.downvoters : voterLists.upvoters;
-  const hidden = activeVoterType === "downvote" ? voterLists.hiddenDownvotes : voterLists.hiddenUpvotes;
-  const term = String($("#voterSearch")?.value || "").trim().toLowerCase();
-  const visible = list.filter(person => `${person.display_name || ""} ${person.username || ""}`.toLowerCase().includes(term));
-  const label = activeVoterType === "downvote" ? "downvotes" : "upvotes";
-  if (!visible.length && !hidden && !voterLists.truncated) { host.innerHTML = `<div class="empty-note">No ${label} to show${term ? " for that search" : " yet"}.</div>`; return; }
-  host.innerHTML = visible.map(person => `<button type="button" class="voter-row" data-voter-profile="${esc(person.username || "")}" ${person.username ? "" : "disabled"}><span class="voter-avatar">${person.avatar_url ? `<img src="${esc(person.avatar_url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(String(person.display_name || "HV").split(/\s+/).slice(0,2).map(part=>part[0]||"").join("").toUpperCase())}</span><span class="voter-copy"><b>${esc(person.display_name || "HackVerse member")}</b><small>@${esc(person.username || "member")}</small></span><span class="voter-profile-arrow">View profile ↗</span></button>`).join("") + (hidden ? `<p class="voter-private-note">${hidden} ${hidden === 1 ? "member keeps" : "members keep"} their profile private or unavailable. Their identity is not displayed.</p>` : "") + (voterLists.truncated ? `<p class="voter-private-note">This list is limited to the 500 most recent votes. The displayed total count is complete.</p>` : "");
-}
-function closeVoterModal() { const modal = $("#voterModal"); if (modal) modal.hidden = true; voterModalPostId = ""; }
-
-const renderPostCounts = post => `<button type="button" class="social-count-link" data-social-voter-open="${esc(post.id)}" data-voter-type="upvote" aria-label="View ${Number(post.upvote_count || 0)} upvoters">▲ ${Number(post.upvote_count || 0)} upvotes</button><button type="button" class="social-count-link" data-social-voter-open="${esc(post.id)}" data-voter-type="downvote" aria-label="View ${Number(post.downvote_count || 0)} downvoters">▼ ${Number(post.downvote_count || 0)} downvotes</button><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span>`;
+const renderPostCounts = post => `<span>▲ ${Number(post.upvote_count || 0)} upvotes</span><span>▼ ${Number(post.downvote_count || 0)} downvotes</span><span>▤ ${Number(post.comment_count || 0)} comments</span><span>↻ ${Number(post.share_count || 0)} shares</span>`;
 const socialFeedCacheKey = () => currentUser ? `hv-social-feed-v2:${currentUser.uid}:${socialFeedType}` : "";
 function patchFeedCache(postId, patch, { remove = false } = {}) {
   const key = socialFeedCacheKey(); if (!key) return;
@@ -981,7 +934,7 @@ async function loadAccountWorkspace() {
     const savedProfile = privateProfile?.profileData || null;
     const shouldBePublic = evaluateProfilePublication({
       visibility: savedProfile?.profileVisibility,
-      consent: Boolean(savedProfile?.profileConsentAt),
+      
       displayName: savedProfile?.displayName,
       username: savedProfile?.username
     }).canPublish;
@@ -1017,7 +970,7 @@ async function loadAccountWorkspace() {
 }
 
 function syncProfileVisibilityChoices(value = "public") {
-  const visibility = ["public", "followers", "private"].includes(value) ? value : "private";
+  const visibility = value === "public" ? "public" : "private";
   const nativeSelect = $("#profileVisibility");
   if (nativeSelect) nativeSelect.value = visibility;
   $$('input[name="profileVisibilityChoice"]').forEach(input => {
@@ -1046,9 +999,7 @@ function openProfileEditor(mandatory = false) {
   const consentFieldExists = Object.prototype.hasOwnProperty.call(p, "profileConsentAt")
     || Object.prototype.hasOwnProperty.call(storedProfileData, "profileConsentAt");
   const savedConsentAt = p.profileConsentAt || storedProfileData.profileConsentAt;
-  const legacyPublicChoice = !consentFieldExists && (p.profileVisibility === "public" || privateProfile?.profileVisibility === "public");
-  const existingPublicDirectoryRecord = publicProfile?.uid === currentUser?.uid && publicProfile?.profileVisibility === "public";
-  $("#profilePublicConsent").checked = Boolean(savedConsentAt || legacyPublicChoice || existingPublicDirectoryRecord);
+  $("#profilePublicConsent").checked = true;
   $("#profileMessage").textContent = "";
   $("#profileModalTitle").textContent = mandatory ? "Complete your builder profile." : "Update your builder profile.";
   $("#profileModalHint").textContent = "Start with your name and username, then choose who can discover you in Step 02. Save your progress and add other details whenever you are ready.";
@@ -1103,23 +1054,14 @@ async function saveProfile(event) {
     if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
     return;
   }
-  const consent = $("#profilePublicConsent").checked;
   const requestedVisibility = $("#profileVisibility").value || "public";
+  const consent = true; // legacy contact-publication flag; actual email/phone visibility is controlled in Step 04
   // Do not silently turn a user's selected Public profile into a private one.
   // The directory opt-in is deliberately explicit, but must be visible and the
   // user must be told exactly what is missing before we save anything.
   const visibility = requestedVisibility;
-  const publication = evaluateProfilePublication({ visibility, consent, displayName: name, username });
+  const publication = evaluateProfilePublication({ visibility, displayName: name, username });
   const canPublish = publication.canPublish;
-  if (publication.reason === "consent") {
-    const discoveryStep = $("#profileDiscoveryStep");
-    if (discoveryStep) discoveryStep.open = true;
-    message.textContent = "To appear in Builders, open Step 02, choose Public, and tick ‘Show my builder profile in the public Builders directory’.";
-    $("#profilePublicConsent")?.focus();
-    discoveryStep?.scrollIntoView({ behavior: "smooth", block: "center" });
-    if (button) { button.disabled = false; button.removeAttribute("aria-busy"); }
-    return;
-  }
   if (publication.reason === "identity") {
     const basicsStep = $$("#profileForm .profile-step")[0];
     if (basicsStep) basicsStep.open = true;
@@ -1362,7 +1304,7 @@ function writeOpportunityCache(records) {
   try { localStorage.setItem(OPPORTUNITY_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), records })); }
   catch (error) { console.warn("Opportunity cache could not be saved; live directory remains available.", error); }
 }
-function displayOpportunityRecords(records, { preserveVisible = false } = {}) {
+function displayOpportunityRecords(records) {
   const now = Date.now();
   const loaded = records.filter(e => {
     if (e.status === "expired") return false;
@@ -1374,9 +1316,9 @@ function displayOpportunityRecords(records, { preserveVisible = false } = {}) {
   });
   events = deduplicateVisibleOpportunities(loaded);
   events.sort((a,b) => tsMillis(b.updatedAt || b.ingestedAt || b.createdAt) - tsMillis(a.updatedAt || a.ingestedAt || a.createdAt));
-  if (!preserveVisible) allEventsVisible = 24; populateEventFilterOptions(); renderEvents(); renderSaved();
+  allEventsVisible = 24; populateEventFilterOptions(); renderEvents(); renderSaved();
 }
-async function loadEventsInternal({ forceRefresh = false } = {}) {
+async function loadEvents({ forceRefresh = false } = {}) {
   const grid = $("#eventGrid");
   if (!currentUser) { events = []; updateEventAccessUI(); renderEvents(); renderSaved(); return; }
   if (!db) {
@@ -1388,73 +1330,36 @@ async function loadEventsInternal({ forceRefresh = false } = {}) {
   let renderedCache = false;
   if (!forceRefresh) {
     const cached = readOpportunityCache();
-    // Cached content remains interactive while a bounded live refresh runs.
+    // Render cached data immediately while the first live page refreshes.
     if (cached) { displayOpportunityRecords(cached); renderedCache = true; }
   }
-  if (!renderedCache && grid) grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
+  if (!renderedCache) grid.innerHTML = '<div class="loading-card">Loading opportunities…</div>';
   try {
-    // Fetch only the first 200 records for the initial render. Further pages
-    // are fetched on demand when the member reaches the end of loaded results.
-    // This keeps initial/resume work bounded without dropping older listings.
-    const pageSize = 200;
-    const firstSnapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(pageSize)));
-    const records = firstSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    opportunityCursor = firstSnapshot.docs.length === pageSize ? firstSnapshot.docs[firstSnapshot.docs.length - 1] : null;
-    opportunityHasMore = firstSnapshot.docs.length === pageSize;
+    // Render the first page immediately; hydrate later pages in the background
+    // so the homepage does not wait for every directory record.
+    const loadedDocs = [];
+    let cursor = null;
+    const firstSnapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), limit(500)));
+    loadedDocs.push(...firstSnapshot.docs);
+    let records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
     displayOpportunityRecords(records);
+    cursor = firstSnapshot.docs.length === 500 ? firstSnapshot.docs[firstSnapshot.docs.length - 1] : null;
+    for (let page = 1; cursor && page < 3; page++) {
+      const snapshot = await getDocs(query(collection(db, "hackathons"), where("visibility", "==", "public"), startAfter(cursor), limit(500)));
+      loadedDocs.push(...snapshot.docs);
+      records = loadedDocs.map(d => ({ id: d.id, ...d.data() }));
+      displayOpportunityRecords(records);
+      cursor = snapshot.docs.length === 500 ? snapshot.docs[snapshot.docs.length - 1] : null;
+    }
     writeOpportunityCache(records);
   } catch (error) {
     console.error("Opportunity feed read failed", error);
     const stale = (() => { try { const cached = JSON.parse(localStorage.getItem(OPPORTUNITY_CACHE_KEY) || "null"); return Array.isArray(cached?.records) ? cached.records : null; } catch { return null; } })();
     if (stale?.length) { displayOpportunityRecords(stale); toast("Showing your last loaded opportunities because the live refresh failed."); }
     else {
-      if (grid) grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Supabase database rules and connection.</div>';
+      grid.innerHTML = '<div class="loading-card">Could not load opportunities. Check your Supabase database rules and connection.</div>';
       $("#eventGridAll").innerHTML = '<div class="loading-card">The opportunity directory could not be loaded.</div>';
     }
-  }
-}
-
-let opportunityLoadPromise = null;
-function loadEvents(options = {}) {
-  // Share an in-flight directory read across auth, route-resume and manual
-  // refresh callers so the same feed is never fetched concurrently twice.
-  if (opportunityLoadPromise) return opportunityLoadPromise;
-  const pending = loadEventsInternal(options);
-  opportunityLoadPromise = pending;
-  return pending.finally(() => {
-    if (opportunityLoadPromise === pending) opportunityLoadPromise = null;
-  });
-}
-
-async function loadMoreOpportunityPage() {
-  if (!currentUser || !db || !opportunityHasMore || !opportunityCursor || opportunityPageLoading) return;
-  const button = $("#loadMoreEvents");
-  const previousVisible = allEventsVisible;
-  opportunityPageLoading = true;
-  allEventsVisible += 24;
-  if (button) { button.disabled = true; button.textContent = "Loading more…"; }
-  try {
-    const snapshot = await getDocs(query(
-      collection(db, "hackathons"),
-      where("visibility", "==", "public"),
-      startAfter(opportunityCursor),
-      limit(200)
-    ));
-    const docs = snapshot.docs;
-    const existingIds = new Set(events.map(event => event.id));
-    const newRecords = docs.filter(d => !existingIds.has(d.id)).map(d => ({ id: d.id, ...d.data() }));
-    opportunityCursor = docs.length === 200 ? docs[docs.length - 1] : null;
-    opportunityHasMore = docs.length === 200;
-    displayOpportunityRecords([...events, ...newRecords], { preserveVisible: true });
-    writeOpportunityCache(events);
-  } catch (error) {
-    allEventsVisible = previousVisible;
-    toast("Could not load more opportunities. Please try again.");
-    console.error("Opportunity page read failed", error);
-  } finally {
-    opportunityPageLoading = false;
-    if (button) { button.disabled = false; button.textContent = "Load more"; }
-    renderEvents();
   }
 }
 
@@ -1696,7 +1601,7 @@ function renderEvents() {
   const preview = $("#eventGrid"); const full = $("#eventGridAll");
   if (preview) {
     const homeList = events.filter(event => event.status !== "expired").slice(0, 6);
-    $("#homeOpportunityCount").textContent = `${events.length} active opportunities loaded · ${list.length} match current filters`;
+    $("#homeOpportunityCount").textContent = `${events.length} unique active opportunities · ${list.length} match current filters`;
     preview.innerHTML = homeList.length ? homeList.map(opportunityCard).join("") : `<div class="loading-card">${db ? (events.length ? "No active opportunities are available right now. Explore the full directory for more." : "No opportunities have been published yet. New discoveries will appear here automatically.") : "Connect Supabase to load the live opportunity feed."}</div>`;
   }
   if (full) {
@@ -1704,7 +1609,7 @@ function renderEvents() {
     $("#allOpportunityHint").textContent = list.length ? "Use the filters above to narrow your search." : "Try removing one or more filters.";
     const shown = list.slice(0,allEventsVisible);
     full.innerHTML = shown.length ? shown.map(opportunityCard).join("") : `<div class="loading-card">${events.length ? "No opportunities match these filters." : "No public opportunities are available yet."}</div>`;
-    const pager = $("#eventPagination"); if (pager) pager.hidden = list.length <= allEventsVisible && !opportunityHasMore;
+    const pager = $("#eventPagination"); if (pager) pager.hidden = list.length <= allEventsVisible;
   }
   [preview,full].filter(Boolean).forEach(grid => {
     grid.querySelectorAll("[data-save]").forEach(button => button.addEventListener("click", () => saveEvent(button.dataset.save)));
@@ -4398,12 +4303,9 @@ async function applyAiActions() {
 }
 
 function readAppPrefs(){try{return JSON.parse(localStorage.getItem("hackverse-app-preferences")||"{}");}catch{return {};}}
-function applyAppPrefs(overrides=null){const p=overrides&&typeof overrides==="object"?overrides:readAppPrefs();const theme=p.theme||localStorage.getItem("hackverse-theme")||"light";document.body.classList.toggle("light",theme==="light");document.documentElement.style.colorScheme=theme==="light"?"light":"dark";const themeMeta=document.querySelector('meta[name="theme-color"]');if(themeMeta)themeMeta.content=theme==="light"?"#FFFFFF":"#222222";const toggle=$("#themeToggle");if(toggle){toggle.setAttribute("aria-label",theme==="light"?"Switch to dark mode":"Switch to light mode");toggle.title=theme==="light"?"Switch to dark mode":"Switch to light mode";}document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");document.body.dataset.fontFamily=p.fontFamily||"dm";}
-function readSettingsDraft(){return {theme:$("#settingTheme").value,motion:$("#settingMotion").value,fontFamily:$("#settingFontFamily").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked,careerAi:$("#prefCareerAi")?.checked!==false,careerContext:$("#prefCareerContext")?.checked!==false};}
-function previewSettings(){const p=readSettingsDraft();applyAppPrefs(p);$("#settingsSaveStatus").textContent="Previewing unsaved preferences. Save to keep them on this browser; profile visibility saves immediately.";}
-function saveAppPrefs(){const p=readSettingsDraft();localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs(p);renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
-function discardSettingsDraft(){loadSettingsUI();applyAppPrefs();$("#settingsSaveStatus").textContent="Unsaved preference changes discarded. Profile visibility changes are saved immediately.";}
-function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme||localStorage.getItem("hackverse-theme")||(document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";if($("#prefCareerAi"))$("#prefCareerAi").checked=p.careerAi!==false;if($("#prefCareerContext"))$("#prefCareerContext").checked=p.careerContext!==false;const providers=(currentUser?.providerData||[]).map(row=>row.providerId).filter(Boolean);if($("#settingsSecurityProviders"))$("#settingsSecurityProviders").textContent=providers.length?`Connected sign-in methods: ${providers.join(", ")}.`:"Sign in to review the methods connected to your account.";if($("#settingsGoogleState"))$("#settingsGoogleState").textContent=providers.includes("google")?"Connected to this account":"Not connected";if($("#settingsSupabaseState"))$("#settingsSupabaseState").textContent=currentUser?"Session active":"Sign in required";if($("#settingsSessionStatus"))$("#settingsSessionStatus").textContent=currentUser?(currentUser.emailVerified?"Email verified · Supabase session active":"Email confirmation status not verified · Supabase session active") : "No active session";}
+function applyAppPrefs(){const p=readAppPrefs();const theme=p.theme||localStorage.getItem("hackverse-theme")||"dark";document.body.classList.toggle("light",theme==="light");document.documentElement.style.colorScheme=theme==="light"?"light":"dark";const themeMeta=document.querySelector('meta[name="theme-color"]');if(themeMeta)themeMeta.content=theme==="light"?"#FFFFFF":"#222222";const toggle=$("#themeToggle");if(toggle){toggle.setAttribute("aria-label",theme==="light"?"Switch to dark mode":"Switch to light mode");toggle.title=theme==="light"?"Switch to dark mode":"Switch to light mode";}document.body.classList.toggle("reduce-motion",p.motion==="reduced"||p.reduceMotion===true);document.body.classList.toggle("text-large",p.textSize==="large");document.body.classList.toggle("text-larger",p.textSize==="larger");document.body.dataset.fontFamily=p.fontFamily||"dm";}
+function saveAppPrefs(){const p={theme:$("#settingTheme").value,motion:$("#settingMotion").value,fontFamily:$("#settingFontFamily").value,reduceMotion:$("#prefReduceMotion").checked,textSize:$("#settingTextSize").value,inApp:$("#prefInApp").checked,desktop:$("#prefDesktop").checked,opportunity:$("#prefOpportunity").checked,sound:$("#prefSound").checked};localStorage.setItem("hackverse-app-preferences",JSON.stringify(p));localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();renderNotificationCenter();$("#settingsSaveStatus").textContent="Preferences saved just now.";if(p.desktop&&"Notification" in window&&Notification.permission==="default")Notification.requestPermission().then(result=>{if(result!=="granted"){const next=readAppPrefs();next.desktop=false;localStorage.setItem("hackverse-app-preferences",JSON.stringify(next));$("#prefDesktop").checked=false;toast("Browser notifications were not allowed.");}});}
+function loadSettingsUI(){const p=readAppPrefs();$("#settingTheme").value=p.theme||localStorage.getItem("hackverse-theme")||(document.body.classList.contains("light")?"light":"dark");$("#settingMotion").value=p.motion||"full";$("#settingFontFamily").value=p.fontFamily||"dm";$("#prefReduceMotion").checked=Boolean(p.reduceMotion);$("#settingTextSize").value=p.textSize||"normal";$("#prefInApp").checked=p.inApp!==false;$("#prefDesktop").checked=Boolean(p.desktop);$("#prefOpportunity").checked=p.opportunity!==false;$("#prefSound").checked=Boolean(p.sound);$("#settingsAccountName").textContent=publicProfile?.displayName||currentUser?.displayName||"Guest session";$("#settingsAccountEmail").textContent=currentUser?.email||"Sign in to manage your account.";$("#settingProfileVisibility").value=publicProfile?.profileVisibility||"public";}
 function upcomingSavedDeadlines(){if(!currentUser||readAppPrefs().opportunity===false)return [];const now=Date.now();return events.filter(e=>savedIds.has(e.id)).map(e=>({...e,deadlineMs:tsMillis(e.registrationDeadline)})).filter(e=>e.deadlineMs>now&&e.deadlineMs<=now+14*86400000).sort((a,b)=>a.deadlineMs-b.deadlineMs);}
 function notifyUpcomingDeadlines(){const prefs=readAppPrefs();if(!currentUser||!prefs.desktop||!("Notification" in window)||Notification.permission!=="granted")return;for(const e of upcomingSavedDeadlines()){const key=`hv-deadline-notified-${currentUser.uid}-${e.id}`;const stamp=String(e.deadlineMs);if(localStorage.getItem(key)===stamp)continue;localStorage.setItem(key,stamp);try{const days=Math.max(0,Math.ceil((e.deadlineMs-Date.now())/86400000));const n=new Notification("Saved opportunity deadline",{body:`${e.title||"A saved opportunity"} closes in ${days} day${days===1?"":"s"}.`,tag:`deadline-${e.id}`});n.onclick=()=>{window.focus();navigateToRoute("opportunities");viewEvent(e.id);};}catch{}}}
 function renderNotificationCenter(){
@@ -4431,7 +4333,6 @@ const tourSteps=[
  {route:"people",selector:"#smartTeamBtn",title:"Automatic team builder",text:"Describe your project, choose team size and roles, and run the matching engine. Balanced mode spreads complementary skills across teams; you can review and select people before creating chats."},
  {route:"messages",selector:".chat-workspace",title:"Messaging workspace",text:"Your chat area supports direct and group conversations, live message updates, replies, reactions, edit/delete, files, voice notes, read receipts and typing indicators. Open a name or group details to view member profiles."},
  {route:"aiwish",selector:"#aiWishPage",title:"AI Wish workspace",text:"Describe a website task in plain language. AI Wish prepares supported changes and waits for your approval before applying them."},
- {route:"career-match",selector:"#careerMatchPage",title:"Career Match studio",text:"Upload a resume, compare it with a target job, prioritise skill gaps, follow a practical learning roadmap, practise interviews and track real applications. The score is an evidence-based estimate, not a hiring prediction."},
  {route:"profile",selector:"#myProfilePanel",title:"Your builder profile",text:"Your profile is your professional identity on HackVerse. Add skills, education, interests, links and availability, then showcase the projects you build. Your public visibility is controlled in Settings."},
  {route:"notifications",selector:"#activitySummary",title:"Notification centre",text:"Track unread chats and saved opportunity deadlines here. Desktop alerts work while HackVerse is open and your browser has granted notification permission."},
  {route:"settings",selector:".settings-grid",title:"Settings and personalisation",text:"Choose the theme, motion level, text size, notification preferences and profile visibility. Changes are stored in this browser, while your profile visibility is stored with your Supabase profile."},
@@ -4444,23 +4345,23 @@ function startWebsiteTour(){activeTourIndex=0;$("#tourOverlay").hidden=false;ren
 function endWebsiteTour(){removeTourHighlight();$("#tourOverlay").hidden=true;activeTourIndex=-1;localStorage.setItem("hackverse-tour-complete","1");}
 function initAdvancedUI(){
   applyAppPrefs();loadSettingsUI();
+  $("#refreshTechNews")?.addEventListener("click",()=>void loadTechNews());
+  $("#techNewsSearch")?.addEventListener("input",renderTechNews);
+  $$('[data-news-tab]').forEach(b=>b.addEventListener("click",()=>{techNewsTab=b.dataset.newsTab;$$('[data-news-tab]').forEach(x=>x.classList.toggle("active",x===b));renderTechNews();}));
   $("#notificationBell").onclick=()=>navigateToRoute("notifications");
   $("#notificationSettingsBtn").onclick=()=>{navigateToRoute("settings");setTimeout(()=>showSettingsTab("notifications"),100);};
   $("#openNotificationPreferences").onclick=$("#notificationSettingsBtn").onclick;
   $("#markAllReadBtn").onclick=async()=>{if(!requireAccount())return;await Promise.all(currentConversations.map(c=>markConversationRead(c.id)));toast("Your conversation activity is marked as read.");};
-  $("#saveSettingsBtn").onclick=saveAppPrefs;
-  $("#cancelSettingsBtn").onclick=discardSettingsDraft;
-  ["#settingTheme","#settingMotion","#settingFontFamily","#settingTextSize","#prefReduceMotion","#prefInApp","#prefDesktop","#prefOpportunity","#prefSound","#prefCareerAi","#prefCareerContext"].forEach(sel=>$(sel)?.addEventListener("change",previewSettings));
+  $("#saveSettingsBtn").onclick=saveAppPrefs;["#settingTheme","#settingMotion","#settingFontFamily","#settingTextSize","#prefReduceMotion"].forEach(sel=>$(sel).addEventListener("change",()=>{const p=readAppPrefs();p.theme=$("#settingTheme").value;p.motion=$("#settingMotion").value;p.textSize=$("#settingTextSize").value;p.fontFamily=$("#settingFontFamily").value;p.reduceMotion=$("#prefReduceMotion").checked;localStorage.setItem("hackverse-app-preferences",JSON.stringify({...p}));if(p.theme)localStorage.setItem("hackverse-theme",p.theme);applyAppPrefs();}));
   $("#privacyEditProfile").onclick=$("#settingsEditProfile").onclick=()=>currentUser?openProfileEditor(false):openAuth();
   $("#settingsSignOut").onclick=()=>currentUser&&signOut(auth).then(()=>toast("Signed out.")).catch(e=>toast(friendlyError(e)));
-  $("#settingsPasswordReset").onclick=async()=>{if(!currentUser?.email){toast("Sign in with an email account first.");return;}try{await sendPasswordResetEmail(auth,currentUser.email);toast("Password reset email sent. Check your inbox.");}catch(error){toast(friendlyError(error));}};
   $("#settingProfileVisibility").addEventListener("change",async e=>{
     if(!requireAccount())return;
     const base=publicProfile||privateProfile?.profileData;
     if(!base){toast("Complete your profile first.");return;}
     const nextVisibility=e.target.value;
-    const publication=evaluateProfilePublication({visibility:nextVisibility,consent:Boolean(base.profileConsentAt),displayName:base.displayName,username:base.username});
-    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Open Edit profile and confirm the public Builders directory setting. Your name and username must also be complete.");return;}
+    const publication=evaluateProfilePublication({visibility:nextVisibility,displayName:base.displayName,username:base.username});
+    if(nextVisibility==="public"&&!publication.canPublish){e.target.value=base.profileVisibility||"private";toast("Add your name and username to publish your public profile.");return;}
     const next={...base,profileVisibility:nextVisibility};
     try{
       await setDoc(doc(db,"users",currentUser.uid),{profileVisibility:nextVisibility,profileData:next,updatedAt:serverTimestamp()},{merge:true});
@@ -4493,20 +4394,17 @@ function initAdvancedUI(){
 }
 
 let lastRouteKey = "";
-let careerModulePromise = null;
-async function activateCareerMatch() {
-  if (!currentUser) return;
-  try {
-    careerModulePromise ||= import("./career-match.js");
-    const careerModule = await careerModulePromise;
-    await careerModule.initCareerMatch({ user: currentUser, toast });
-  } catch (error) {
-    console.error("Career Match could not be loaded", error);
-    const mount = $("#careerMatchMount");
-    if (mount) mount.innerHTML = `<div class="career-error-card"><b>Career Match could not load.</b><p>${esc(error?.message || "Please refresh the page and try again.")}</p><button type="button" class="career-secondary-btn" id="careerRetryLoad">Retry</button></div>`;
-    $("#careerRetryLoad")?.addEventListener("click", () => { careerModulePromise = null; void activateCareerMatch(); });
-  }
-}
+
+// Tech news reader: Hacker News public API, with local category/search/bookmark controls and multi-destination sharing.
+let techNewsItems=[], techNewsTab="latest", techNewsLoading=false;
+const NEWS_API="https://hacker-news.firebaseio.com/v0";
+const newsSavedKey="hackverse-tech-news-saved";
+function readSavedNews(){try{return JSON.parse(localStorage.getItem(newsSavedKey)||"[]")}catch{return []}}
+function newsMatches(item,tab){const t=(item.title||"").toLowerCase(), d=(item.text||"").toLowerCase();const full=t+" "+d; if(tab==="ai")return /\b(ai|artificial intelligence|llm|machine learning|openai|anthropic|gemini|deepmind)\b/.test(full);if(tab==="security")return /\b(security|cyber|vulnerab|hack|privacy|breach|malware|exploit)\b/.test(full);if(tab==="webdev")return /\b(developer|programming|javascript|typescript|web|browser|github|framework|api|open source|linux|software)\b/.test(full);return true;}
+function renderTechNews(){const grid=$("#techNewsGrid"),status=$("#techNewsStatus");if(!grid)return;const saved=readSavedNews();let rows=techNewsTab==="saved"?techNewsItems.filter(i=>saved.includes(i.id)):techNewsItems.filter(i=>newsMatches(i,techNewsTab));const q=($("#techNewsSearch")?.value||"").trim().toLowerCase();if(q)rows=rows.filter(i=>(i.title||"").toLowerCase().includes(q));status.textContent=`${rows.length} stories · ${techNewsTab==="saved"?"saved locally":"from Hacker News"}`;grid.innerHTML=rows.map(item=>{const title=esc(item.title||"Untitled story"),source=esc(new URL(item.url||"https://news.ycombinator.com").hostname.replace(/^www\./,""));const savedNow=saved.includes(item.id);return `<article class="tech-news-card"><div class="tech-news-card-top"><span class="tech-news-source">${source}</span><span class="tech-news-score">▲ ${Number(item.score||0)}</span></div><h3>${title}</h3><p>${esc(item.by||"Hacker News community")} · ${item.time?esc(new Date(item.time*1000).toLocaleString()):"Recently"} · ${Number(item.descendants||0)} comments</p><div class="tech-news-actions"><a class="btn btn-primary btn-small" href="${esc(validUrl(item.url)||`https://news.ycombinator.com/item?id=${item.id}`)}" target="_blank" rel="noopener">Read story ↗</a><button class="btn btn-outline btn-small" data-news-save="${item.id}">${savedNow?"★ Saved":"☆ Save"}</button><button class="btn btn-outline btn-small" data-news-share="${item.id}">↗ Share</button></div></article>`}).join("")||'<div class="empty-note">No stories match this filter. Try another tab or search.</div>';grid.querySelectorAll("[data-news-save]").forEach(b=>b.onclick=()=>{const ids=readSavedNews(),id=Number(b.dataset.newsSave);localStorage.setItem(newsSavedKey,JSON.stringify(ids.includes(id)?ids.filter(x=>x!==id):[id,...ids]));renderTechNews();});grid.querySelectorAll("[data-news-share]").forEach(b=>b.onclick=()=>shareTechNews(Number(b.dataset.newsShare)));}
+async function loadTechNews(){if(techNewsLoading)return;techNewsLoading=true;const status=$("#techNewsStatus"),grid=$("#techNewsGrid");if(status)status.textContent="Refreshing technology stories…";try{const ids=await fetch(`${NEWS_API}/topstories.json`).then(r=>{if(!r.ok)throw Error("Feed unavailable");return r.json()});const stories=await Promise.all(ids.slice(0,45).map(id=>fetch(`${NEWS_API}/item/${id}.json`).then(r=>r.ok?r.json():null).catch(()=>null)));techNewsItems=stories.filter(x=>x&&x.title&&x.url);renderTechNews();}catch(e){if(status)status.textContent="Could not refresh the live feed. Check your connection and try again.";if(grid)grid.innerHTML='<div class="empty-note">The news feed could not be loaded. Use Refresh to retry.</div>';console.warn("Tech news loading",e);}finally{techNewsLoading=false;}}
+function shareTechNews(id){const item=techNewsItems.find(x=>x.id===id);if(!item)return;const url=item.url||`https://news.ycombinator.com/item?id=${id}`,text=`${item.title}\n${url}`;const shareUrl=`https://wa.me/?text=${encodeURIComponent(text)}`;const modal=document.createElement("div");modal.className="modal-backdrop share-picker-backdrop";modal.innerHTML=`<section class="modal share-picker-modal"><button class="modal-close" type="button">×</button><div class="eyebrow">SHARE TECH NEWS</div><h2>${esc(item.title)}</h2><p class="muted">Share this story anywhere or send it to a HackVerse chat.</p><div class="share-action-list"><a class="share-action-option" href="${esc(shareUrl)}" target="_blank" rel="noopener"><span><b>WhatsApp</b><small>Send to a contact</small></span>↗</a><button class="share-action-option" data-news-native><span><b>Other apps</b><small>Open your device share menu</small></span>⇧</button><button class="share-action-option" data-news-copy><span><b>Copy story link</b><small>Copy title and source URL</small></span>⧉</button></div></section>`;document.body.append(modal);modal.querySelector(".modal-close").onclick=()=>modal.remove();modal.onclick=e=>{if(e.target===modal)modal.remove()};modal.querySelector("[data-news-native]").onclick=()=>{modal.remove();if(navigator.share)navigator.share({title:item.title,url,text:item.title}).catch(()=>{});else navigator.clipboard?.writeText(text).then(()=>toast("Story copied."));};modal.querySelector("[data-news-copy]").onclick=()=>navigator.clipboard.writeText(text).then(()=>{toast("Story copied.");modal.remove()}).catch(()=>toast("Clipboard blocked"));}
+
 function handleRoute({ force = false } = {}) {
   // Unknown paths fall back to home with a clean URL instead of staying on a broken address.
   if (!isAppRoutePath(location.pathname)) history.replaceState({}, "", "/");
@@ -4556,13 +4454,14 @@ function handleRoute({ force = false } = {}) {
   if (blocked) { aiPanel.hidden = true; aiAssistant.classList.remove("ai-on-wish-page"); }
   $$('[data-route]').forEach(a => a.classList.toggle("active", a.dataset.route === view));
   document.querySelector(".desktop-nav")?.classList.remove("mobile-open");
-  const titles = { home: "HackVerse", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", "career-match": "Career Match", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
+  const titles = { home: "HackVerse", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
   document.title = `${titles[view] || "HackVerse"} — HackVerse`;
   if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
   if (blocked || !freshRoute) return;
   if (view === "opportunities") { updateEventAccessUI(); if (currentUser) renderEvents(); }
   if (view === "feed") void loadBuilderFeed();
   if (view === "posts") void loadSocialFeed({ reset: true });
+  if (view === "news") void loadTechNews();
   if (view === "public-profile" && profileMatch) void loadPublicProfilePage(profileMatch[1]);
   if (view === "post-detail" && postMatch) void loadSocialPostDetail(postMatch[1]);
   if (view === "reports") { updateReportFields(); void loadMyReports(); if (isAdminUser) void loadAdminReports(); }
@@ -4571,14 +4470,9 @@ function handleRoute({ force = false } = {}) {
   if (view === "people" && currentUser) searchPeople();
   if (view === "notifications") { renderNotificationCenter(); void loadSocialNotifications(); }
   if (view === "settings") loadSettingsUI();
-  if (view === "career-match") void activateCareerMatch();
 }
 
 function bindUI() {
-  const syncTabVisibility = () => document.documentElement.classList.toggle("hv-tab-hidden", document.hidden);
-  document.addEventListener("visibilitychange", syncTabVisibility, { passive: true });
-  window.addEventListener("pageshow", () => document.documentElement.classList.remove("hv-tab-hidden"), { passive: true });
-  syncTabVisibility();
   const bootSplash = $("#hvBootSplash");
   if (bootSplash) {
     let pageReady = document.readyState === "complete";
@@ -4594,8 +4488,7 @@ function bindUI() {
     const forceRevealOnResume = () => {
       pageReady = true; minimumElapsed = true;
       dismissSplash(true);
-      // Real route changes are handled by popstate/link navigation. A tab resume
-      // must only dismiss the splash, not run the route lifecycle again.
+      handleRoute();
     };
     if (!pageReady) window.addEventListener("load", () => { pageReady = true; dismissSplash(); }, { once: true });
     window.addEventListener("pageshow", forceRevealOnResume);
@@ -4623,13 +4516,8 @@ function bindUI() {
   $("#year").textContent = new Date().getFullYear();
   initAdvancedUI();
   $("#appDialogClose").onclick=closeInAppDialog;
-  $("#voterModalClose")?.addEventListener("click", closeVoterModal);
-  document.addEventListener("click", event => { const button = event.target.closest("[data-social-voter-open]"); if (button) void openVoterModal(button.dataset.socialVoterOpen, button.dataset.voterType); const profileButton = event.target.closest("[data-voter-profile]"); if (profileButton?.dataset.voterProfile) { closeVoterModal(); navigateToProfile(profileButton.dataset.voterProfile); } });
-  $("#voterModal")?.addEventListener("click", event => { if (event.target.id === "voterModal") closeVoterModal(); });
-  $("#voterSearch")?.addEventListener("input", renderVoterList);
-  $$('[data-voter-type]', $("#voterModal")).forEach(button => button.addEventListener("click", () => { activeVoterType = button.dataset.voterType; $$('[data-voter-type]', $("#voterModal")).forEach(item => item.classList.toggle("active", item === button)); renderVoterList(); }));
   $("#appDialog").addEventListener("click",event=>{if(event.target.id==="appDialog")closeInAppDialog();});
-  document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!$("#appDialog").hidden)closeInAppDialog();if(event.key==="Escape"&&!$("#voterModal")?.hidden)closeVoterModal();});
+  document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!$("#appDialog").hidden)closeInAppDialog();});
   $("#authButton").onclick = () => currentUser ? signOut(auth).then(() => toast("Signed out.")) : openAuth();
   $$('[data-open-auth]').forEach(button => button.addEventListener("click", () => openAuth()));
   $("#accountButton").onclick = () => currentUser ? navigateToRoute("profile") : openAuth("signup");
@@ -4695,41 +4583,18 @@ function bindUI() {
   document.addEventListener("keydown", e => { if (e.key === "Escape") { closeMainNav(); } if (e.key === "Escape") ["authModal","memberModal","groupModal","projectModal","eventModal","teamBuilderModal","manageGroupModal"].forEach(hideModal); if (e.key === "Escape") { closeProfileModal(); if(currentRouteName()==="aiwish") navigateToRoute("home"); else { $("#aiPanel").hidden = true; setAiHistoryOpen(false); $("#aiLaunchBtn").setAttribute("aria-expanded", "false"); } } });
   ["#eventSearch","#eventSkill","#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(sel=>{const el=$(sel);if(el){el.addEventListener(el.tagName==="INPUT"?"input":"change",()=>{allEventsVisible=24;renderEvents();});}});
   $("#clearEventFilters").onclick=()=>{["#eventSearch","#eventSkill"].forEach(id=>$(id).value="");["#eventCategory","#eventCountry","#eventEligibility","#eventRegion","#eventMode","#eventTrack","#eventSource","#eventLevel","#eventCost","#eventDeadline","#eventSort"].forEach(id=>{const el=$(id);if(el)el.value=id==="#eventSort"?"deadline":"all";});allEventsVisible=24;renderEvents();};
-  $("#loadMoreEvents").onclick=()=>{
-    const list=filteredEvents();
-    if(allEventsVisible<list.length){allEventsVisible+=24;renderEvents();return;}
-    if(opportunityHasMore) void loadMoreOpportunityPage();
-  };
+  $("#loadMoreEvents").onclick=()=>{allEventsVisible+=24;renderEvents();};
   $("#refreshEventsBtn").onclick = () => requireAccount() && loadEvents({ forceRefresh: true });
   // Refresh at the same 30-minute cadence as the local cache. Manual refresh always bypasses it.
   // Discovery runs every six hours, so frequent full-directory reads are unnecessary.
   let eventRefreshInProgress = false;
-  let lastAutoOpportunityRefreshAt = Date.now();
-  const AUTO_FEED_REFRESH_MS = 30 * 60 * 1000;
-  const refreshOpportunityFeed = async ({ force = false } = {}) => {
+  const refreshOpportunityFeed = async () => {
     if (!currentUser || !db || document.hidden || eventRefreshInProgress) return;
-    const now = Date.now();
-    // Returning to the tab does not trigger a full feed reload every time.
-    if (!force && now - lastAutoOpportunityRefreshAt < AUTO_FEED_REFRESH_MS) return;
     eventRefreshInProgress = true;
-    lastAutoOpportunityRefreshAt = now;
-    try { await loadEvents(); }
-    finally { eventRefreshInProgress = false; }
+    try { await loadEvents(); } finally { eventRefreshInProgress = false; }
   };
-  let scheduledOpportunityRefresh = null;
-  const scheduleOpportunityRefresh = () => {
-    if (document.hidden) return;
-    clearTimeout(scheduledOpportunityRefresh);
-    // Let the resumed page paint and become interactive before background sync.
-    scheduledOpportunityRefresh = window.setTimeout(() => {
-      scheduledOpportunityRefresh = null;
-      void refreshOpportunityFeed();
-    }, 1200);
-  };
-  window.setInterval(scheduleOpportunityRefresh, AUTO_FEED_REFRESH_MS);
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) scheduleOpportunityRefresh();
-  });
+  window.setInterval(refreshOpportunityFeed, 30 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshOpportunityFeed(); });
   $("#discoverySourceForm").addEventListener("submit", addDiscoverySource);
   $("#runDiscoveryBtn").onclick = runDiscoveryManually;
   $("#heroSearch").addEventListener("keydown", e => { if (e.key === "Enter") runHeroSearch(); }); $("#heroSearchBtn").onclick = runHeroSearch;
