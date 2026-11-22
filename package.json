@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test functions/test/*.test.cjs functions/test/*.test.js api/test/*.test.cjs",
-    "check": "node --check public/app.js && node --check public/data-layer.js && node --check public/profile-policy.mjs && node --check api/social-v13.js && node --check api/profile-directory-reconcile.js && node --check api/lib/profile-directory.js",
+    "check": "node --check public/app.js && node --check public/data-layer.js && node --check public/profile-policy.mjs && node --check api/pitch-arena.js && node --check public/pitch-arena.js && node --check api/social-v13.js && node --check api/profile-directory-reconcile.js && node --check api/lib/profile-directory.js",
     "seed:social": "node scripts/seed-social-v13.mjs"
   }
 }

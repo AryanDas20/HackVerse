@@ -35,7 +35,7 @@ const listFrom = value => String(value || "").split(",").map(x => x.trim()).filt
 const normalizedList = value => listFrom(value).map(x => x.toLowerCase()).filter((x, i, a) => a.indexOf(x) === i);
 const validUrl = value => { if (!value) return ""; try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) ? u.href : ""; } catch { return ""; } };
 
-const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings", "career"]);
+const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings", "career", "pitch-arena"]);
 function routePath(route) {
   const value = String(route || "home").trim();
   if (value === "/" || value === "home") return "/";
@@ -4674,7 +4674,7 @@ function handleRoute({ force = false } = {}) {
   $("#navMoreBtn").setAttribute("aria-expanded", "false");
   const hasMoreActiveRoute = Boolean($("#navMoreMenu [data-route].active"));
   $("#navMoreBtn")?.classList.toggle("active", hasMoreActiveRoute);
-  const titles = { career: "Career Match", home: "HackVerse", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
+  const titles = { career: "Career Match", "pitch-arena": "AI Pitch Arena", home: "HackVerse", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
   document.title = `${titles[view] || "HackVerse"} — HackVerse`;
   if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
   if (blocked || !freshRoute) return;
@@ -4691,6 +4691,7 @@ function handleRoute({ force = false } = {}) {
   if (view === "notifications") { renderNotificationCenter(); void loadSocialNotifications(); }
   if (view === "settings") loadSettingsUI();
   if (view === "career") initCareerWorkspace();
+  if (view === "pitch-arena") window.dispatchEvent(new CustomEvent("hackverse:pitch-arena:route"));
 }
 
 function bindUI() {

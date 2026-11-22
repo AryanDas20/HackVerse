@@ -23,6 +23,7 @@ HackVerse combines opportunity discovery, team matching, project showcases, dire
 - **Safety:** Report users, posts, comments, messages, technical issues or other concerns. Users can view their own reports; the moderator queue is available only to accounts with server-controlled `app_metadata.admin=true` or `app_metadata.role=admin`. Profile block controls remove the follow relationship and hide community content from both participants.
 - **Notifications:** Follow, follow-request, upvote/downvote, comment, repost and related activity.
 - **Chat:** Reuses the existing conversation store. Opening a profile chat uses a deterministic direct-message conversation ID, and chat listeners pause when the Messages view is inactive.
+- **AI Pitch Arena:** Private project uploads, source/document evidence analysis, five adaptive Agent37 judge personas, turn-based voice/text practice, saved sessions, a deterministic 100-point readiness rubric and printable improvement reports. See [`PITCH_ARENA_SETUP.md`](PITCH_ARENA_SETUP.md) and apply [`supabase-pitch-arena.sql`](supabase-pitch-arena.sql) before enabling uploads.
 
 ## Data model decisions
 

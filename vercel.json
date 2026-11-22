@@ -3,6 +3,9 @@
   "functions": {
     "api/agent37/chat.js": {
       "maxDuration": 300
+    },
+    "api/pitch-arena.js": {
+      "maxDuration": 300
     }
   },
   "rewrites": [

@@ -32,6 +32,7 @@
   <link rel="stylesheet" href="accessibility-v19.css">
   <link rel="stylesheet" href="performance-sage-v20.css">
   <link rel="stylesheet" href="career-match-v21.css">
+  <link rel="stylesheet" href="pitch-arena.css">
 </head>
 <body>
   <div class="hv-boot-splash" id="hvBootSplash" role="status" aria-label="Loading HackVerse">
@@ -57,6 +58,7 @@
           <a href="/news" data-route="news">Tech News</a>
           <a href="/career" data-route="career" class="nav-career">Career Match ✧</a>
           <a href="/aiwish" data-route="aiwish" class="nav-aiwish">AI Wish ✦</a>
+          <a href="/pitch-arena" data-route="pitch-arena" class="nav-pitch-arena">AI Pitch Arena ◉</a>
           <a href="/profile" data-route="profile">Profile</a>
           <a href="/saved" data-route="saved">Saved opportunities</a>
           <a href="/reports" data-route="reports">Safety & reports</a>
@@ -300,6 +302,74 @@
       <div class="career-copilot-panel" id="careerCopilotPanel" hidden><div class="career-copilot-head"><div><b>Agent37 · Career Copilot</b><small>Grounded in the context you choose to share</small></div><button type="button" id="careerCopilotClose" aria-label="Close copilot">×</button></div><div id="careerCopilotMessages" class="career-copilot-messages"><p class="career-copilot-welcome">Hi! Share your role, resume summary or analysis results and I can help you plan your next career step.</p></div><form id="careerCopilotForm"><input id="careerCopilotInput" maxlength="4000" required placeholder="Ask about your career next step…"><button type="submit" aria-label="Send message">↑</button></form></div>
     </section>
 
+
+    <section class="section wrap pitch-arena-page" id="pitchArenaPage" data-view="pitch-arena" hidden>
+      <div class="pa-hero">
+        <div class="pa-hero-copy">
+          <div class="pa-eyebrow"><span class="pa-live-dot"></span> HACKVERSE · AI PITCH ARENA</div>
+          <h1>Defend your build.<br><span>Earn your confidence.</span></h1>
+          <p>Upload your real project, meet a panel of five AI judges, pitch your idea and handle evidence-based technical cross-questioning before the actual final round.</p>
+          <div class="pa-hero-actions"><a class="pa-primary" href="#paWorkspace" data-pa-scroll>Prepare my project <span>↗</span></a><span class="pa-privacy-note">Private to your account · No webcam recording by default</span></div>
+        </div>
+        <div class="pa-hero-visual" aria-label="Preview of the AI judges interview room">
+          <div class="pa-visual-glow"></div><div class="pa-visual-top"><span>FINAL ROUND PANEL</span><i><b></b> SIMULATION</i></div>
+          <div class="pa-visual-judge"><div class="pa-avatar pa-avatar-large">MS</div><div><b>Dr. Mira Sen</b><small>Technical Architect</small><span>“Show me the evidence behind that decision.”</span></div><div class="pa-sound-bars"><i></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="pa-visual-bottom"><span>01 / 05 JUDGES</span><div><i class="active"></i><i></i><i></i><i></i><i></i></div><span>VOICE + TEXT</span></div>
+        </div>
+      </div>
+
+      <div class="pa-panel-intro" id="paWorkspace"><div><span class="pa-kicker">YOUR PRACTICE WORKSPACE</span><h2>Build your interview brief.</h2><p>Upload the files you want the panel to study. The system distinguishes source-code evidence from documentation claims.</p></div><span class="pa-secure-chip">◈ PRIVATE PROJECT VAULT</span></div>
+      <div class="pa-workspace-grid">
+        <section class="pa-card pa-upload-card">
+          <div class="pa-card-heading"><span class="pa-step">01</span><div><h3>Upload your project</h3><p>PDF, ZIP, PPTX, DOCX, README and source files</p></div></div>
+          <form id="paUploadForm" class="pa-form">
+            <label class="pa-field">Project name<input id="paProjectName" required maxlength="120" placeholder="e.g. UniTrade — Campus Marketplace"></label>
+            <label class="pa-dropzone" for="paProjectFiles"><span class="pa-upload-icon">↑</span><b>Choose project files</b><small>Up to 12 files · 12 MB each · ZIP contents are safely filtered</small><input id="paProjectFiles" type="file" multiple accept=".pdf,.zip,.pptx,.docx,.txt,.md,.markdown,.readme,.rst,.js,.jsx,.ts,.tsx,.html,.htm,.css,.scss,.sass,.less,.json,.jsonc,.yml,.yaml,.toml,.ini,.cfg,.conf,.properties,.sql,.py,.ipynb,.java,.kt,.go,.rs,.c,.cc,.cpp,.h,.hpp,.cs,.swift,.dart,.php,.rb,.sh,.bash,.zsh,.bat,.ps1,.xml,.vue,.svelte,.svg,.graphql,.gql,.prisma,.gradle,.makefile"></label>
+            <div id="paSelectedFiles" class="pa-selected-files"><span>No files selected yet.</span></div>
+            <button class="pa-primary pa-full" id="paAnalyzeBtn" type="submit">Upload & analyse project <span>↗</span></button>
+            <p class="pa-form-note">Files are stored in a private Supabase Storage bucket and extracted text is sent to the configured Agent37 service for AI analysis. Uploaded source is never executed. Common secrets and private-key blocks are redacted before analysis; review files before upload.</p>
+          </form>
+          <div id="paUploadStatus" class="pa-status" role="status" aria-live="polite"></div>
+        </section>
+
+        <section class="pa-card pa-setup-card">
+          <div class="pa-card-heading"><span class="pa-step">02</span><div><h3>Configure your final round</h3><p>Choose the style of judging you want to practise</p></div></div>
+          <form id="paStartForm" class="pa-form">
+            <label class="pa-field">Analysed project<select id="paProjectSelect" required><option value="">Upload and analyse a project first</option></select></label>
+            <label class="pa-field">Simulation type<select id="paMode"><option value="final-round">Full hackathon final round</option><option value="technical">Technical deep dive</option><option value="startup">Startup / product pitch</option><option value="critical">Difficult judge simulation</option></select></label>
+            <label class="pa-field">Opening pitch duration<select id="paPitchDuration"><option value="1">1 minute</option><option value="2">2 minutes</option><option value="3" selected>3 minutes</option><option value="5">5 minutes</option></select></label>
+            <div class="pa-judge-roster"><span class="pa-kicker">YOUR FIVE JUDGES</span><div class="pa-judge-mini"><span class="pa-avatar">MS</span><span><b>Dr. Mira Sen</b><small>Technical Architect</small></span><i>01</i></div><div class="pa-judge-mini"><span class="pa-avatar pa-avatar-amber">AM</span><span><b>Arjun Mehta</b><small>Product & Business Expert</small></span><i>02</i></div><div class="pa-judge-mini"><span class="pa-avatar pa-avatar-violet">ZK</span><span><b>Zoya Khan</b><small>Innovation Expert</small></span><i>03</i></div><div class="pa-judge-mini"><span class="pa-avatar pa-avatar-rose">VR</span><span><b>Vikram Rao</b><small>Critical Judge</small></span><i>04</i></div><div class="pa-judge-mini"><span class="pa-avatar pa-avatar-green">AI</span><span><b>Ananya Iyer</b><small>Presentation Expert</small></span><i>05</i></div></div>
+            <button class="pa-primary pa-full" id="paStartBtn" type="submit" disabled>Enter interview room <span>→</span></button>
+            <p class="pa-form-note">You can use camera and microphone controls once the room opens. Text-only participation is always available.</p>
+          </form>
+        </section>
+      </div>
+
+      <section class="pa-analysis-card" id="paAnalysisCard" hidden><div class="pa-panel-intro"><div><span class="pa-kicker">PROJECT INTELLIGENCE</span><h2 id="paAnalysisTitle">Project analysis</h2><p id="paAnalysisSummary"></p></div><span class="pa-secure-chip">SOURCE-GROUNDED</span></div><div id="paAnalysisFindings" class="pa-findings-grid"></div><div id="paAnalysisWarnings" class="pa-warning-list"></div></section>
+
+      <section class="pa-history-section"><div class="pa-panel-intro"><div><span class="pa-kicker">YOUR PROGRESS</span><h2>Previous interviews.</h2><p>Review completed sessions and compare your simulated readiness over time.</p></div><button class="pa-secondary" id="paRefreshHistory" type="button">↻ Refresh</button></div><div class="pa-readiness-strip" id="paReadinessStrip" hidden><div class="pa-readiness-score"><span>LAST SIMULATED READINESS</span><strong id="paReadinessValue">—<small>/100</small></strong><b id="paReadinessGrade">Complete an interview to get your score</b></div><div class="pa-readiness-change" id="paReadinessChange">Your score history will appear here.</div><div class="pa-category-progress" id="paCategoryProgress"></div></div><div class="pa-history-grid" id="paHistoryGrid"><div class="pa-empty">Your completed practice sessions will appear here.</div></div></section>
+      <p class="pa-disclaimer">AI Pitch Arena is a practice simulator. Scores are simulated assessments, not guaranteed hackathon results. Voice features depend on browser support and the configured Agent37 service.</p>
+
+      <section class="pa-room" id="paRoom" hidden aria-label="AI Pitch Arena interview room">
+        <div class="pa-room-top"><div><span class="pa-kicker">HACKVERSE · AI PITCH ARENA</span><b id="paRoomProject">Project interview</b></div><div class="pa-room-meta"><span class="pa-room-live"><i></i> SESSION ACTIVE</span><span id="paRoomStage">INTRODUCTION</span><span id="paPitchTimer">PITCH 03:00</span><span id="paRoomTimer">00:00</span><span id="paRoomProgress">0 / 30</span></div></div>
+        <div class="pa-room-grid">
+          <div class="pa-call-stage">
+            <div class="pa-judge-screen" id="paJudgeScreen">
+              <div class="pa-judge-screen-noise"></div><div class="pa-judge-topline"><span>AI JUDGE PANEL</span><span id="paJudgeState"><i></i> SPEAKING</span></div>
+              <div class="pa-judge-center"><div class="pa-avatar-orbit"><div class="pa-avatar pa-avatar-xl" id="paJudgeAvatar">AI</div><span></span><i></i></div><b id="paJudgeName">Ananya Iyer</b><small id="paJudgeRole">Presentation & Communication Expert</small><div class="pa-speaking-wave" id="paSpeakingWave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+              <div class="pa-judge-footer"><span>HACKVERSE JUDGING PANEL</span><span id="paJudgeFocus">Pitch clarity · Storytelling · Delivery</span></div>
+            </div>
+            <div class="pa-participant-screen"><video id="paCameraPreview" autoplay muted playsinline></video><div class="pa-participant-placeholder" id="paCameraPlaceholder"><span class="pa-avatar pa-avatar-xl">YOU</span><b>Your camera is off</b><small>Enable it when you are ready. No video is recorded.</small></div><div class="pa-participant-label"><span id="paParticipantName">Participant</span><i id="paCameraStatus">CAMERA OFF</i></div></div>
+          </div>
+          <aside class="pa-conversation-panel"><div class="pa-conversation-heading"><div><span class="pa-kicker">LIVE INTERVIEW</span><h3>Judge conversation</h3></div><span class="pa-connection"><i></i> TURN-BASED AI</span></div><div class="pa-question-card"><span class="pa-kicker" id="paQuestionLabel">OPENING QUESTION</span><p id="paCurrentQuestion">Welcome. Introduce yourself and pitch your project.</p><button class="pa-text-link" type="button" id="paRepeatQuestion">↻ Repeat question</button></div><div class="pa-transcript" id="paTranscript" aria-live="polite" aria-label="Interview transcript"><div class="pa-transcript-empty">Your conversation will appear here.</div></div><form id="paAnswerForm" class="pa-answer-form"><label for="paAnswerInput">YOUR ANSWER</label><textarea id="paAnswerInput" rows="4" maxlength="5000" placeholder="Explain your answer here, or use the microphone to speak…" required></textarea><div class="pa-answer-footer"><span id="paSpeechStatus">Text mode ready</span><button class="pa-send-answer" id="paSendAnswer" type="submit">Submit answer ↑</button></div></form></aside>
+        </div>
+        <div class="pa-call-controls"><div class="pa-controls-left"><button type="button" class="pa-control" id="paMicToggle" aria-pressed="false"><span>🎙</span><small>Mic</small></button><button type="button" class="pa-control" id="paCameraToggle" aria-pressed="false"><span>▣</span><small>Camera</small></button><button type="button" class="pa-control" id="paSpeakerToggle" aria-pressed="true"><span>◖</span><small>Speaker on</small></button><button type="button" class="pa-control" id="paCaptionToggle" aria-pressed="true"><span>CC</span><small>Captions</small></button><label class="pa-volume-control"><small>VOLUME</small><input id="paSpeakerVolume" type="range" min="0" max="1" step="0.1" value="1" aria-label="Judge voice volume"></label></div><div class="pa-controls-right"><button type="button" class="pa-secondary" id="paClarifyBtn">Ask to clarify</button><button type="button" class="pa-end-call" id="paEndInterview">End interview</button></div></div>
+        <div class="pa-room-footer"><div class="pa-progress-track"><i id="paProgressBar"></i></div><span>Turn-based AI · Local camera preview · Browser handles speech recognition; HackVerse stores the transcript, not raw audio</span></div>
+      </section>
+
+      <section class="pa-report" id="paReport" hidden><div class="pa-report-top"><div><span class="pa-kicker">FINAL PANEL VERDICT</span><h2>Your practice assessment.</h2><p id="paReportProject"></p></div><div class="pa-report-actions"><button class="pa-secondary" id="paPrintReport" type="button">↓ Print / Save PDF</button><button class="pa-primary" id="paNewInterview" type="button">Practise again ↗</button></div></div><div class="pa-score-hero"><div class="pa-score-ring" id="paScoreRing"><div><strong id="paTotalScore">—</strong><span>/ 100</span></div></div><div><span class="pa-kicker">SIMULATED READINESS SCORE</span><h3 id="paGrade">—</h3><p id="paVerdict"></p><small id="paReportMeta"></small></div></div><div class="pa-report-grid"><section class="pa-report-card"><span class="pa-kicker">CATEGORY BREAKDOWN</span><h3>Where you stand</h3><div id="paCategoryScores" class="pa-category-scores"></div></section><section class="pa-report-card"><span class="pa-kicker">FIVE EXPERT PERSPECTIVES</span><h3>Judge-wise feedback</h3><div id="paJudgeFeedback" class="pa-judge-feedback"></div></section></div><div class="pa-report-grid"><section class="pa-report-card"><span class="pa-kicker">WHAT WORKED</span><h3>Your strongest points</h3><div id="paStrengths"></div></section><section class="pa-report-card"><span class="pa-kicker">NEXT TO IMPROVE</span><h3>Weaknesses and recommendations</h3><div id="paWeaknesses"></div><div id="paRecommendations"></div></section></div><div class="pa-report-card pa-report-wide"><span class="pa-kicker">EVIDENCE & CREDIBILITY</span><h3>Technical mistakes, unsupported claims and contradictions</h3><div id="paEvidenceIssues"></div></div><div class="pa-report-card pa-report-wide"><span class="pa-kicker">YOUR ANSWER REVIEW</span><h3>Question-by-question performance</h3><div id="paQuestionReview"></div></div><div class="pa-report-card pa-report-wide"><span class="pa-kicker">SEVEN-DAY IMPROVEMENT PLAN</span><h3>Turn feedback into progress</h3><div id="paSevenDayPlan" class="pa-plan-grid"></div></div><p class="pa-disclaimer">This report is generated from your interview transcript and uploaded project evidence. It does not assess facial expression, eye contact, body language or unrecorded delivery features.</p></section>
+    </section>
+
     <section class="cta wrap" data-view="home"><div class="cta-orb">✳</div><div class="eyebrow">YOUR NEXT BUILD STARTS WITH A CONNECTION</div><h2>Think bigger.<br><span class="gradient-text">Build together.</span></h2><p>Create your profile and meet the people who can help make it real.</p><div class="cta-actions"><button class="btn btn-primary" id="ctaJoin">Create your free account ↗</button><a class="btn btn-outline" href="/aiwish">Open AI Wish ✦</a></div></section>
   </main>
   <footer class="footer wrap"><div class="footer-top"><a class="brand" href="/"><span class="brand-mark">H</span><span>hack<span class="brand-accent">verse</span></span></a><p>Built for people who turn ambitious ideas into real things.</p><div class="footer-links"><a href="/opportunities">Explore</a><a href="/people">Community</a><a href="/messages">Messages</a><a href="/aiwish">AI Wish</a><a href="mailto:hello@hackverse.example">Contact</a></div></div><div class="footer-bottom"><span>© <span id="year"></span> HackVerse. Made for builders.</span><div><a href="HackVerse-Website-Guide.pdf" download="HackVerse-Website-Guide.pdf">Download guide ↓</a><a href="guide.html" target="_blank" rel="noopener">Help centre ↗</a><a href="privacy.html">Privacy policy</a><a href="terms.html">Terms</a><a href="/settings">Settings</a></div></div><span class="footer-wordmark" aria-hidden="true">HACKVERSE</span></footer>
@@ -403,5 +473,6 @@
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script type="module" src="app.js"></script>
+  <script type="module" src="pitch-arena.js"></script>
 </body>
 </html>
