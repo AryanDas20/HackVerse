@@ -114,7 +114,7 @@ async function requireSession() {
   }
 
   if (!session?.access_token) {
-    throw new Error("You must be signed in to access HackVerse data.");
+    throw new Error("You must be signed in to access HackTheta data.");
   }
 
   return session;
@@ -454,7 +454,7 @@ export function onAuthStateChanged(_auth, callback) {
   supabaseClient.auth.getSession().then(({ data, error }) => {
     if (error) throw error;
     if (authEventVersion === initialVersion) deliver(adaptUser(data?.session?.user || null));
-  }).catch(error => console.error("Could not restore the HackVerse sign-in session", error));
+  }).catch(error => console.error("Could not restore the HackTheta sign-in session", error));
   return () => {
     disposed = true;
     subscription.data.subscription.unsubscribe();

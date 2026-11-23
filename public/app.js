@@ -29,13 +29,14 @@ let socialFeedType = "explore", socialFeedCursor = null, socialFeedLoading = fal
 let voterModalPostId = null, voterModalType = "upvote", voterModalRows = [], voterModalOffset = 0, voterModalHasMore = false, voterModalLoading = false, voterModalHiddenCount = 0, voterModalError = "", voterModalReturnFocus = null, voterModalRequestId = 0;
 let lastChatAttachmentHydratedAt = 0, lastOpportunityRefreshAt = 0, eventsLoadInProgress = false;
 let dialogResolver = null;
+let billingData = null, billingLoaded = false, billingLoadPromise = null, billingErrorMessage = "";
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const listFrom = value => String(value || "").split(",").map(x => x.trim()).filter(Boolean).slice(0, 30);
 const normalizedList = value => listFrom(value).map(x => x.toLowerCase()).filter((x, i, a) => a.indexOf(x) === i);
 const validUrl = value => { if (!value) return ""; try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) ? u.href : ""; } catch { return ""; } };
 
-const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings", "career", "pitch-arena"]);
+const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings", "career", "billing"]);
 function routePath(route) {
   const value = String(route || "home").trim();
   if (value === "/" || value === "home") return "/";
@@ -201,7 +202,7 @@ function makeShareCardBlob(item) {
       ctx.fillStyle = "#ff647f"; rounded(112, 278, Math.min(300, Math.max(178, 30 + type.length * 15)), 54, 27); ctx.fill();
       ctx.fillStyle = "#201722"; ctx.font = "800 20px Arial, sans-serif"; ctx.fillText(type, 138, 313);
       ctx.fillStyle = "#fffaf8"; ctx.font = "800 52px Arial, sans-serif";
-      const titleLines = shareCanvasText(ctx, item.title || "A new idea from HackVerse", 112, 420, 820, 64, 2);
+      const titleLines = shareCanvasText(ctx, item.title || "A new idea from HackTheta", 112, 420, 820, 64, 2);
       const descY = 420 + Math.max(1, titleLines) * 64 + 34;
       ctx.fillStyle = "rgba(255,250,248,.78)"; ctx.font = "400 26px Arial, sans-serif";
       shareCanvasText(ctx, item.description || "Explore this update and connect with the builder community.", 112, descY, 820, 38, 2);
@@ -238,7 +239,7 @@ async function shareExternally(item) {
   const url = validUrl(item.url) || `${location.origin}/`;
   const normalized = { ...item, url };
   const payload = {
-    title: normalized.title || "HackVerse",
+    title: normalized.title || "HackTheta",
     text: shareTextForItem(normalized),
     url
   };
@@ -265,7 +266,7 @@ async function shareExternally(item) {
 }
 async function sendSharedItemToConversation(item, conversationId, forwarded = false) {
   if (!currentUser || !db || !conversationId) throw new Error("Choose a chat before sharing.");
-  const title = String(item.title || "HackVerse update").slice(0, 180);
+  const title = String(item.title || "HackTheta update").slice(0, 180);
   const description = String(item.description || "").slice(0, 600);
   const details = Array.isArray(item.details) ? item.details.slice(0, 6).map(row => ({ label: String(row?.label || "").slice(0, 40), value: String(row?.value || "").slice(0, 100) })).filter(row => row.label && row.value) : [];
   const url = validUrl(item.url) || `${location.origin}/`;
@@ -282,8 +283,8 @@ async function sendSharedItemToConversation(item, conversationId, forwarded = fa
   });
 }
 function shareTextForItem(item) {
-  const title = String(item.title || "HackVerse update");
-  const description = String(item.description || "See this update on HackVerse.");
+  const title = String(item.title || "HackTheta update");
+  const description = String(item.description || "See this update on HackTheta.");
   const details = Array.isArray(item.details) ? item.details.slice(0, 6).map(row => `${String(row?.label || "")}: ${String(row?.value || "")}`).filter(line => !line.startsWith(": ")) : [];
   const url = validUrl(item.url) || `${location.origin}/`;
   return [title, description, ...details, url].filter(Boolean).join("\n").slice(0, 1800);
@@ -325,7 +326,7 @@ function openShareContactPicker(item) {
       return `<button type="button" class="share-picker-contact" data-share-conversation="${esc(conversation.id)}"><span class="share-picker-avatar ${conversation.isGroup ? "is-group" : ""}">${avatar}</span><span class="share-picker-contact-copy"><b>${esc(label)}</b><small>${esc(preview)}</small></span><span class="share-picker-send">Send</span></button>`;
     }).join("")}` : "";
     const contactMarkup = visibleContacts.length ? `<div class="share-picker-section-title">BUILDERS</div>${visibleContacts.map(profile => {
-      const label = profile.displayName || "HackVerse builder";
+      const label = profile.displayName || "HackTheta builder";
       const photo = validUrl(profile.avatarUrl);
       const avatar = photo ? `<img src="${esc(photo)}" alt="" loading="lazy">` : `<span>${esc(initials(label))}</span>`;
       return `<button type="button" class="share-picker-contact" data-share-profile="${esc(profile.uid)}"><span class="share-picker-avatar">${avatar}</span><span class="share-picker-contact-copy"><b>${esc(label)}</b><small>@${esc(profile.username || "builder")}${profile.collegeShort || profile.college ? ` · ${esc(profile.collegeShort || profile.college)}` : ""}</small></span><span class="share-picker-send">Send</span></button>`;
@@ -395,13 +396,13 @@ function openShareMenu(item) {
   modal.innerHTML = `<section class="modal share-picker-modal share-action-modal" role="dialog" aria-modal="true" aria-labelledby="shareActionTitle">
     <button class="modal-close" type="button" data-share-action-close aria-label="Close">×</button>
     <div class="eyebrow">SHARE WITH YOUR NETWORK</div><h2 id="shareActionTitle">Share this update</h2>
-    <p class="muted">Choose a contact in WhatsApp, your device share sheet, or a HackVerse conversation.</p>
-    ${item.type === "opportunity" ? `<article class="share-opportunity-card"><div class="share-card-brand"><span>H</span> HACKVERSE <small>OPPORTUNITY CARD</small></div><h3>${esc(item.title)}</h3><p>${esc(item.description||"Discover this opportunity on HackVerse.")}</p>${Array.isArray(item.details)&&item.details.length?`<div class="share-card-facts">${item.details.slice(0,4).map(row=>`<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>`:""}<footer>DISCOVER · CONNECT · BUILD <span>↗</span></footer></article>` : ""}
+    <p class="muted">Choose a contact in WhatsApp, your device share sheet, or a HackTheta conversation.</p>
+    ${item.type === "opportunity" ? `<article class="share-opportunity-card"><div class="share-card-brand"><span>H</span> HACKTHETA <small>OPPORTUNITY CARD</small></div><h3>${esc(item.title)}</h3><p>${esc(item.description||"Discover this opportunity on HackTheta.")}</p>${Array.isArray(item.details)&&item.details.length?`<div class="share-card-facts">${item.details.slice(0,4).map(row=>`<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>`:""}<footer>DISCOVER · CONNECT · BUILD <span>↗</span></footer></article>` : ""}
     ${Array.isArray(item.details) && item.details.length ? `<div class="share-opportunity-preview">${item.details.slice(0,4).map(row => `<span><b>${esc(row.label)}</b>${esc(row.value)}</span>`).join("")}</div>` : ""}
     <div class="share-action-list">
       <a class="share-action-option" href="${esc(whatsappUrl)}" target="_blank" rel="noopener noreferrer"><span class="share-action-icon">↗</span><span><b>WhatsApp</b><small>Choose a contact in WhatsApp</small></span><span class="share-action-arrow">→</span></a>
       <button class="share-action-option" type="button" data-share-native><span class="share-action-icon">⇧</span><span><b>More apps and contacts</b><small>Open your device share sheet</small></span><span class="share-action-arrow">→</span></button>
-      <button class="share-action-option" type="button" data-share-chat><span class="share-action-icon">✉</span><span><b>HackVerse chat</b><small>Send directly to a person or group</small></span><span class="share-action-arrow">→</span></button>
+      <button class="share-action-option" type="button" data-share-chat><span class="share-action-icon">✉</span><span><b>HackTheta chat</b><small>Send directly to a person or group</small></span><span class="share-action-arrow">→</span></button>
       <button class="share-action-option" type="button" data-share-copy><span class="share-action-icon">⧉</span><span><b>Copy link</b><small>Copy a shareable link</small></span><span class="share-action-arrow">→</span></button>
     </div>
   </section>`;
@@ -460,7 +461,7 @@ function renderSocialPost(post) {
   const hashtags = (post.hashtags || []).slice(0, 12).map(tag => `<span>#${esc(tag)}</span>`).join("");
   const id = esc(post.id);
   return `<article class="social-post-card" data-social-post="${id}">
-    <header class="social-post-author">${socialAvatar(author)}<div class="social-author-copy"><button type="button" data-social-profile="${esc(author.username || "")}">${esc(author.display_name || "HackVerse builder")}${author.is_verified ? " ✓" : ""}</button><small>@${esc(author.username || "builder")} · <span class="social-post-time">${esc(socialTime(post.created_at))}</span>${post.edited_at ? " · edited" : ""}</small></div><span class="social-post-visibility">${esc(post.visibility || "public")}</span></header>
+    <header class="social-post-author">${socialAvatar(author)}<div class="social-author-copy"><button type="button" data-social-profile="${esc(author.username || "")}">${esc(author.display_name || "HackTheta builder")}${author.is_verified ? " ✓" : ""}</button><small>@${esc(author.username || "builder")} · <span class="social-post-time">${esc(socialTime(post.created_at))}</span>${post.edited_at ? " · edited" : ""}</small></div><span class="social-post-visibility">${esc(post.visibility || "public")}</span></header>
     <p class="social-post-text">${esc(post.content || "")}</p>${mediaMarkup}${hashtags ? `<div class="social-post-tags">${hashtags}</div>` : ""}
     <div class="social-post-counts">${renderPostCounts(post)}</div>
     <div class="social-post-actions"><button type="button" data-social-vote="upvote" data-post-id="${id}" aria-pressed="${vote === "upvote"}">▲ Upvote</button><button type="button" data-social-vote="downvote" data-post-id="${id}" aria-pressed="${vote === "downvote"}">▼ Downvote</button><button type="button" data-social-detail="${id}">Open post</button><button type="button" data-social-comments="${id}">Comment</button><button type="button" data-social-repost="${id}">↻ Repost</button><button type="button" data-social-share="${id}">↗ Share</button>${own ? `<button type="button" data-social-edit="${id}">Edit</button><button type="button" data-social-delete="${id}">Delete</button>` : `<button type="button" data-social-report="${id}">Report</button>`}</div>
@@ -504,10 +505,10 @@ function bindSocialPostActions(root) {
   bind("[data-social-share]", button => {
     const postId = button.dataset.socialShare;
     const card = button.closest("[data-social-post]");
-    const title = card?.querySelector(".social-post-text")?.textContent?.trim().slice(0, 120) || "A builder update on HackVerse";
+    const title = card?.querySelector(".social-post-text")?.textContent?.trim().slice(0, 120) || "A builder update on HackTheta";
     const visibility = card?.querySelector(".social-post-visibility")?.textContent?.trim() || "public";
-    const author = card?.querySelector(".social-author-copy button")?.textContent?.trim() || "A HackVerse builder";
-    openShareMenu({ type: "post", title, description: `${author} shared an update with the HackVerse community.`, url: `${location.origin}/post/${encodeURIComponent(postId)}`, sourceId: postId, visibility });
+    const author = card?.querySelector(".social-author-copy button")?.textContent?.trim() || "A HackTheta builder";
+    openShareMenu({ type: "post", title, description: `${author} shared an update with the HackTheta community.`, url: `${location.origin}/post/${encodeURIComponent(postId)}`, sourceId: postId, visibility });
   });
   bind("[data-social-report]", button => {
     navigateToRoute("reports"); setTimeout(() => { const type=$("#reportTargetType"); const target=$("#reportTargetId"); if(type&&target){type.value="post";target.value=button.dataset.socialReport;updateReportFields();} }, 0);
@@ -551,7 +552,7 @@ function renderVoterRows() {
       host.innerHTML = `<div class="social-voter-empty"><span aria-hidden="true">${voterModalHiddenCount ? "◌" : "✦"}</span><b>${message}</b><small>Profile visibility and block settings are respected.</small></div>`;
     }
   } else {
-    host.innerHTML = visible.map(voter => `<button type="button" class="social-voter-row" data-voter-profile="${esc(voter.username)}"><span class="social-voter-avatar">${socialAvatar(voter)}</span><span class="social-voter-copy"><b>${esc(voter.display_name || "HackVerse builder")}${voter.is_verified ? ' <i class="social-verified-mark">✓</i>' : ""}</b><small>@${esc(voter.username)}</small></span><span class="social-voter-type">${voter.vote_type === "downvote" ? "Downvoted" : "Upvoted"}</span><time>${esc(socialTime(voter.voted_at))}</time></button>`).join("");
+    host.innerHTML = visible.map(voter => `<button type="button" class="social-voter-row" data-voter-profile="${esc(voter.username)}"><span class="social-voter-avatar">${socialAvatar(voter)}</span><span class="social-voter-copy"><b>${esc(voter.display_name || "HackTheta builder")}${voter.is_verified ? ' <i class="social-verified-mark">✓</i>' : ""}</b><small>@${esc(voter.username)}</small></span><span class="social-voter-type">${voter.vote_type === "downvote" ? "Downvoted" : "Upvoted"}</span><time>${esc(socialTime(voter.voted_at))}</time></button>`).join("");
   }
   const privacy = $("#socialVoterPrivacyNote");
   if (privacy) privacy.textContent = voterModalHiddenCount ? `${voterModalHiddenCount} ${voterModalHiddenCount === 1 ? "profile is" : "profiles are"} hidden by privacy or block settings.` : "Only profiles you are allowed to view are shown.";
@@ -869,7 +870,7 @@ async function submitCommunityReport(event) {
   const button=$("#submitCommunityReport"),message=$("#communityReportMessage"); button.disabled=true; message.textContent="Submitting securely…";
   try {
     await socialRequest("report",{targetType:$("#reportTargetType").value,targetId:$("#reportTargetId").value.trim(),targetUsername:$("#reportUsername").value.trim(),category:$("#reportCategory").value,details:$("#reportDetails").value,evidenceUrl:$("#reportEvidenceUrl").value.trim()});
-    $("#communityReportForm").reset();updateReportFields();message.textContent="Report submitted. It is private to your account and will be reviewed by the HackVerse team.";await loadMyReports();
+    $("#communityReportForm").reset();updateReportFields();message.textContent="Report submitted. It is private to your account and will be reviewed by the HackTheta team.";await loadMyReports();
   }catch(error){message.textContent=error.message;}finally{button.disabled=false;}
 }
 async function loadMyReports() {
@@ -905,6 +906,12 @@ function initSupabase() {
     $("#discoveryAdminPanel").hidden = !isAdminUser;
     if (isAdminUser) loadDiscoverySources();
     updateAiAccessUI();
+    if (user) {
+      billingData = null; billingLoaded = false; billingErrorMessage = "";
+      void loadBillingStatus({ silent: true });
+    } else {
+      billingData = null; billingLoaded = false; billingErrorMessage = ""; billingLoadPromise = null;
+    }
     $("#authButton").textContent = user ? "Sign out" : "Sign in";
     $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
     if (!user) {
@@ -1603,7 +1610,7 @@ function renderLearningCatalog() {
   const configs = {
     hackathon: {
       eyebrow: "HACKATHON SOURCES", tag: "OFFICIAL DIRECTORIES", title: "Discover hackathons across more platforms.",
-      intro: "Browse organiser platforms around the world. HackVerse imports available public feeds; other directories open directly so you can check current registration and eligibility.",
+      intro: "Browse organiser platforms around the world. HackTheta imports available public feeds; other directories open directly so you can check current registration and eligibility.",
       providers: [
         ["Unstop", "India-focused hackathons, competitions, quizzes, hiring challenges and campus events.", "https://unstop.com/hackathons", "Public listing connector · India"],
         ["Devfolio", "Student and community hackathons, especially across India and Web3 communities.", "https://devfolio.co/hackathons", "Public listing connector"],
@@ -1616,7 +1623,7 @@ function renderLearningCatalog() {
         ["Lablab.ai", "AI-focused hackathons, challenges and collaborative build events.", "https://lablab.ai/event", "Browse organiser listings"],
         ["Hack2skill", "Technology innovation challenges, hackathons and student programmes.", "https://hack2skill.com/", "Browse organiser listings"],
         ["AngelHack", "Global developer hackathons and innovation programmes.", "https://angelhack.com/", "Browse organiser listings"],
-        ["Brabble.ai", "Aggregated hackathon listings from multiple public competition platforms.", "https://brabble.ai/", "Attributed RSS source connected to HackVerse"]
+        ["Brabble.ai", "Aggregated hackathon listings from multiple public competition platforms.", "https://brabble.ai/", "Attributed RSS source connected to HackTheta"]
       ]
     },
     "case-competition": {
@@ -1632,7 +1639,7 @@ function renderLearningCatalog() {
     },
     "coding-event": {
       eyebrow: "CODING CONTEST SOURCES", tag: "LIVE COMPETITION DIRECTORIES", title: "Find your next coding challenge.",
-      intro: "Browse programming contests, algorithm rounds, CTFs and data competitions. The Codeforces public contest API is also imported into HackVerse.",
+      intro: "Browse programming contests, algorithm rounds, CTFs and data competitions. The Codeforces public contest API is also imported into HackTheta.",
       providers: [
         ["Codeforces", "Competitive programming rounds and algorithm contests.", "https://codeforces.com/contests", "Public API connector"],
         ["CodeChef", "Rated contests, Starters and practice competitions.", "https://www.codechef.com/contests", "Official contest directory"],
@@ -1649,7 +1656,7 @@ function renderLearningCatalog() {
       eyebrow: "COURSE CATALOGUES", tag: "OFFICIAL PROVIDERS", title: "Explore coding and technology courses.",
       intro: "Browse a wider set of course libraries. Some courses are free to audit while certificates, graded work or guided programmes may cost extra; confirm details with the provider.",
       providers: [
-        ["openHPI", "Computer science, data, AI and digital technology courses from HPI.", "https://open.hpi.de/courses", "Public dated course feed connected to HackVerse"],
+        ["openHPI", "Computer science, data, AI and digital technology courses from HPI.", "https://open.hpi.de/courses", "Public dated course feed connected to HackTheta"],
         ["Coursera", "University and industry courses, guided projects and professional certificates.", "https://www.coursera.org/browse", "Official course catalogue"],
         ["edX", "University-level computer science, engineering and professional courses.", "https://www.edx.org/search", "Official course catalogue"],
         ["SWAYAM", "India's national online course platform from universities and institutions.", "https://swayam.gov.in/explorer", "India · Official catalogue"],
@@ -1748,8 +1755,8 @@ function shareOpportunity(eventId) {
     ["Starts", event.startAt ? dateLabel(event.startAt) : ""], ["Prize", prize],
     ["Tracks", (event.tracks || event.tags || []).slice(0,4).join(", ")], ["Eligibility", event.eligibility]
   ].filter(([,value]) => value && String(value).trim() && String(value) !== "Not specified").slice(0, 6).map(([label,value]) => ({ label, value: String(value).slice(0,100) }));
-  const desc = String(event.summary || event.description || "Explore the official opportunity details on HackVerse.").slice(0, 500);
-  openShareMenu({ type: "opportunity", title: event.title || "HackVerse opportunity", description: desc, details, url, sourceId: event.id, visibility: "public" });
+  const desc = String(event.summary || event.description || "Explore the official opportunity details on HackTheta.").slice(0, 500);
+  openShareMenu({ type: "opportunity", title: event.title || "HackTheta opportunity", description: desc, details, url, sourceId: event.id, visibility: "public" });
 }
 function viewEvent(eventId) {
   if (!requireAccount()) return;
@@ -1896,7 +1903,7 @@ function renderPeople() {
   const sorted = [...people].sort((a,b) => overlapScore(b) - overlapScore(a));
   $("#peopleResultCount").textContent = `${sorted.length} builder${sorted.length === 1 ? "" : "s"}${peopleHasMore ? " shown — more available" : " found"}`;
   if (!sorted.length) { grid.innerHTML = '<div class="loading-card">No public profiles match your search yet. Try another skill or keyword.</div>'; return; }
-  grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackVerse member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p>${Number(p.hackathonsParticipatedCount || 0) ? `<span class="builder-experience-chip">✦ ${Number(p.hackathonsParticipatedCount)} hackathons</span>` : ""}<div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div class="person-actions"><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Chat</button><button class="save-btn" data-contact-member="${esc(p.uid)}" ${p.publicEmail || p.publicPhone ? "" : "disabled"}>Contact</button></div></div></article>`).join("");
+  grid.innerHTML = sorted.map(p => `<article class="person-card"><div class="person-top"><div class="avatar">${p.avatarUrl ? `<img src="${esc(validUrl(p.avatarUrl))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc(initials(p.displayName))}</div><div class="person-title"><h3>${esc(p.displayName || "HackTheta member")}</h3><span>@${esc(p.username || "member")}</span></div>${p.lookingForTeam ? '<span class="open-pill">Open to team</span>' : ""}</div><p class="person-college">${esc([p.course, p.college].filter(Boolean).join(" · ") || "Education not listed")}</p><p class="person-bio">${esc(p.bio || "This builder has not added a bio yet.")}</p>${Number(p.hackathonsParticipatedCount || 0) ? `<span class="builder-experience-chip">✦ ${Number(p.hackathonsParticipatedCount)} hackathons</span>` : ""}<div class="skill-tags">${(p.skills || []).slice(0,5).map(s => `<span>${esc(s)}</span>`).join("")}</div><div class="person-bottom"><small>${esc(p.availability || "Availability not listed")}</small><div class="person-actions"><button class="save-btn" data-view-member="${esc(p.uid)}">View profile</button><button class="register-btn" data-message-member="${esc(p.uid)}">Chat</button><button class="save-btn" data-contact-member="${esc(p.uid)}" ${p.publicEmail || p.publicPhone ? "" : "disabled"}>Contact</button></div></div></article>`).join("");
   grid.querySelectorAll("[data-view-member]").forEach(b => b.onclick = () => viewMember(b.dataset.viewMember));
   grid.querySelectorAll("[data-message-member]").forEach(b => b.onclick = () => { const p = people.find(x => x.uid === b.dataset.messageMember); if (p) startDirectConversation(p); });
   grid.querySelectorAll("[data-contact-member]").forEach(b => b.onclick = () => {
@@ -2134,7 +2141,7 @@ function renderMessages(messages, options = {}) {
     const deliveryLabel=readByAll?"Read":deliveredByAll?"Delivered":"Sent";
     const status = mine ? `<span class="message-ticks ${readByAll?"read":deliveredByAll?"delivered":""}" title="${deliveryLabel}">${readByAll?"✓✓":deliveredByAll?"✓✓":"✓"}</span>` : "";
     const messageText = m.sharedItem ? "" : (m.deleted ? '<span class="deleted-message">This message was deleted.</span>' : esc(m.text || ""));
-    const shared = m.sharedItem ? `<a class="chat-shared-card" href="${esc(validUrl(m.sharedItem.url) || "/")}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-kicker">${esc(m.sharedItem.type || "Shared item")} · HACKVERSE</span><b>${esc(m.sharedItem.title || "Shared update")}</b><small>${esc(m.sharedItem.description || "Open this shared item.")}</small>${Array.isArray(m.sharedItem.details) && m.sharedItem.details.length ? `<span class="chat-shared-details">${m.sharedItem.details.slice(0,4).map(row => `<i><b>${esc(row.label || "")}</b> ${esc(row.value || "")}</i>`).join("")}</span>` : ""}<span class="chat-shared-link">Open link ↗</span></a>` : "";
+    const shared = m.sharedItem ? `<a class="chat-shared-card" href="${esc(validUrl(m.sharedItem.url) || "/")}" target="_blank" rel="noopener noreferrer"><span class="chat-shared-kicker">${esc(m.sharedItem.type || "Shared item")} · HACKTHETA</span><b>${esc(m.sharedItem.title || "Shared update")}</b><small>${esc(m.sharedItem.description || "Open this shared item.")}</small>${Array.isArray(m.sharedItem.details) && m.sharedItem.details.length ? `<span class="chat-shared-details">${m.sharedItem.details.slice(0,4).map(row => `<i><b>${esc(row.label || "")}</b> ${esc(row.value || "")}</i>`).join("")}</span>` : ""}<span class="chat-shared-link">Open link ↗</span></a>` : "";
     const forwarded = m.forwarded ? '<small class="message-forwarded">↪ Forwarded</small>' : "";
     return `<article class="message-row ${mine ? "mine" : "theirs"} ${animateIds.has(m.id) ? "is-new" : ""}" data-message-row="${esc(m.id)}"><div class="message-bubble">${!mine?`<button type="button" class="message-author-button" data-view-message-author="${esc(m.authorUid || "")}">${esc(m.authorName || "Teammate")} <span>↗</span></button>`:""}${forwarded}${reply}${shared}${attachment}${messageText?`<p>${messageText}</p>`:""}<div class="message-meta"><time>${esc(time)}${m.edited ? " · edited" : ""}</time>${status}</div>${reactionHtml}${isPinnedHere?'<small class="message-pinned-label">⌖ Pinned on this device</small>':""}<div class="message-hover-actions"><button type="button" data-reply-message="${esc(m.id)}" title="Reply">↩</button><button type="button" data-pin-message="${esc(m.id)}" title="Pin on this device">${isPinnedHere?"⌖":"♧"}</button><button type="button" data-react-message="${esc(m.id)}" data-emoji="👍" title="React">☺</button><button type="button" data-copy-message="${esc(m.id)}" title="Copy">▢</button><button type="button" data-star-message="${esc(m.id)}" title="Star">${starred.has(`${activeConversationId}:${m.id}`)?"★":"☆"}</button>${mine&&canEdit?`<button type="button" data-edit-message="${esc(m.id)}" title="Edit">✎</button>`:""}${!mine?`<button type="button" data-report-message="${esc(m.id)}" title="Report message">⚑</button>`:""}<button type="button" data-delete-message="${esc(m.id)}" title="Delete for me or everyone">⌫</button><button type="button" data-forward-message="${esc(m.id)}" title="Forward">↗</button></div></div></article>`;
   }).join("");
@@ -2837,7 +2844,7 @@ function renderMyProfile() {
       ${p.profileVisibility !== "public" ? `<p class="privacy-state-note">${p.profileVisibility === "private" ? "Private profile · approved followers only can see your shared details." : "Followers-only profile · people must request to follow before seeing your posts and details."} This profile is not shown in the public directory.</p>` : ''}
       <div class="profile-completion"><div><b>Profile completeness</b><strong>${completion}%</strong></div><span class="profile-completion-track"><i style="width:${completion}%"></i></span><small>A complete profile helps teammates understand your strengths before they contact you.</small></div>
       <div class="profile-detail-grid">
-        <section class="profile-detail-card"><small>MEMBER SINCE</small><b>${p.joinedAt ? esc(new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"long",year:"numeric"})) : "HackVerse member"}</b><span>@${esc(p.username)}</span></section>
+        <section class="profile-detail-card"><small>MEMBER SINCE</small><b>${p.joinedAt ? esc(new Date(tsMillis(p.joinedAt)).toLocaleDateString(undefined,{month:"long",year:"numeric"})) : "HackTheta member"}</b><span>@${esc(p.username)}</span></section>
         <section class="profile-detail-card"><small>HACKATHON EXPERIENCE</small><b>${Number(p.hackathonsParticipatedCount || 0)} participated</b><span>Private entries are included in your own count</span></section>
         <section class="profile-detail-card"><small>BUILDER NETWORK</small><b>${Number(profileStats?.followers ?? builderFollows.filter(row => row.followingUid === currentUser?.uid).length)} followers</b><span>Following ${Number(profileStats?.following ?? builderFollows.filter(row => row.followerUid === currentUser?.uid).length)} builders</span></section>
         <section class="profile-detail-card"><small>EDUCATION</small><b>${esc(p.college || "College not added")}</b><span>${esc([p.collegeShort,p.course].filter(Boolean).join(" · ") || "Course not added")}</span><span>${esc([p.studyLevel,p.graduationYear ? `Class of ${p.graduationYear}` : ""].filter(Boolean).join(" · ") || "Study level not added")}</span></section>
@@ -2851,7 +2858,7 @@ function renderMyProfile() {
       <div class="member-links">${p.github ? `<a href="${esc(validUrl(p.github))}" target="_blank" rel="noopener">GitHub ↗</a>` : ""}${p.linkedin ? `<a href="${esc(validUrl(p.linkedin))}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}${p.portfolio ? `<a href="${esc(validUrl(p.portfolio))}" target="_blank" rel="noopener">Portfolio ↗</a>` : ""}</div>
     </div>
   </div>
-  <section class="profile-activity" aria-label="Your HackVerse activity">
+  <section class="profile-activity" aria-label="Your HackTheta activity">
     <div class="profile-activity-heading"><div><div class="eyebrow">YOUR PROGRESS</div><h3>Builder activity & impact</h3><p>Track the work you publish and the impact you make in the community.</p></div><span class="profile-points-total"><b>${Number(profileStats?.points || 0).toLocaleString()}</b><small>BUILD POINTS</small></span></div>
     <div class="profile-stats-grid">
       <article class="profile-stat-card"><span>BUILDS</span><b>${Number(profileStats?.builds ?? builderPosts.filter(row => row.ownerUid === currentUser?.uid).length).toLocaleString()}</b><small>Build updates published</small></article>
@@ -2889,13 +2896,13 @@ function renderProjects(projects) {
 }
 function shareProject(projectId) {
   const card = $(`[data-share-project="${CSS.escape(projectId)}"]`)?.closest(".project-card");
-  const projectTitle = card?.querySelector("h3")?.textContent || "HackVerse project";
+  const projectTitle = card?.querySelector("h3")?.textContent || "HackTheta project";
   // Project records are loaded into the profile showcase. The DOM card supplies safe display text;
   // links are re-read from its visible anchors rather than trusting arbitrary markup.
   const links = [...(card?.querySelectorAll(".member-links a") || [])].map(a => validUrl(a.href)).filter(Boolean);
   const profileUrl = publicProfile?.username ? `${location.origin}/@${encodeURIComponent(publicProfile.username)}` : `${location.origin}/profile`;
   const projectUrl = links[0] || profileUrl;
-  const description = card?.querySelector("p")?.textContent?.slice(0, 500) || "A project shared by a HackVerse builder.";
+  const description = card?.querySelector("p")?.textContent?.slice(0, 500) || "A project shared by a HackTheta builder.";
   const visibility = card?.querySelector(".project-visibility")?.textContent?.trim().toLowerCase() || "private";
   openShareMenu({ type: "project", title: projectTitle, description, url: projectUrl, visibility });
 }
@@ -2947,7 +2954,7 @@ function renderBuilderPostCard(post, repost = null) {
   const isMine = post.ownerUid === currentUser?.uid;
   const opened = openPostCommentIds.has(postId);
   const imageUrl = validUrl(post.imageUrl);
-  const author = post.ownerName || "HackVerse builder";
+  const author = post.ownerName || "HackTheta builder";
   const when = tsMillis(repost?.createdAt || post.createdAt);
   const whenText = when ? new Date(when).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "Recently";
   const commentMarkup = opened && !privatePost ? `<div class="builder-post-comments"><div class="builder-comment-list">${builderCommentsLoading.has(postId) ? '<p class="builder-no-comments">Loading comments…</p>' : comments.length ? comments.map(comment => `<article class="builder-comment"><div class="builder-comment-avatar">${esc(initials(comment.authorName))}</div><div class="builder-comment-copy"><b>${esc(comment.authorName || "Builder")}</b><p>${esc(comment.body || "")}</p><small>${tsMillis(comment.createdAt) ? new Date(tsMillis(comment.createdAt)).toLocaleString() : "Just now"}</small></div>${comment.ownerUid === currentUser?.uid ? `<button type="button" class="builder-comment-delete" data-delete-post-comment="${esc(comment.id)}" aria-label="Delete comment">×</button>` : ""}</article>`).join("") : '<p class="builder-no-comments">Be the first to leave a thoughtful comment.</p>'}</div><form class="builder-comment-form" data-post-comment-form="${esc(postId)}"><textarea maxlength="1200" rows="2" required placeholder="Add a constructive comment…"></textarea><button class="btn btn-primary btn-small" type="submit">Comment</button></form></div>` : "";
@@ -3242,7 +3249,7 @@ async function toggleSaveBuilderPost(postId) {
 async function shareBuilderPost(postId) {
   const post = builderPosts.find(row => row.id === postId); if (!post) return;
   const url = validUrl(post.demoUrl || post.repositoryUrl || post.otherUrl) || `${location.origin}/feed`;
-  openShareMenu({ type: "project", title: post.title || "HackVerse builder post", description: post.tagline || post.body || "See what builders are shipping on HackVerse.", url, sourceId: postId, visibility: post.visibility || "public" });
+  openShareMenu({ type: "project", title: post.title || "HackTheta builder post", description: post.tagline || post.body || "See what builders are shipping on HackTheta.", url, sourceId: postId, visibility: post.visibility || "public" });
 }
 async function deleteBuilderPost(postId) {
   if (!requireAccount()) return;
@@ -3344,13 +3351,13 @@ function setAiMode(mode) {
   }
   aiMode = nextMode;
   const aiBrand = document.querySelector(".ai-brand-lockup b");
-  if (aiBrand) aiBrand.textContent = aiMode === "wish" ? "AI Wish · Website actions" : "HackVerse AI · Help chatbot";
-  $("#aiPanel").setAttribute("aria-label", aiMode === "wish" ? "AI Wish workspace" : "HackVerse AI assistant");
-  $("#aiInput").placeholder = aiMode === "wish" ? "Describe the work you want done in HackVerse…" : "Ask a question about HackVerse or anything else…";
+  if (aiBrand) aiBrand.textContent = aiMode === "wish" ? "AI Wish · Website actions" : "HackTheta AI · Help chatbot";
+  $("#aiPanel").setAttribute("aria-label", aiMode === "wish" ? "AI Wish workspace" : "HackTheta AI assistant");
+  $("#aiInput").placeholder = aiMode === "wish" ? "Describe the work you want done in HackTheta…" : "Ask a question about HackTheta or anything else…";
   $("#aiComposerHint").textContent = aiMode === "wish" ? "Describe the task · review the plan · approve changes" : "Ask freely · Enter to send · Shift + Enter for a new line";
   $("#aiModeIntro").innerHTML = aiMode === "wish"
     ? "<b>What would you like me to change or do?</b><span>Tell me the outcome you want. I’ll ask follow-up questions when needed, prepare a plan, and wait for your approval before changing account data.</span>"
-    : "<b>Ask me anything.</b><span>Get explanations, troubleshooting, coding help and clear guidance about using HackVerse. I do not make account changes in this chat.</span>";
+    : "<b>Ask me anything.</b><span>Get explanations, troubleshooting, coding help and clear guidance about using HackTheta. I do not make account changes in this chat.</span>";
   pendingAiActions = [];
   renderAiMessages();
   renderAiActionReview();
@@ -3399,8 +3406,8 @@ function renderAiMessages() {
   const box = $("#aiMessages");
   if (!box) return;
   const messages = currentAiMessages.length ? currentAiMessages : [{ role: "assistant", content: aiMode === "wish"
-    ? "Tell me what you want to accomplish in HackVerse. I’ll analyse the request, prepare a clear action plan and wait for your approval before applying changes."
-    : "Hi! I’m your HackVerse assistant. I can explain the platform, help you discover opportunities and guide you through your workspace." }];
+    ? "Tell me what you want to accomplish in HackTheta. I’ll analyse the request, prepare a clear action plan and wait for your approval before applying changes."
+    : "Hi! I’m your HackTheta assistant. I can explain the platform, help you discover opportunities and guide you through your workspace." }];
   const rendered = messages.map(message => {
     const isUser = message.role === "user";
     const stamp = message.createdAt ? tsMillis(message.createdAt) : 0;
@@ -3409,7 +3416,7 @@ function renderAiMessages() {
     return `<div class="ai-message ${isUser ? "ai-message-user" : "ai-message-agent"}"><span class="ai-message-avatar" aria-hidden="true">${isUser ? "You" : "✦"}</span><div class="ai-message-body"><div class="ai-message-bubble">${contentHtml}</div>${time ? `<time class="ai-message-time">${esc(time)}</time>` : ""}</div></div>`;
   }).join("");
   const pendingUser = pendingAiUserMessage ? `<div class="ai-message ai-message-user ai-message-pending"><span class="ai-message-avatar" aria-hidden="true">You</span><div class="ai-message-body"><div class="ai-message-bubble">${esc(pendingAiUserMessage)}</div><time class="ai-message-time">Sending…</time></div></div>` : "";
-  const thinking = isAiSending ? `<div class="ai-message ai-message-agent ai-thinking" role="status" aria-live="polite"><span class="ai-message-avatar" aria-hidden="true">✦</span><div class="ai-message-body"><div class="ai-message-bubble"><b>${aiMode === "wish" ? "AI Wish is thinking" : "HackVerse AI is thinking"}</b><span class="ai-thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span><small>${aiMode === "wish" ? "Reviewing your request and preparing a safe action plan…" : "Preparing a helpful response…"}</small></div></div></div>` : "";
+  const thinking = isAiSending ? `<div class="ai-message ai-message-agent ai-thinking" role="status" aria-live="polite"><span class="ai-message-avatar" aria-hidden="true">✦</span><div class="ai-message-body"><div class="ai-message-bubble"><b>${aiMode === "wish" ? "AI Wish is thinking" : "HackTheta AI is thinking"}</b><span class="ai-thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span><small>${aiMode === "wish" ? "Reviewing your request and preparing a safe action plan…" : "Preparing a helpful response…"}</small></div></div></div>` : "";
   box.innerHTML = rendered + pendingUser + thinking;
   box.setAttribute("aria-busy", String(isAiSending));
   box.scrollTop = box.scrollHeight;
@@ -4038,7 +4045,7 @@ async function applyAiActions() {
   if (!requireAccount() || !pendingAiActions.length) return;
   const actions = pendingAiActions.slice();
   const summary = actions.map(aiActionLabel).join("\n• ");
-  if (!(await confirmInApp(`Apply these ${actions.length} HackVerse action${actions.length === 1 ? "" : "s"}?\n\n• ${summary}\n\nReview the details before continuing.`, "Review AI Wish actions"))) return;
+  if (!(await confirmInApp(`Apply these ${actions.length} HackTheta action${actions.length === 1 ? "" : "s"}?\n\n• ${summary}\n\nReview the details before continuing.`, "Review AI Wish actions"))) return;
 
   const completed = [];
   const failed = [];
@@ -4075,7 +4082,7 @@ async function applyAiActions() {
         } else if (action.type === "save_opportunity") {
           if (!savedIds.has(action.eventId)) {
             const saved = await saveEvent(action.eventId);
-            if (!saved) throw new Error("HackVerse could not save that opportunity.");
+            if (!saved) throw new Error("HackTheta could not save that opportunity.");
             completed.push("Saved an opportunity to your shortlist");
           } else {
             completed.push("Opportunity was already in your shortlist");
@@ -4447,7 +4454,7 @@ function notifyIncomingActivity(rows){if(!currentUser)return;const prefs=readApp
 function showSettingsTab(tab){$$('[data-settings-panel]').forEach(p=>p.classList.toggle("active",p.dataset.settingsPanel===tab));$$('[data-settings-tab]').forEach(b=>b.classList.toggle("active",b.dataset.settingsTab===tab));}
 const tourSteps=[
  {route:"feed",selector:"#builderFeedPage .section-heading",title:"Builder feed",text:"Ship project launches, demos and progress updates. Builders can upvote, comment, repost, save and share public posts. You can control post visibility when publishing."},
- {route:"home",selector:".hero-copy",title:"Welcome to HackVerse",text:"Your builder network starts here. Discover opportunities, build your profile, meet collaborators and turn your ideas into real projects. The top navigation opens dedicated sections rather than stacking every feature on one screen."},
+ {route:"home",selector:".hero-copy",title:"Welcome to HackTheta",text:"Your builder network starts here. Discover opportunities, build your profile, meet collaborators and turn your ideas into real projects. The top navigation opens dedicated sections rather than stacking every feature on one screen."},
  {route:"opportunities",selector:"#opportunitiesContent, #opportunitiesSignInGate",title:"Opportunity radar",text:"Explore hackathons, case competitions, coding events, bootcamps and courses. Filter by skill, country, format, eligibility, cost and deadline. Event listings and details require a signed-in member account."},
  {route:"career",selector:"#careerPage .career-hero",title:"Career Match",text:"Analyse a resume against a target role, plan skill development, practise interviews and track applications."},
  {route:"people",selector:"#people .section-heading",title:"Community directory",text:"Search discoverable builders by their public profile, interests and skills. Open a profile to understand a builder's background, then start a direct conversation or invite them to a project group."},
@@ -4455,10 +4462,10 @@ const tourSteps=[
  {route:"people",selector:"#smartTeamBtn",title:"Automatic team builder",text:"Describe your project, choose team size and roles, and run the matching engine. Balanced mode spreads complementary skills across teams; you can review and select people before creating chats."},
  {route:"messages",selector:".chat-workspace",title:"Messaging workspace",text:"Your chat area supports direct and group conversations, live message updates, replies, reactions, edit/delete, files, voice notes, read receipts and typing indicators. Open a name or group details to view member profiles."},
  {route:"aiwish",selector:"#aiWishPage",title:"AI Wish workspace",text:"Describe a website task in plain language. AI Wish prepares supported changes and waits for your approval before applying them."},
- {route:"profile",selector:"#myProfilePanel",title:"Your builder profile",text:"Your profile is your professional identity on HackVerse. Add skills, education, interests, links and availability, then showcase the projects you build. Your public visibility is controlled in Settings."},
- {route:"notifications",selector:"#activitySummary",title:"Notification centre",text:"Track unread chats and saved opportunity deadlines here. Desktop alerts work while HackVerse is open and your browser has granted notification permission."},
+ {route:"profile",selector:"#myProfilePanel",title:"Your builder profile",text:"Your profile is your professional identity on HackTheta. Add skills, education, interests, links and availability, then showcase the projects you build. Your public visibility is controlled in Settings."},
+ {route:"notifications",selector:"#activitySummary",title:"Notification centre",text:"Track unread chats and saved opportunity deadlines here. Desktop alerts work while HackTheta is open and your browser has granted notification permission."},
  {route:"settings",selector:".settings-grid",title:"Settings and personalisation",text:"Choose the theme, motion level, text size, notification preferences and profile visibility. Changes are stored in this browser, while your profile visibility is stored with your Supabase profile."},
- {route:"home",selector:"#aiLaunchBtn",title:"Meet HackVerse AI",text:"Open the floating Agent37 chatbot for website help. Use the dedicated AI Wish page to describe tasks and review supported website actions before applying them. AI access depends on the server credentials being configured."}
+ {route:"home",selector:"#aiLaunchBtn",title:"Meet HackTheta AI",text:"Open the floating Agent37 chatbot for website help. Use the dedicated AI Wish page to describe tasks and review supported website actions before applying them. AI access depends on the server credentials being configured."}
 ];
 let activeTourIndex=-1;
 function removeTourHighlight(){document.querySelectorAll(".tour-highlight").forEach(el=>el.classList.remove("tour-highlight"));}
@@ -4616,7 +4623,184 @@ function readSavedNews(){try{return JSON.parse(localStorage.getItem(newsSavedKey
 function newsMatches(item,tab){const t=(item.title||"").toLowerCase(), d=(item.text||"").toLowerCase();const full=t+" "+d; if(tab==="ai")return /\b(ai|artificial intelligence|llm|machine learning|openai|anthropic|gemini|deepmind)\b/.test(full);if(tab==="security")return /\b(security|cyber|vulnerab|hack|privacy|breach|malware|exploit)\b/.test(full);if(tab==="webdev")return /\b(developer|programming|javascript|typescript|web|browser|github|framework|api|open source|linux|software)\b/.test(full);return true;}
 function renderTechNews(){const grid=$("#techNewsGrid"),status=$("#techNewsStatus");if(!grid)return;const saved=readSavedNews();let rows=techNewsTab==="saved"?techNewsItems.filter(i=>saved.includes(i.id)):techNewsItems.filter(i=>newsMatches(i,techNewsTab));const q=($("#techNewsSearch")?.value||"").trim().toLowerCase();if(q)rows=rows.filter(i=>(i.title||"").toLowerCase().includes(q));status.textContent=`${rows.length} stories · ${techNewsTab==="saved"?"saved locally":"from Hacker News"}`;grid.innerHTML=rows.map(item=>{const title=esc(item.title||"Untitled story"),source=esc(new URL(item.url||"https://news.ycombinator.com").hostname.replace(/^www\./,""));const savedNow=saved.includes(item.id);return `<article class="tech-news-card"><div class="tech-news-card-top"><span class="tech-news-source">${source}</span><span class="tech-news-score">▲ ${Number(item.score||0)}</span></div><h3>${title}</h3><p>${esc(item.by||"Hacker News community")} · ${item.time?esc(new Date(item.time*1000).toLocaleString()):"Recently"} · ${Number(item.descendants||0)} comments</p><div class="tech-news-actions"><a class="btn btn-primary btn-small" href="${esc(validUrl(item.url)||`https://news.ycombinator.com/item?id=${item.id}`)}" target="_blank" rel="noopener">Read story ↗</a><button class="btn btn-outline btn-small" data-news-save="${item.id}">${savedNow?"★ Saved":"☆ Save"}</button><button class="btn btn-outline btn-small" data-news-share="${item.id}">↗ Share</button></div></article>`}).join("")||'<div class="empty-note">No stories match this filter. Try another tab or search.</div>';grid.querySelectorAll("[data-news-save]").forEach(b=>b.onclick=()=>{const ids=readSavedNews(),id=Number(b.dataset.newsSave);localStorage.setItem(newsSavedKey,JSON.stringify(ids.includes(id)?ids.filter(x=>x!==id):[id,...ids]));renderTechNews();});grid.querySelectorAll("[data-news-share]").forEach(b=>b.onclick=()=>shareTechNews(Number(b.dataset.newsShare)));}
 async function loadTechNews(){if(techNewsLoading)return;techNewsLoading=true;const status=$("#techNewsStatus"),grid=$("#techNewsGrid");if(status)status.textContent="Refreshing technology stories…";try{const ids=await fetch(`${NEWS_API}/topstories.json`).then(r=>{if(!r.ok)throw Error("Feed unavailable");return r.json()});const stories=await Promise.all(ids.slice(0,45).map(id=>fetch(`${NEWS_API}/item/${id}.json`).then(r=>r.ok?r.json():null).catch(()=>null)));techNewsItems=stories.filter(x=>x&&x.title&&x.url);renderTechNews();}catch(e){if(status)status.textContent="Could not refresh the live feed. Check your connection and try again.";if(grid)grid.innerHTML='<div class="empty-note">The news feed could not be loaded. Use Refresh to retry.</div>';console.warn("Tech news loading",e);}finally{techNewsLoading=false;}}
-function shareTechNews(id){const item=techNewsItems.find(x=>x.id===id);if(!item)return;const url=item.url||`https://news.ycombinator.com/item?id=${id}`,text=`${item.title}\n${url}`;const shareUrl=`https://wa.me/?text=${encodeURIComponent(text)}`;const modal=document.createElement("div");modal.className="modal-backdrop share-picker-backdrop";modal.innerHTML=`<section class="modal share-picker-modal"><button class="modal-close" type="button">×</button><div class="eyebrow">SHARE TECH NEWS</div><h2>${esc(item.title)}</h2><p class="muted">Share this story anywhere or send it to a HackVerse chat.</p><div class="share-action-list"><a class="share-action-option" href="${esc(shareUrl)}" target="_blank" rel="noopener"><span><b>WhatsApp</b><small>Send to a contact</small></span>↗</a><button class="share-action-option" data-news-native><span><b>Other apps</b><small>Open your device share menu</small></span>⇧</button><button class="share-action-option" data-news-copy><span><b>Copy story link</b><small>Copy title and source URL</small></span>⧉</button></div></section>`;document.body.append(modal);modal.querySelector(".modal-close").onclick=()=>modal.remove();modal.onclick=e=>{if(e.target===modal)modal.remove()};modal.querySelector("[data-news-native]").onclick=()=>{modal.remove();if(navigator.share)navigator.share({title:item.title,url,text:item.title}).catch(()=>{});else navigator.clipboard?.writeText(text).then(()=>toast("Story copied."));};modal.querySelector("[data-news-copy]").onclick=()=>navigator.clipboard.writeText(text).then(()=>{toast("Story copied.");modal.remove()}).catch(()=>toast("Clipboard blocked"));}
+function shareTechNews(id){const item=techNewsItems.find(x=>x.id===id);if(!item)return;const url=item.url||`https://news.ycombinator.com/item?id=${id}`,text=`${item.title}\n${url}`;const shareUrl=`https://wa.me/?text=${encodeURIComponent(text)}`;const modal=document.createElement("div");modal.className="modal-backdrop share-picker-backdrop";modal.innerHTML=`<section class="modal share-picker-modal"><button class="modal-close" type="button">×</button><div class="eyebrow">SHARE TECH NEWS</div><h2>${esc(item.title)}</h2><p class="muted">Share this story anywhere or send it to a HackTheta chat.</p><div class="share-action-list"><a class="share-action-option" href="${esc(shareUrl)}" target="_blank" rel="noopener"><span><b>WhatsApp</b><small>Send to a contact</small></span>↗</a><button class="share-action-option" data-news-native><span><b>Other apps</b><small>Open your device share menu</small></span>⇧</button><button class="share-action-option" data-news-copy><span><b>Copy story link</b><small>Copy title and source URL</small></span>⧉</button></div></section>`;document.body.append(modal);modal.querySelector(".modal-close").onclick=()=>modal.remove();modal.onclick=e=>{if(e.target===modal)modal.remove()};modal.querySelector("[data-news-native]").onclick=()=>{modal.remove();if(navigator.share)navigator.share({title:item.title,url,text:item.title}).catch(()=>{});else navigator.clipboard?.writeText(text).then(()=>toast("Story copied."));};modal.querySelector("[data-news-copy]").onclick=()=>navigator.clipboard.writeText(text).then(()=>{toast("Story copied.");modal.remove()}).catch(()=>toast("Clipboard blocked"));}
+
+
+function billingFormatDate(value, includeTime = false) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, includeTime
+    ? { dateStyle: "medium", timeStyle: "short" }
+    : { dateStyle: "medium" }).format(date);
+}
+
+async function billingRequest(path, { method = "GET", body } = {}) {
+  if (!currentUser) throw new Error("Sign in to manage your subscription.");
+  const token = await currentUser.getIdToken();
+  const response = await fetch(path, {
+    method,
+    headers: { "Authorization": `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    cache: "no-store"
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Billing request failed (${response.status}).`);
+  return data;
+}
+
+function renderBillingStatus(data) {
+  const row = data?.subscription || {};
+  const entitlement = data?.entitlement || { allowed: false };
+  const trialEnd = row.trialEndsAt ? new Date(row.trialEndsAt).getTime() : 0;
+  const daysLeft = trialEnd > Date.now() ? Math.max(1, Math.ceil((trialEnd - Date.now()) / 86400000)) : 0;
+  const status = String(row.status || "unknown").toLowerCase();
+  const renewalAuthorised = ["authenticated", "active", "pending", "halted", "paused"].includes(status) && Boolean(row.razorpaySubscriptionId);
+  const cancelledAndPaidThrough = status === "cancelled" && row.currentPeriodEnd && new Date(row.currentPeriodEnd).getTime() > Date.now();
+  const pill = $("#billingStatusPill");
+  if (pill) {
+    pill.className = "billing-status-pill";
+    if (entitlement.allowed) { pill.textContent = entitlement.source === "trial" ? "Free trial" : "Premium access"; pill.classList.add("is-active"); }
+    else if (["halted", "failed", "expired"].includes(status) || !row.trialEndsAt) { pill.textContent = status === "halted" ? "Payment halted" : status === "failed" ? "Payment failed" : "No active plan"; pill.classList.add("is-error"); }
+    else { pill.textContent = "Trial ended"; pill.classList.add("is-warning"); }
+  }
+  const message = $("#billingStatusMessage");
+  if (message) {
+    if (entitlement.source === "trial") message.textContent = status === "cancelled"
+      ? `Your automatic renewal is cancelled. You can still use the free trial until ${billingFormatDate(row.trialEndsAt)}.`
+      : renewalAuthorised
+        ? `Your free trial is active for ${daysLeft} more day${daysLeft === 1 ? "" : "s"}. Recurring billing is authorised; the first ₹30 charge is scheduled after the trial ends on ${billingFormatDate(row.trialEndsAt)}.`
+        : `Your free trial is active for ${daysLeft} more day${daysLeft === 1 ? "" : "s"}. Set up recurring billing through Razorpay before the trial ends to avoid interruption to Premium features.`;
+    else if (entitlement.source === "subscription") message.textContent = row.cancelAtCycleEnd || status === "cancelled"
+      ? `Your subscription is cancelled or scheduled to end. Premium access remains available until ${billingFormatDate(entitlement.endsAt)}.`
+      : `Your HackTheta Premium subscription is providing access. The current entitlement ends ${billingFormatDate(entitlement.endsAt)} unless Razorpay confirms another billing period.`;
+    else if (status === "created") message.textContent = "A Razorpay subscription has been created. Complete the Checkout authorisation to schedule recurring billing.";
+    else message.textContent = "Your trial has ended or no active subscription is recorded. Subscribe to restore AI and Career Match Premium access. Your community and opportunity features remain available.";
+  }
+  $("#billingTrialStart").textContent = billingFormatDate(row.trialStartedAt);
+  $("#billingTrialEnd").textContent = billingFormatDate(row.trialEndsAt);
+  $("#billingNextCharge").textContent = billingFormatDate(row.nextChargeAt || row.scheduledStartAt, true);
+  $("#billingPeriodEnd").textContent = billingFormatDate(row.currentPeriodEnd);
+  $("#billingRenewalState").textContent = row.cancelAtCycleEnd ? "Ends after this cycle" : status === "cancelled" ? "Cancelled" : renewalAuthorised ? "Authorised in Razorpay" : "Not authorised";
+  $("#billingSubscriptionRef").textContent = row.razorpaySubscriptionId ? `Reference: ${row.razorpaySubscriptionId}` : "";
+  const subscribe = $("#billingSubscribeBtn");
+  const needsAuthorisation = !renewalAuthorised && !cancelledAndPaidThrough;
+  if (subscribe) {
+    subscribe.hidden = !needsAuthorisation;
+    subscribe.disabled = status === "created" && !row.razorpaySubscriptionId;
+    subscribe.textContent = status === "created" ? "Continue Razorpay authorisation" : entitlement.source === "trial" ? "Set up automatic renewal" : "Subscribe for ₹30/month";
+  }
+  const cancel = $("#billingCancelBtn");
+  if (cancel) cancel.hidden = !row.razorpaySubscriptionId || !["created", "authenticated", "active", "pending", "halted", "paused"].includes(status) || Boolean(row.cancelAtCycleEnd);
+  const history = $("#billingHistory");
+  const payments = Array.isArray(data?.payments) ? data.payments : [];
+  if (history) history.innerHTML = payments.length ? payments.map(payment => {
+    const ok = ["captured", "authorized", "refunded"].includes(String(payment.status || "").toLowerCase());
+    const kind = payment.transaction_type === "authorization" ? "Payment-method authorisation" : "Recurring payment";
+    const amount = (Number(payment.amount || 0) / 100).toLocaleString(undefined, { style: "currency", currency: payment.currency || "INR" });
+    return `<div class="billing-history-row"><div><b>${esc(kind)}</b><small>${esc(billingFormatDate(payment.paid_at || payment.created_at, true))} · ${esc(payment.razorpay_payment_id || "")}</small></div><span class="billing-amount">${esc(amount)}</span><span class="billing-payment-status ${ok ? "" : "failed"}">${esc(payment.status || "recorded")}</span></div>`;
+  }).join("") : '<p class="empty-note">No confirmed payment records yet.</p>';
+}
+
+async function loadBillingStatus({ silent = false } = {}) {
+  if (!currentUser) return null;
+  if (billingLoadPromise) return billingLoadPromise;
+  billingLoadPromise = (async () => {
+    const errorNode = $("#billingError");
+    if (errorNode) { errorNode.hidden = true; errorNode.textContent = ""; }
+    try {
+      const data = await billingRequest("/api/billing/status");
+      billingData = data; billingLoaded = true; billingErrorMessage = "";
+      renderBillingStatus(data);
+      if (["career", "aiwish"].includes(currentRouteName()) && !data?.entitlement?.allowed) {
+        toast("Your trial or subscription is not active. Manage your plan in Billing.");
+        navigateToRoute("billing", { replace: true });
+      }
+      return data;
+    } catch (error) {
+      billingData = null; billingLoaded = true; billingErrorMessage = error.message;
+      if (errorNode) { errorNode.hidden = false; errorNode.textContent = error.message; }
+      const statusMessage = $("#billingStatusMessage");
+      if (statusMessage) statusMessage.textContent = "Billing status could not be verified. Complete the Supabase setup and check Vercel billing environment variables.";
+      if (["career", "aiwish"].includes(currentRouteName())) {
+        toast("Premium access could not be verified. Please check Billing setup.");
+        navigateToRoute("billing", { replace: true });
+      }
+      if (!silent) toast(error.message);
+      return null;
+    } finally {
+      billingLoadPromise = null;
+    }
+  })();
+  return billingLoadPromise;
+}
+
+async function loadRazorpayCheckout() {
+  if (window.Razorpay) return;
+  const existing = document.querySelector("script[data-razorpay-checkout]");
+  if (existing) {
+    await new Promise((resolve, reject) => { existing.addEventListener("load", resolve, { once: true }); existing.addEventListener("error", reject, { once: true }); if (window.Razorpay) resolve(); });
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.async = true; script.dataset.razorpayCheckout = "true";
+    script.onload = resolve; script.onerror = () => reject(new Error("Razorpay Checkout could not be loaded. Check your connection and retry."));
+    document.head.append(script);
+  });
+  if (!window.Razorpay) throw new Error("Razorpay Checkout did not initialise.");
+}
+
+async function startBillingCheckout() {
+  if (!requireAccount()) return;
+  const button = $("#billingSubscribeBtn");
+  if (button) { button.disabled = true; button.textContent = "Preparing secure checkout…"; }
+  try {
+    const created = await billingRequest("/api/billing/create-subscription", { method: "POST", body: {} });
+    await loadRazorpayCheckout();
+    const checkout = new window.Razorpay({
+      key: created.keyId,
+      subscription_id: created.subscriptionId,
+      name: "HackTheta",
+      description: "₹30/month HackTheta Premium subscription",
+      prefill: { email: currentUser.email || "" },
+      theme: { color: "#6F8F7B" },
+      handler: async response => {
+        try {
+          await billingRequest("/api/billing/verify-subscription", { method: "POST", body: response });
+          await loadBillingStatus({ silent: true });
+          toast("Razorpay authorisation verified. Your billing status has been updated.");
+        } catch (error) {
+          toast(error.message || "Authorisation verification is pending. Refresh billing status shortly.");
+          await loadBillingStatus({ silent: true });
+        }
+      },
+      modal: { ondismiss: () => { if (button) button.disabled = false; void loadBillingStatus({ silent: true }); } }
+    });
+    checkout.on("payment.failed", event => {
+      const description = event?.error?.description || "Razorpay could not authorise the subscription.";
+      toast(description);
+    });
+    checkout.open();
+  } catch (error) {
+    if (button) { button.disabled = false; button.textContent = "Try again"; }
+    toast(error.message);
+    const errorNode = $("#billingError"); if (errorNode) { errorNode.hidden = false; errorNode.textContent = error.message; }
+  }
+}
+
+async function cancelBillingSubscription() {
+  if (!requireAccount()) return;
+  if (!(await confirmInApp("Cancel automatic renewal for your HackTheta Premium subscription? If Razorpay confirms cancellation at the end of the billing cycle, Premium access remains available until the confirmed paid-through date.", "Cancel subscription"))) return;
+  const button = $("#billingCancelBtn"); if (button) button.disabled = true;
+  try {
+    await billingRequest("/api/billing/cancel-subscription", { method: "POST", body: {} });
+    await loadBillingStatus({ silent: true });
+    toast("Cancellation request submitted to Razorpay.");
+  } catch (error) { toast(error.message); }
+  finally { if (button) button.disabled = false; }
+}
 
 function handleRoute({ force = false } = {}) {
   // Unknown paths fall back to home with a clean URL instead of staying on a broken address.
@@ -4625,6 +4809,10 @@ function handleRoute({ force = false } = {}) {
   const profileMatch = pathname.match(/^\/@([A-Za-z0-9_]{3,24})$/);
   const postMatch = pathname.match(/^\/post\/([0-9a-f-]{36})$/i);
   const view = profileMatch ? "public-profile" : postMatch ? "post-detail" : currentRouteName();
+  if (currentUser && ["career", "aiwish"].includes(view) && billingLoaded && !billingData?.entitlement?.allowed) {
+    history.replaceState({}, "", "/billing");
+    return handleRoute({ force: true });
+  }
   const aiPanel = $("#aiPanel"), wishMount = $("#aiWishMount"), aiAssistant = $("#aiAssistant");
   if (view === "aiwish") {
     if (aiPanel.parentElement !== wishMount) wishMount.append(aiPanel);
@@ -4674,8 +4862,8 @@ function handleRoute({ force = false } = {}) {
   $("#navMoreBtn").setAttribute("aria-expanded", "false");
   const hasMoreActiveRoute = Boolean($("#navMoreMenu [data-route].active"));
   $("#navMoreBtn")?.classList.toggle("active", hasMoreActiveRoute);
-  const titles = { career: "Career Match", "pitch-arena": "AI Pitch Arena", home: "HackVerse", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
-  document.title = `${titles[view] || "HackVerse"} — HackVerse`;
+  const titles = { billing: "Billing & subscription", career: "Career Match", home: "HackTheta", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
+  document.title = `${titles[view] || "HackTheta"} — HackTheta`;
   if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
   if (blocked || !freshRoute) return;
   if (view === "opportunities") { updateEventAccessUI(); if (currentUser) renderEvents(); }
@@ -4691,7 +4879,7 @@ function handleRoute({ force = false } = {}) {
   if (view === "notifications") { renderNotificationCenter(); void loadSocialNotifications(); }
   if (view === "settings") loadSettingsUI();
   if (view === "career") initCareerWorkspace();
-  if (view === "pitch-arena") window.dispatchEvent(new CustomEvent("hackverse:pitch-arena:route"));
+  if (view === "billing") void loadBillingStatus({ silent: true });
 }
 
 function bindUI() {
@@ -4771,6 +4959,9 @@ function bindUI() {
   $("#saveGroupInfoBtn").onclick=saveGroupInfo;
   $("#viewMembersBtn").onclick=()=>{const grid=$("#peopleGrid");const open=grid.hidden;grid.hidden=!open;$("#viewMembersBtn").textContent=open?"Hide members":"View members";$("#viewMembersBtn").setAttribute("aria-expanded",String(open));if(open&&currentUser)searchPeople();};
   $("#loadMorePeopleBtn").onclick=()=>searchPeople(true);
+  $("#billingSubscribeBtn")?.addEventListener("click", () => void startBillingCheckout());
+  $("#billingCancelBtn")?.addEventListener("click", () => void cancelBillingSubscription());
+  $("#billingRefreshBtn")?.addEventListener("click", () => void loadBillingStatus());
   $("#chatTitle").onclick=openChatIdentity;
   $("#conversationSearch").addEventListener("input",()=>renderConversationList(currentConversations));
   $("#messageSearch").addEventListener("input",()=>renderMessages(currentMessages));
