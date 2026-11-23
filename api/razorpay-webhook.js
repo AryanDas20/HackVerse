@@ -1,5 +1,5 @@
 const crypto = require('node:crypto');
-const { adminClient, razorpayRequest, verifyHexHmac, toIsoFromUnix } = require('./lib/billing');
+const { adminClient, razorpayRequest, verifyHexHmac, toIsoFromUnix } = require('../lib/billing');
 
 async function rawBody(req) {
   if (Buffer.isBuffer(req.body)) return req.body;

@@ -1,5 +1,5 @@
 const { createClient } = require("@supabase/supabase-js");
-const { plainText, safeHttpUrl, validatePost, validateReport, USERNAME_RE } = require("./lib/social");
+const { plainText, safeHttpUrl, validatePost, validateReport, USERNAME_RE } = require("../lib/social");
 
 const noStore = res => { res.setHeader("Cache-Control", "no-store"); res.setHeader("Vary", "Authorization"); };
 const fail = (res, status, error) => res.status(status).json({ error });
@@ -512,7 +512,7 @@ async function handler(req, res) {
       }
       const content = plainText(body.content, 3000);
       if (!content) return fail(res, 400, "Post content cannot be empty.");
-      const { data, error } = await client.from("posts").update({ content, hashtags: require("./lib/social").parseTags(content), mentions: require("./lib/social").parseMentions(content), updated_at: new Date().toISOString(), edited_at: new Date().toISOString() }).eq("id", postId).select("*").single();
+      const { data, error } = await client.from("posts").update({ content, hashtags: require("../lib/social").parseTags(content), mentions: require("../lib/social").parseMentions(content), updated_at: new Date().toISOString(), edited_at: new Date().toISOString() }).eq("id", postId).select("*").single();
       if (error) throw error;
       return res.status(200).json({ post: data });
     }

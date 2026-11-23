@@ -1,5 +1,5 @@
 const { createClient } = require("@supabase/supabase-js");
-const { getEntitlement } = require("../lib/billing");
+const { getEntitlement } = require("../../lib/billing");
 const { getDatabase, FieldValue } = require("../../functions/lib/supabase-store");
 
 function supabaseAdmin() {

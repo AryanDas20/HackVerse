@@ -1,5 +1,5 @@
 const { createClient } = require("@supabase/supabase-js");
-const { buildLegacyPublicProfile } = require("./lib/profile-directory");
+const { buildLegacyPublicProfile } = require("../lib/profile-directory");
 
 const PAGE_SIZE = 500;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
