@@ -47,7 +47,7 @@ Browser users can read their own subscription/payment information, but cannot wr
    - Billing interval: `1`
    - Amount: `₹30` (3000 paise)
    - Currency: `INR`
-5. Save the plan and copy its Plan ID. It usually begins with `plan_`.
+5. Save the plan. The Test Mode Plan ID you created for this setup is `plan_U3akXCdH3TGXun`. If you create another plan, use that plan's ID instead.
 
 The code sends a future `start_at` to Razorpay when the account is still within the 7-day trial, so the first recurring cycle is scheduled for the trial end. Razorpay requires a bounded subscription count or end date; this implementation uses **120 monthly cycles** (up to 10 years), not an unlimited subscription. Plan/subscription fields should be checked against Razorpay's live documentation and your account's payment-method support.
 
@@ -60,7 +60,7 @@ The code sends a future `start_at` to Razorpay when the account is still within 
 ```env
 RAZORPAY_KEY_ID=rzp_test_your_test_key_id
 RAZORPAY_KEY_SECRET=your_test_key_secret
-RAZORPAY_PLAN_ID=plan_your_test_plan_id
+RAZORPAY_PLAN_ID=plan_U3akXCdH3TGXun
 RAZORPAY_WEBHOOK_SECRET=choose_a_long_random_webhook_secret
 ```
 
@@ -75,7 +75,9 @@ SUPABASE_SERVICE_ROLE_KEY=your_existing_supabase_service_role_key
 
 ## Step 5 — Configure Razorpay webhooks
 
-1. Deploy the code to Vercel first, so the webhook route exists.
+A webhook is a server-to-server notification. It lets Razorpay tell HackTheta when a subscription is authenticated, charged, cancelled, halted or otherwise updated. It does not open Checkout; the website opens Checkout and the webhook keeps the database in sync.
+
+1. Deploy the updated code to Vercel first, so the webhook route exists. The endpoint is `/api/razorpay-webhook`.
 2. In Razorpay Dashboard Test Mode, open **Account & Settings → Webhooks**.
 3. Add your deployment URL:
 
@@ -103,7 +105,9 @@ payment.failed
 payment.refunded
 ```
 
-6. Save the webhook configuration.
+6. Save the webhook configuration in **Test Mode**. Test Mode webhooks are separate from Live Mode webhooks.
+7. In Vercel → Project → Settings → Environment Variables, add `RAZORPAY_WEBHOOK_SECRET` with the exact same secret you entered in Razorpay. Save it for the Production environment (and Preview/Development if you test there), then redeploy Vercel.
+8. After redeployment, use a Test Mode subscription/checkout to generate events. In Razorpay Dashboard → Webhooks, inspect webhook delivery attempts and confirm the endpoint returns HTTP 200. Do not send a fake manual JSON payload as proof of a real subscription event.
 
 The endpoint verifies the Razorpay signature against the **raw request body**, deduplicates event IDs, and reconciles subscription status against Razorpay's current subscription record to reduce the effect of delayed/out-of-order webhook delivery.
 
