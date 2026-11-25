@@ -68,4 +68,4 @@ The interview is a turn-based Agent37 simulation, not a real-time WebRTC call. T
 
 ## Scope note
 
-The main HackTheta ZIP currently contains the existing Razorpay billing implementation. This merge preserves that billing system and adds AI Pitch Arena; it does **not** migrate billing to PayU. The PayU migration described in the handoff is a separate payment-provider change.
+This release combines the AI Pitch Arena integration with the PayU billing migration. PayU is the active billing provider for new checkout and renewal flows. Historical Razorpay identifiers and payment rows are retained in the existing database schema for record preservation only; no Razorpay Checkout or webhook code remains active.

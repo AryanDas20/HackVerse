@@ -1,4 +1,7 @@
-# HackVerse v13 — Builder Network
+# HackTheta — Builder Network
+
+> Current release note: active billing uses **PayU India**, not Razorpay. The integrated AI Pitch Arena is also included in this release. Follow [`PAYU_SETUP.md`](./PAYU_SETUP.md) for the required additive Supabase migration, PayU merchant approval/SI activation, Vercel secrets, callbacks, recurring billing and test steps. Read [`AI_PITCH_ARENA_INTEGRATION.md`](./AI_PITCH_ARENA_INTEGRATION.md) for Arena setup.
+
 
 HackVerse combines opportunity discovery, team matching, project showcases, direct chat, and a developer-focused social network. The v13 release separates **Posts** (updates, questions, learning, discussions) from **Builds** (project/demo showcases) and adds detailed individual profiles, moderation reports, and selectable home-feed defaults.
 
@@ -10,6 +13,17 @@ HackVerse combines opportunity discovery, team matching, project showcases, dire
 - **Social data:** Normalized PostgreSQL tables (`profiles`, `posts`, `follows`, `votes`, `comments`, `reposts`, `notifications`, `reports`, `profile_feed_preferences`, and `user_blocks`).
 - **Backend:** Vercel serverless routes under `api/`. `/api/social-v13` authenticates the Supabase bearer token and uses the service-role key only on the server.
 - **Storage:** Supabase Storage signed uploads. Public image URLs are used for public community media and avatars; chat files remain private and use the existing signed URL flow.
+
+## PayU billing
+
+- Active payment provider: PayU India Hosted Checkout + Standing Instructions (SI).
+- Premium price: ₹30 per month, with the existing one-time 7-day account trial where eligible.
+- PayU registration callback hashes are verified server-side and payment state is independently checked with PayU before entitlements are updated.
+- A daily Vercel Cron reconciles pending transactions, checks mandate status, sends the required Cards/UPI pre-debit notice, and processes recurring debits after the due date.
+- The existing `billing_subscriptions` and `billing_payments` records are retained; legacy Razorpay columns are not used for new checkout.
+- PayU merchant approval and Standing Instructions enablement are required before real recurring payments can run.
+
+See [`PAYU_SETUP.md`](./PAYU_SETUP.md) before deploying.
 
 ## Feature map
 
@@ -45,7 +59,7 @@ npm run check
 npm test
 ```
 
-Serve the `public/` directory with a static server for frontend-only work, or use Vercel CLI to exercise `/api/*` routes locally. The API functions require the environment variables below.
+Serve the `public/` directory with a static server for frontend-only work, or use Vercel CLI to exercise `/api/*` routes locally. The API functions require the environment variables below. Billing uses PayU India credentials; do not configure Razorpay credentials for the current code.
 
 ### Environment variables
 
@@ -54,6 +68,11 @@ Required on the Vercel server/API runtime:
 ```text
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVER_ONLY_SERVICE_ROLE_KEY
+PAYU_MERCHANT_KEY=YOUR_PAYU_MERCHANT_KEY
+PAYU_MERCHANT_SALT=YOUR_PAYU_MERCHANT_SALT
+PAYU_MODE=test
+APP_BASE_URL=https://YOUR_HACKTHETA_DOMAIN
+CRON_SECRET=GENERATE_A_LONG_RANDOM_SECRET
 ```
 
 Retain existing project-specific AI variables if used:

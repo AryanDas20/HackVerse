@@ -294,8 +294,11 @@
           <div class="billing-price">₹30 <span>/ month</span></div>
           <p class="billing-plan-copy">7-day free trial for eligible new accounts, followed by ₹30 per month when recurring billing is authorised.</p>
           <ul class="billing-benefits"><li>AI assistant and AI Wish</li><li>Career Match tools and career copilot</li><li>Subscription status and payment history</li></ul>
-          <button class="btn btn-primary full" type="button" id="billingSubscribeBtn" hidden>Set up recurring billing</button>
-          <p class="billing-smallprint">You will review and authorise recurring payments in Razorpay Checkout. No ₹30 recurring charge is scheduled before the end of an eligible 7-day trial. Payment-method verification may involve a temporary authorisation amount shown by Razorpay.</p>
+          <label class="billing-input-label" for="billingPhone">Mobile number for PayU</label>
+          <input class="billing-phone-input" type="tel" id="billingPhone" name="billingPhone" inputmode="tel" autocomplete="tel" maxlength="15" placeholder="10-digit mobile number" aria-describedby="billingConsentText">
+          <label class="billing-consent-row" for="billingRecurringConsent"><input type="checkbox" id="billingRecurringConsent"><span id="billingConsentText">I authorise HackTheta to set up a recurring ₹30/month mandate through PayU. I understand the trial period, any PayU verification amount, and that I can cancel automatic renewal.</span></label>
+          <button class="btn btn-primary full" type="button" id="billingSubscribeBtn" hidden>Continue to PayU</button>
+          <p class="billing-smallprint">PayU will display the payment method and mandate terms before you approve. With PayU's free-trial consent flow, the authorisation may be ₹2 for cards/UPI or ₹0 for Net Banking. The ₹30 monthly debit is not scheduled before the eligible trial ends. Actual recurring billing requires PayU to enable Standing Instructions on your merchant account.</p>
         </article>
         <article class="billing-status-card">
           <div class="billing-status-head"><div><div class="eyebrow">YOUR ACCOUNT</div><h3>Subscription status</h3></div><span class="billing-status-pill" id="billingStatusPill">Loading…</span></div>
@@ -313,7 +316,7 @@
       </div>
       <article class="billing-history-card">
         <div class="billing-history-head"><div><div class="eyebrow">TRANSACTIONS</div><h3>Payment history</h3></div><span>LAST 20 RECORDS</span></div>
-        <div class="billing-history-list" id="billingHistory"><p class="empty-note">Payment records will appear here after Razorpay sends confirmed payment events.</p></div>
+        <div class="billing-history-list" id="billingHistory"><p class="empty-note">Your verified PayU and legacy payment records will appear here.</p></div>
       </article>
       <p class="billing-free-note"><b>What remains free?</b> Your HackTheta community, builder directory, messages and opportunity discovery remain available. The AI and Career Match premium areas require an active 7-day trial or a valid paid subscription. If the trial ends without a valid subscription, those premium areas are restricted.</p>
       <p class="billing-error" id="billingError" role="alert" hidden></p>

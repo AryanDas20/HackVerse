@@ -4655,55 +4655,73 @@ function renderBillingStatus(data) {
   const trialEnd = row.trialEndsAt ? new Date(row.trialEndsAt).getTime() : 0;
   const daysLeft = trialEnd > Date.now() ? Math.max(1, Math.ceil((trialEnd - Date.now()) / 86400000)) : 0;
   const status = String(row.status || "unknown").toLowerCase();
-  const renewalAuthorised = ["authenticated", "active", "pending", "halted", "paused"].includes(status) && Boolean(row.razorpaySubscriptionId);
+  const renewalAuthorised = Boolean(row.payuMandateId) && String(row.payuMandateStatus || "").toLowerCase() === "active" && !row.cancelAtCycleEnd;
   const cancelledAndPaidThrough = status === "cancelled" && row.currentPeriodEnd && new Date(row.currentPeriodEnd).getTime() > Date.now();
   const pill = $("#billingStatusPill");
   if (pill) {
     pill.className = "billing-status-pill";
     if (entitlement.allowed) { pill.textContent = entitlement.source === "trial" ? "Free trial" : "Premium access"; pill.classList.add("is-active"); }
-    else if (["halted", "failed", "expired"].includes(status) || !row.trialEndsAt) { pill.textContent = status === "halted" ? "Payment halted" : status === "failed" ? "Payment failed" : "No active plan"; pill.classList.add("is-error"); }
+    else if (["halted", "failed", "expired", "past_due"].includes(status) || !row.trialEndsAt) { pill.textContent = status === "past_due" ? "Payment past due" : status === "halted" ? "Payment halted" : status === "failed" ? "Payment failed" : "No active plan"; pill.classList.add("is-error"); }
     else { pill.textContent = "Trial ended"; pill.classList.add("is-warning"); }
   }
   const message = $("#billingStatusMessage");
   if (message) {
-    if (entitlement.source === "trial") message.textContent = status === "cancelled"
-      ? `Your automatic renewal is cancelled. You can still use the free trial until ${billingFormatDate(row.trialEndsAt)}.`
+    if (entitlement.source === "trial") message.textContent = row.cancelAtCycleEnd
+      ? (row.payuMandateStatus === "cancel_pending"
+        ? `Your PayU cancellation request is pending provider confirmation. Your free trial remains active until ${billingFormatDate(row.trialEndsAt)}.`
+        : `Your PayU automatic renewal is cancelled. Your free trial remains active until ${billingFormatDate(row.trialEndsAt)}.`)
       : renewalAuthorised
-        ? `Your free trial is active for ${daysLeft} more day${daysLeft === 1 ? "" : "s"}. Recurring billing is authorised; the first ₹30 charge is scheduled after the trial ends on ${billingFormatDate(row.trialEndsAt)}.`
-        : `Your free trial is active for ${daysLeft} more day${daysLeft === 1 ? "" : "s"}. Set up recurring billing through Razorpay before the trial ends to avoid interruption to Premium features.`;
+        ? `Your free trial is active for ${daysLeft} more day${daysLeft === 1 ? "" : "s"}. PayU mandate is active; the first ₹30 recurring debit is scheduled after the trial ends on ${billingFormatDate(row.trialEndsAt)}.`
+        : `Your free trial is active for ${daysLeft} more day${daysLeft === 1 ? "" : "s"}. Authorise a PayU recurring mandate to continue Premium automatically after the trial.`;
     else if (entitlement.source === "subscription") message.textContent = row.cancelAtCycleEnd || status === "cancelled"
-      ? `Your subscription is cancelled or scheduled to end. Premium access remains available until ${billingFormatDate(entitlement.endsAt)}.`
-      : `Your HackTheta Premium subscription is providing access. The current entitlement ends ${billingFormatDate(entitlement.endsAt)} unless Razorpay confirms another billing period.`;
-    else if (status === "created") message.textContent = "A Razorpay subscription has been created. Complete the Checkout authorisation to schedule recurring billing.";
-    else message.textContent = "Your trial has ended or no active subscription is recorded. Subscribe to restore AI and Career Match Premium access. Your community and opportunity features remain available.";
+      ? (row.payuMandateStatus === "cancel_pending"
+        ? `PayU is processing your cancellation request. Premium access remains available until ${billingFormatDate(entitlement.endsAt)}.`
+        : `Your automatic renewal is cancelled. Premium access remains available until ${billingFormatDate(entitlement.endsAt)}.`)
+      : `Your HackTheta Premium subscription is active until ${billingFormatDate(entitlement.endsAt)} unless PayU confirms another recurring payment.`;
+    else if (status === "pending") message.textContent = "PayU is still processing your mandate or payment. Refresh this page after PayU confirms the final status.";
+    else if (status === "past_due") message.textContent = row.payuLastError || "The latest recurring payment was not confirmed. Your next billing action is required.";
+    else message.textContent = "Your trial has ended or no active subscription is recorded. Subscribe through PayU to restore AI and Career Match Premium access. Your community and opportunity features remain available.";
   }
   $("#billingTrialStart").textContent = billingFormatDate(row.trialStartedAt);
   $("#billingTrialEnd").textContent = billingFormatDate(row.trialEndsAt);
   $("#billingNextCharge").textContent = billingFormatDate(row.nextChargeAt || row.scheduledStartAt, true);
   $("#billingPeriodEnd").textContent = billingFormatDate(row.currentPeriodEnd);
-  $("#billingRenewalState").textContent = row.cancelAtCycleEnd ? "Ends after this cycle" : status === "cancelled" ? "Cancelled" : renewalAuthorised ? "Authorised in Razorpay" : "Not authorised";
-  $("#billingSubscriptionRef").textContent = row.razorpaySubscriptionId ? `Reference: ${row.razorpaySubscriptionId}` : "";
+  $("#billingRenewalState").textContent = row.cancelAtCycleEnd
+    ? (row.payuMandateStatus === "cancel_pending" ? "Cancellation pending" : "Mandate cancelled")
+    : renewalAuthorised ? "Authorised with PayU" : row.payuMandateStatus ? `PayU: ${row.payuMandateStatus}` : "Not authorised";
+  $("#billingSubscriptionRef").textContent = row.payuMandateId ? `PayU mandate: ${row.payuMandateId}` : (row.provider === "legacy" ? "Legacy billing record retained" : "");
   const subscribe = $("#billingSubscribeBtn");
-  const needsAuthorisation = !renewalAuthorised && !cancelledAndPaidThrough;
+  const pendingCancellation = Boolean(row.cancelAtCycleEnd) && row.payuMandateStatus === "cancel_pending";
+  const needsAuthorisation = !renewalAuthorised && !cancelledAndPaidThrough && !pendingCancellation;
   if (subscribe) {
     subscribe.hidden = !needsAuthorisation;
-    subscribe.disabled = status === "created" && !row.razorpaySubscriptionId;
-    subscribe.textContent = status === "created" ? "Continue Razorpay authorisation" : entitlement.source === "trial" ? "Set up automatic renewal" : "Subscribe for ₹30/month";
+    subscribe.disabled = false;
+    subscribe.textContent = entitlement.source === "trial" ? "Authorise PayU automatic renewal" : "Continue with PayU · ₹30/month";
   }
   const cancel = $("#billingCancelBtn");
-  if (cancel) cancel.hidden = !row.razorpaySubscriptionId || !["created", "authenticated", "active", "pending", "halted", "paused"].includes(status) || Boolean(row.cancelAtCycleEnd);
+  if (cancel) cancel.hidden = !row.payuMandateId || row.payuMandateStatus !== "active" || Boolean(row.cancelAtCycleEnd);
   const history = $("#billingHistory");
   const payments = Array.isArray(data?.payments) ? data.payments : [];
   if (history) history.innerHTML = payments.length ? payments.map(payment => {
-    const ok = ["captured", "authorized", "refunded"].includes(String(payment.status || "").toLowerCase());
+    const state = String(payment.status || "").toLowerCase();
+    const ok = ["captured", "authorized", "refunded", "success"].includes(state);
     const kind = payment.transaction_type === "authorization" ? "Payment-method authorisation" : "Recurring payment";
     const amount = (Number(payment.amount || 0) / 100).toLocaleString(undefined, { style: "currency", currency: payment.currency || "INR" });
-    return `<div class="billing-history-row"><div><b>${esc(kind)}</b><small>${esc(billingFormatDate(payment.paid_at || payment.created_at, true))} · ${esc(payment.razorpay_payment_id || "")}</small></div><span class="billing-amount">${esc(amount)}</span><span class="billing-payment-status ${ok ? "" : "failed"}">${esc(payment.status || "recorded")}</span></div>`;
+    const providerRef = payment.payment_id || "";
+    const providerLabel = payment.provider ? ` · ${payment.provider}` : "";
+    return `<div class="billing-history-row"><div><b>${esc(kind)}</b><small>${esc(billingFormatDate(payment.paid_at || payment.created_at, true))} · ${esc(providerRef)}${esc(providerLabel)}</small></div><span class="billing-amount">${esc(amount)}</span><span class="billing-payment-status ${ok ? "" : "failed"}">${esc(payment.status || "recorded")}</span></div>`;
   }).join("") : '<p class="empty-note">No confirmed payment records yet.</p>';
 }
 
 async function loadBillingStatus({ silent = false } = {}) {
   if (!currentUser) return null;
+  const payuResult = new URLSearchParams(location.search).get("payu");
+  if (payuResult) {
+    history.replaceState({}, "", "/billing");
+    if (payuResult === "success") toast("PayU returned successfully. Refreshing verified billing status.");
+    else if (payuResult === "failed") toast("PayU did not complete the authorisation. Your trial remains available if it has not expired.");
+    else toast("PayU authorisation is not verified yet. Refresh billing status shortly.");
+  }
   if (billingLoadPromise) return billingLoadPromise;
   billingLoadPromise = (async () => {
     const errorNode = $("#billingError");
@@ -4735,69 +4753,50 @@ async function loadBillingStatus({ silent = false } = {}) {
   return billingLoadPromise;
 }
 
-async function loadRazorpayCheckout() {
-  if (window.Razorpay) return;
-  const existing = document.querySelector("script[data-razorpay-checkout]");
-  if (existing) {
-    await new Promise((resolve, reject) => { existing.addEventListener("load", resolve, { once: true }); existing.addEventListener("error", reject, { once: true }); if (window.Razorpay) resolve(); });
-    return;
-  }
-  await new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "https://checkout.razorpay.com/v1/checkout.js";
-    script.async = true; script.dataset.razorpayCheckout = "true";
-    script.onload = resolve; script.onerror = () => reject(new Error("Razorpay Checkout could not be loaded. Check your connection and retry."));
-    document.head.append(script);
-  });
-  if (!window.Razorpay) throw new Error("Razorpay Checkout did not initialise.");
-}
-
 async function startBillingCheckout() {
   if (!requireAccount()) return;
   const button = $("#billingSubscribeBtn");
-  if (button) { button.disabled = true; button.textContent = "Preparing secure checkout…"; }
+  const phone = String($("#billingPhone")?.value || "").replace(/[^0-9]/g, "");
+  const consent = Boolean($("#billingRecurringConsent")?.checked);
+  if (!/^\d{10,15}$/.test(phone)) { toast("Enter a valid mobile number for PayU."); $("#billingPhone")?.focus(); return; }
+  if (!consent) { toast("Please confirm the recurring ₹30/month mandate terms before continuing."); $("#billingRecurringConsent")?.focus(); return; }
+  if (button) { button.disabled = true; button.textContent = "Preparing secure PayU checkout…"; }
   try {
-    const created = await billingRequest("/api/billing/create-subscription", { method: "POST", body: {} });
-    await loadRazorpayCheckout();
-    const checkout = new window.Razorpay({
-      key: created.keyId,
-      subscription_id: created.subscriptionId,
-      name: "HackTheta",
-      description: "₹30/month HackTheta Premium subscription",
-      prefill: { email: currentUser.email || "" },
-      theme: { color: "#6F8F7B" },
-      handler: async response => {
-        try {
-          await billingRequest("/api/billing/verify-subscription", { method: "POST", body: response });
-          await loadBillingStatus({ silent: true });
-          toast("Razorpay authorisation verified. Your billing status has been updated.");
-        } catch (error) {
-          toast(error.message || "Authorisation verification is pending. Refresh billing status shortly.");
-          await loadBillingStatus({ silent: true });
-        }
-      },
-      modal: { ondismiss: () => { if (button) button.disabled = false; void loadBillingStatus({ silent: true }); } }
+    const created = await billingRequest("/api/billing/create-subscription", {
+      method: "POST",
+      body: { phone, acceptRecurringConsent: true }
     });
-    checkout.on("payment.failed", event => {
-      const description = event?.error?.description || "Razorpay could not authorise the subscription.";
-      toast(description);
-    });
-    checkout.open();
+    if (!created.checkoutUrl || !created.fields || !created.fields.hash) throw new Error("PayU checkout details were incomplete. Please refresh and retry.");
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = created.checkoutUrl;
+    form.acceptCharset = "UTF-8";
+    form.style.display = "none";
+    for (const [name, value] of Object.entries(created.fields)) {
+      const input = document.createElement("input");
+      input.type = "hidden"; input.name = name; input.value = String(value ?? "");
+      form.append(input);
+    }
+    document.body.append(form);
+    form.submit();
   } catch (error) {
-    if (button) { button.disabled = false; button.textContent = "Try again"; }
+    if (button) { button.disabled = false; button.textContent = "Try PayU again"; }
     toast(error.message);
-    const errorNode = $("#billingError"); if (errorNode) { errorNode.hidden = false; errorNode.textContent = error.message; }
+    const errorNode = $("#billingError");
+    if (errorNode) { errorNode.hidden = false; errorNode.textContent = error.message; }
   }
 }
 
 async function cancelBillingSubscription() {
   if (!requireAccount()) return;
-  if (!(await confirmInApp("Cancel automatic renewal for your HackTheta Premium subscription? If Razorpay confirms cancellation at the end of the billing cycle, Premium access remains available until the confirmed paid-through date.", "Cancel subscription"))) return;
+  if (!(await confirmInApp("Cancel your PayU automatic renewal mandate now? Your current eligible trial or paid-through access remains available until its confirmed end date.", "Cancel automatic renewal"))) return;
   const button = $("#billingCancelBtn"); if (button) button.disabled = true;
   try {
-    await billingRequest("/api/billing/cancel-subscription", { method: "POST", body: {} });
+    const result = await billingRequest("/api/billing/cancel-subscription", { method: "POST", body: {} });
     await loadBillingStatus({ silent: true });
-    toast("Cancellation request submitted to Razorpay.");
+    toast(result.cancellationPending
+      ? "PayU accepted the cancellation request. Waiting for final mandate confirmation."
+      : "PayU mandate cancellation confirmed.");
   } catch (error) { toast(error.message); }
   finally { if (button) button.disabled = false; }
 }
