@@ -44,3 +44,8 @@ No Supabase migration is added in this release. The existing `supabase-billing-v
 ## Validation boundary
 
 Local validation covers JavaScript syntax, route dispatch and the repository's Node test suite. It does not execute a real Razorpay payment, mandate, renewal, webhook delivery or live Supabase transaction. Complete the Test Mode checklist in `HACKTHETA_BRANDING_AND_BILLING_SETUP.md` after deployment.
+
+
+## AI Pitch Arena integration
+
+AI Pitch Arena has been integrated as a premium route under More. It uses private Supabase Storage, the existing Supabase documents adapter, the configured Agent37 service, and the existing billing entitlement check. Its API handler is multiplexed through the existing Agent37 Vercel function to keep the source API candidate count within the Hobby limit. Apply `supabase-pitch-arena.sql` before uploading project files. See `PITCH_ARENA_SETUP.md`.

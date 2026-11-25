@@ -7,6 +7,10 @@
   },
   "rewrites": [
     {
+      "source": "/api/pitch-arena",
+      "destination": "/api/agent37/chat?action=pitch-arena"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }

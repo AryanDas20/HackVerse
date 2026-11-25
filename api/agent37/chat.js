@@ -328,6 +328,14 @@ function buildConversationContext(snapshot, uid, activeConversation = null, rece
 }
 
 module.exports = async function handler(req, res) {
+  // The AI Pitch Arena is served through this existing function to stay within
+  // Vercel Hobby's 12-function deployment limit. /api/pitch-arena is rewritten
+  // to this endpoint with action=pitch-arena.
+  let requestedAction = String(req.query?.action || '');
+  if (!requestedAction && req.url) {
+    try { requestedAction = new URL(req.url, 'https://hacktheta.local').searchParams.get('action') || ''; } catch {}
+  }
+  if (requestedAction === 'pitch-arena') return require('../../lib/pitch-arena')(req, res);
   res.setHeader("Cache-Control", "no-store, max-age=0");
   res.setHeader("Vary", "Origin");
   if (req.method === "OPTIONS") {

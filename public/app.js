@@ -36,7 +36,7 @@ const listFrom = value => String(value || "").split(",").map(x => x.trim()).filt
 const normalizedList = value => listFrom(value).map(x => x.toLowerCase()).filter((x, i, a) => a.indexOf(x) === i);
 const validUrl = value => { if (!value) return ""; try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) ? u.href : ""; } catch { return ""; } };
 
-const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings", "career", "billing"]);
+const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings", "career", "billing", "pitch-arena"]);
 function routePath(route) {
   const value = String(route || "home").trim();
   if (value === "/" || value === "home") return "/";
@@ -4809,7 +4809,7 @@ function handleRoute({ force = false } = {}) {
   const profileMatch = pathname.match(/^\/@([A-Za-z0-9_]{3,24})$/);
   const postMatch = pathname.match(/^\/post\/([0-9a-f-]{36})$/i);
   const view = profileMatch ? "public-profile" : postMatch ? "post-detail" : currentRouteName();
-  if (currentUser && ["career", "aiwish"].includes(view) && billingLoaded && !billingData?.entitlement?.allowed) {
+  if (currentUser && ["career", "aiwish", "pitch-arena"].includes(view) && billingLoaded && !billingData?.entitlement?.allowed) {
     history.replaceState({}, "", "/billing");
     return handleRoute({ force: true });
   }
@@ -4862,7 +4862,7 @@ function handleRoute({ force = false } = {}) {
   $("#navMoreBtn").setAttribute("aria-expanded", "false");
   const hasMoreActiveRoute = Boolean($("#navMoreMenu [data-route].active"));
   $("#navMoreBtn")?.classList.toggle("active", hasMoreActiveRoute);
-  const titles = { billing: "Billing & subscription", career: "Career Match", home: "HackTheta", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
+  const titles = { billing: "Billing & subscription", career: "Career Match", "pitch-arena": "AI Pitch Arena", home: "HackTheta", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
   document.title = `${titles[view] || "HackTheta"} — HackTheta`;
   if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
   if (blocked || !freshRoute) return;
@@ -4880,6 +4880,7 @@ function handleRoute({ force = false } = {}) {
   if (view === "settings") loadSettingsUI();
   if (view === "career") initCareerWorkspace();
   if (view === "billing") void loadBillingStatus({ silent: true });
+  if (view === "pitch-arena") window.dispatchEvent(new CustomEvent("hackverse:pitch-arena:route"));
 }
 
 function bindUI() {
