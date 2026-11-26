@@ -32,7 +32,6 @@
   <link rel="stylesheet" href="accessibility-v19.css">
   <link rel="stylesheet" href="performance-sage-v20.css">
   <link rel="stylesheet" href="career-match-v21.css">
-  <link rel="stylesheet" href="billing-hacktheta.css">
   <link rel="stylesheet" href="pitch-arena.css">
 </head>
 <body>
@@ -58,7 +57,6 @@
         <div class="nav-more-menu" id="navMoreMenu" hidden>
           <a href="/news" data-route="news">Tech News</a>
           <a href="/career" data-route="career" class="nav-career">Career Match ✧</a>
-          <a href="/billing" data-route="billing">Billing & subscription</a>
           <a href="/aiwish" data-route="aiwish" class="nav-aiwish">AI Wish ✦</a>
           <a href="/pitch-arena" data-route="pitch-arena" class="nav-pitch-arena">AI Pitch Arena ◉</a>
           <a href="/profile" data-route="profile">Profile</a>
@@ -281,46 +279,6 @@
       </div></div>
     </section>
 
-
-    <section class="section wrap billing-page" id="billingPage" data-view="billing" hidden>
-      <div class="section-heading billing-heading">
-        <div><div class="eyebrow">HACKTHETA PREMIUM</div><h2>Billing & <span class="gradient-text">subscription.</span></h2><p class="muted">Manage your 7-day trial, recurring plan, payment authorisation and billing history.</p></div>
-        <button class="btn btn-outline" type="button" id="billingRefreshBtn">↻ Refresh status</button>
-      </div>
-      <div class="billing-layout">
-        <article class="billing-plan-card">
-          <div class="billing-plan-top"><span class="billing-plan-mark">Hθ</span><span class="billing-plan-label">MONTHLY MEMBERSHIP</span></div>
-          <h3>HackTheta Premium</h3>
-          <div class="billing-price">₹30 <span>/ month</span></div>
-          <p class="billing-plan-copy">7-day free trial for eligible new accounts, followed by ₹30 per month when recurring billing is authorised.</p>
-          <ul class="billing-benefits"><li>AI assistant and AI Wish</li><li>Career Match tools and career copilot</li><li>Subscription status and payment history</li></ul>
-          <label class="billing-input-label" for="billingPhone">Mobile number for PayU</label>
-          <input class="billing-phone-input" type="tel" id="billingPhone" name="billingPhone" inputmode="tel" autocomplete="tel" maxlength="15" placeholder="10-digit mobile number" aria-describedby="billingConsentText">
-          <label class="billing-consent-row" for="billingRecurringConsent"><input type="checkbox" id="billingRecurringConsent"><span id="billingConsentText">I authorise HackTheta to set up a recurring ₹30/month mandate through PayU. I understand the trial period, any PayU verification amount, and that I can cancel automatic renewal.</span></label>
-          <button class="btn btn-primary full" type="button" id="billingSubscribeBtn" hidden>Continue to PayU</button>
-          <p class="billing-smallprint">PayU will display the payment method and mandate terms before you approve. With PayU's free-trial consent flow, the authorisation may be ₹2 for cards/UPI or ₹0 for Net Banking. The ₹30 monthly debit is not scheduled before the eligible trial ends. Actual recurring billing requires PayU to enable Standing Instructions on your merchant account.</p>
-        </article>
-        <article class="billing-status-card">
-          <div class="billing-status-head"><div><div class="eyebrow">YOUR ACCOUNT</div><h3>Subscription status</h3></div><span class="billing-status-pill" id="billingStatusPill">Loading…</span></div>
-          <p class="billing-status-message" id="billingStatusMessage" role="status" aria-live="polite">Checking your billing details…</p>
-          <div class="billing-detail-grid">
-            <div><small>Trial started</small><b id="billingTrialStart">—</b></div>
-            <div><small>Trial ends</small><b id="billingTrialEnd">—</b></div>
-            <div><small>Next scheduled charge</small><b id="billingNextCharge">—</b></div>
-            <div><small>Current paid-through date</small><b id="billingPeriodEnd">—</b></div>
-            <div><small>Plan</small><b>₹30 / month</b></div>
-            <div><small>Automatic renewal</small><b id="billingRenewalState">Not authorised</b></div>
-          </div>
-          <div class="billing-actions"><button class="btn btn-outline" type="button" id="billingCancelBtn" hidden>Cancel subscription</button><span id="billingSubscriptionRef" class="billing-reference"></span></div>
-        </article>
-      </div>
-      <article class="billing-history-card">
-        <div class="billing-history-head"><div><div class="eyebrow">TRANSACTIONS</div><h3>Payment history</h3></div><span>LAST 20 RECORDS</span></div>
-        <div class="billing-history-list" id="billingHistory"><p class="empty-note">Your verified PayU and legacy payment records will appear here.</p></div>
-      </article>
-      <p class="billing-free-note"><b>What remains free?</b> Your HackTheta community, builder directory, messages and opportunity discovery remain available. The AI and Career Match premium areas require an active 7-day trial or a valid paid subscription. If the trial ends without a valid subscription, those premium areas are restricted.</p>
-      <p class="billing-error" id="billingError" role="alert" hidden></p>
-    </section>
 
     <section class="section wrap career-page" id="careerPage" data-view="career" hidden>
       <div class="career-hero">

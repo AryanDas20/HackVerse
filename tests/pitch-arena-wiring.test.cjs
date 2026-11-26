@@ -36,7 +36,7 @@ test('interview UI includes voice, local camera preview, controls and printable 
 
 test('API enforces signed-in ownership and server-side Agent37 calls', () => {
   assert.match(api, /client\.auth\.getUser\(token\)/);
-  assert.match(api, /getEntitlement\(billingRow\)\.allowed/);
+  assert.doesNotMatch(api, /billing_subscriptions|getEntitlement|trial_ends_at|current_period_end/);
   assert.match(apiDispatcher, /action=pitch-arena/);
   assert.match(apiDispatcher, /require\('..\/..\/lib\/pitch-arena'\)/);
   assert.match(vercel, /\/api\/pitch-arena/);

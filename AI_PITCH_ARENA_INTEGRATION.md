@@ -45,9 +45,9 @@ Never place `SUPABASE_SERVICE_ROLE_KEY` or `AGENT37_API_KEY` in browser JavaScri
 
 ## Access and routing
 
-AI Pitch Arena is treated as a premium AI feature. Both the frontend route and the Arena server handler use the existing HackTheta billing entitlement (`trial_ends_at` or a valid paid period). A client-side button or route alone cannot grant access.
+AI Pitch Arena is free to use for every signed-in HackTheta account. There is no trial, subscription, checkout, or payment entitlement check. The server still verifies the user's Supabase session and ownership of every private project and interview record.
 
-The frontend keeps calling `/api/pitch-arena`. Vercel rewrites that URL to the existing `/api/agent37/chat` function with `action=pitch-arena`; that function dispatches to `lib/pitch-arena.js`. This keeps the source API candidate count at **11 of 12** on the Hobby plan. The deployment itself still needs to be checked in Vercel because only Vercel's deployment output confirms the final platform function count.
+The frontend keeps calling `/api/pitch-arena`. Vercel rewrites that URL to the existing `/api/agent37/chat` function with `action=pitch-arena`; that function dispatches to `lib/pitch-arena.js`.
 
 ## Deploy
 
@@ -58,14 +58,10 @@ npm run check
 npm test
 ```
 
-Then commit and push the changes to the existing repository/production branch. Redeploy the existing Vercel project. After deployment, sign in with an account that has an active seven-day trial or paid premium entitlement, then open **More → AI Pitch Arena**.
+Then commit and push the changes to the existing repository/production branch. Redeploy the existing Vercel project. After deployment, sign in with any HackTheta account and open **More → AI Pitch Arena**.
 
 ## Verification and limitations
 
-Local checks completed for this package: JavaScript syntax validation and all 82 automated tests. This environment did not connect to your Supabase project, Agent37 instance, browser camera/microphone, or Vercel deployment. Therefore private Storage uploads, live AI turns, entitlement reads against your real data and Vercel routing still need a signed-in staging/production test.
+Local checks completed for this package: JavaScript syntax validation and all 82 automated tests. This environment did not connect to your Supabase project, Agent37 instance, browser camera/microphone, or Vercel deployment. Therefore private Storage uploads, live AI turns, private Storage access against your real data and Vercel routing still need a signed-in staging/production test.
 
 The interview is a turn-based Agent37 simulation, not a real-time WebRTC call. The camera is local preview only; no video is uploaded or scored. Browser speech recognition availability and privacy behaviour depend on the browser's speech service. Scores are simulated practice assessments, not guaranteed hackathon results.
-
-## Scope note
-
-This release combines the AI Pitch Arena integration with the PayU billing migration. PayU is the active billing provider for new checkout and renewal flows. Historical Razorpay identifiers and payment rows are retained in the existing database schema for record preservation only; no Razorpay Checkout or webhook code remains active.

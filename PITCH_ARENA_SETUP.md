@@ -90,8 +90,8 @@ npm test
 These checks validate JavaScript syntax and the repository's existing unit tests. They do not validate live Supabase policies, Storage uploads, the Agent37 instance, browser camera/microphone permissions or a deployed Vercel function; those require a staging deployment and a signed-in browser test.
 
 
-## Premium access and API routing
+## Free access and API routing
 
-AI Pitch Arena is treated as a premium AI feature in the HackTheta build. The backend checks the signed-in user's `billing_subscriptions` record using the same `getEntitlement` logic as the existing AI and Career Match services. An eligible, unexpired trial or a valid paid entitlement is required; a frontend-only route check is not relied upon for security.
+AI Pitch Arena is free for every signed-in HackTheta account. No trial, subscription, checkout, payment provider, or billing-table lookup is required. The backend still verifies the Supabase session and checks that project and interview records belong to the signed-in user.
 
 The `/api/pitch-arena` URL is kept for the browser client, but Vercel rewrites it to the existing `/api/agent37/chat` function with an internal `action=pitch-arena` selector. The Arena handler lives in `lib/pitch-arena.js`, outside the deployable `api/` directory. This avoids adding a thirteenth Serverless Function. The project check script reports the actual source-level API candidates; a Vercel deployment is still needed to confirm the platform's final function count.

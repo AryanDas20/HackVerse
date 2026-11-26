@@ -14,11 +14,5 @@
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/payu-recurring-cron",
-      "schedule": "0 3 * * *"
-    }
   ]
 }

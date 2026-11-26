@@ -29,14 +29,13 @@ let socialFeedType = "explore", socialFeedCursor = null, socialFeedLoading = fal
 let voterModalPostId = null, voterModalType = "upvote", voterModalRows = [], voterModalOffset = 0, voterModalHasMore = false, voterModalLoading = false, voterModalHiddenCount = 0, voterModalError = "", voterModalReturnFocus = null, voterModalRequestId = 0;
 let lastChatAttachmentHydratedAt = 0, lastOpportunityRefreshAt = 0, eventsLoadInProgress = false;
 let dialogResolver = null;
-let billingData = null, billingLoaded = false, billingLoadPromise = null, billingErrorMessage = "";
 
 const esc = (value = "") => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const listFrom = value => String(value || "").split(",").map(x => x.trim()).filter(Boolean).slice(0, 30);
 const normalizedList = value => listFrom(value).map(x => x.toLowerCase()).filter((x, i, a) => a.indexOf(x) === i);
 const validUrl = value => { if (!value) return ""; try { const u = new URL(value); return ["http:", "https:"].includes(u.protocol) ? u.href : ""; } catch { return ""; } };
 
-const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings", "career", "billing", "pitch-arena"]);
+const APP_ROUTE_NAMES = new Set(["home", "news", "posts", "feed", "opportunities", "people", "messages", "aiwish", "profile", "saved", "reports", "notifications", "settings", "career", "pitch-arena"]);
 function routePath(route) {
   const value = String(route || "home").trim();
   if (value === "/" || value === "home") return "/";
@@ -907,10 +906,7 @@ function initSupabase() {
     if (isAdminUser) loadDiscoverySources();
     updateAiAccessUI();
     if (user) {
-      billingData = null; billingLoaded = false; billingErrorMessage = "";
-      void loadBillingStatus({ silent: true });
     } else {
-      billingData = null; billingLoaded = false; billingErrorMessage = ""; billingLoadPromise = null;
     }
     $("#authButton").textContent = user ? "Sign out" : "Sign in";
     $("#accountButton").textContent = user ? "My workspace ↗" : "Get started ↗";
@@ -4626,181 +4622,6 @@ async function loadTechNews(){if(techNewsLoading)return;techNewsLoading=true;con
 function shareTechNews(id){const item=techNewsItems.find(x=>x.id===id);if(!item)return;const url=item.url||`https://news.ycombinator.com/item?id=${id}`,text=`${item.title}\n${url}`;const shareUrl=`https://wa.me/?text=${encodeURIComponent(text)}`;const modal=document.createElement("div");modal.className="modal-backdrop share-picker-backdrop";modal.innerHTML=`<section class="modal share-picker-modal"><button class="modal-close" type="button">×</button><div class="eyebrow">SHARE TECH NEWS</div><h2>${esc(item.title)}</h2><p class="muted">Share this story anywhere or send it to a HackTheta chat.</p><div class="share-action-list"><a class="share-action-option" href="${esc(shareUrl)}" target="_blank" rel="noopener"><span><b>WhatsApp</b><small>Send to a contact</small></span>↗</a><button class="share-action-option" data-news-native><span><b>Other apps</b><small>Open your device share menu</small></span>⇧</button><button class="share-action-option" data-news-copy><span><b>Copy story link</b><small>Copy title and source URL</small></span>⧉</button></div></section>`;document.body.append(modal);modal.querySelector(".modal-close").onclick=()=>modal.remove();modal.onclick=e=>{if(e.target===modal)modal.remove()};modal.querySelector("[data-news-native]").onclick=()=>{modal.remove();if(navigator.share)navigator.share({title:item.title,url,text:item.title}).catch(()=>{});else navigator.clipboard?.writeText(text).then(()=>toast("Story copied."));};modal.querySelector("[data-news-copy]").onclick=()=>navigator.clipboard.writeText(text).then(()=>{toast("Story copied.");modal.remove()}).catch(()=>toast("Clipboard blocked"));}
 
 
-function billingFormatDate(value, includeTime = false) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return "—";
-  return new Intl.DateTimeFormat(undefined, includeTime
-    ? { dateStyle: "medium", timeStyle: "short" }
-    : { dateStyle: "medium" }).format(date);
-}
-
-async function billingRequest(path, { method = "GET", body } = {}) {
-  if (!currentUser) throw new Error("Sign in to manage your subscription.");
-  const token = await currentUser.getIdToken();
-  const response = await fetch(path, {
-    method,
-    headers: { "Authorization": `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-    cache: "no-store"
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Billing request failed (${response.status}).`);
-  return data;
-}
-
-function renderBillingStatus(data) {
-  const row = data?.subscription || {};
-  const entitlement = data?.entitlement || { allowed: false };
-  const trialEnd = row.trialEndsAt ? new Date(row.trialEndsAt).getTime() : 0;
-  const daysLeft = trialEnd > Date.now() ? Math.max(1, Math.ceil((trialEnd - Date.now()) / 86400000)) : 0;
-  const status = String(row.status || "unknown").toLowerCase();
-  const renewalAuthorised = Boolean(row.payuMandateId) && String(row.payuMandateStatus || "").toLowerCase() === "active" && !row.cancelAtCycleEnd;
-  const cancelledAndPaidThrough = status === "cancelled" && row.currentPeriodEnd && new Date(row.currentPeriodEnd).getTime() > Date.now();
-  const pill = $("#billingStatusPill");
-  if (pill) {
-    pill.className = "billing-status-pill";
-    if (entitlement.allowed) { pill.textContent = entitlement.source === "trial" ? "Free trial" : "Premium access"; pill.classList.add("is-active"); }
-    else if (["halted", "failed", "expired", "past_due"].includes(status) || !row.trialEndsAt) { pill.textContent = status === "past_due" ? "Payment past due" : status === "halted" ? "Payment halted" : status === "failed" ? "Payment failed" : "No active plan"; pill.classList.add("is-error"); }
-    else { pill.textContent = "Trial ended"; pill.classList.add("is-warning"); }
-  }
-  const message = $("#billingStatusMessage");
-  if (message) {
-    if (entitlement.source === "trial") message.textContent = row.cancelAtCycleEnd
-      ? (row.payuMandateStatus === "cancel_pending"
-        ? `Your PayU cancellation request is pending provider confirmation. Your free trial remains active until ${billingFormatDate(row.trialEndsAt)}.`
-        : `Your PayU automatic renewal is cancelled. Your free trial remains active until ${billingFormatDate(row.trialEndsAt)}.`)
-      : renewalAuthorised
-        ? `Your free trial is active for ${daysLeft} more day${daysLeft === 1 ? "" : "s"}. PayU mandate is active; the first ₹30 recurring debit is scheduled after the trial ends on ${billingFormatDate(row.trialEndsAt)}.`
-        : `Your free trial is active for ${daysLeft} more day${daysLeft === 1 ? "" : "s"}. Authorise a PayU recurring mandate to continue Premium automatically after the trial.`;
-    else if (entitlement.source === "subscription") message.textContent = row.cancelAtCycleEnd || status === "cancelled"
-      ? (row.payuMandateStatus === "cancel_pending"
-        ? `PayU is processing your cancellation request. Premium access remains available until ${billingFormatDate(entitlement.endsAt)}.`
-        : `Your automatic renewal is cancelled. Premium access remains available until ${billingFormatDate(entitlement.endsAt)}.`)
-      : `Your HackTheta Premium subscription is active until ${billingFormatDate(entitlement.endsAt)} unless PayU confirms another recurring payment.`;
-    else if (status === "pending") message.textContent = "PayU is still processing your mandate or payment. Refresh this page after PayU confirms the final status.";
-    else if (status === "past_due") message.textContent = row.payuLastError || "The latest recurring payment was not confirmed. Your next billing action is required.";
-    else message.textContent = "Your trial has ended or no active subscription is recorded. Subscribe through PayU to restore AI and Career Match Premium access. Your community and opportunity features remain available.";
-  }
-  $("#billingTrialStart").textContent = billingFormatDate(row.trialStartedAt);
-  $("#billingTrialEnd").textContent = billingFormatDate(row.trialEndsAt);
-  $("#billingNextCharge").textContent = billingFormatDate(row.nextChargeAt || row.scheduledStartAt, true);
-  $("#billingPeriodEnd").textContent = billingFormatDate(row.currentPeriodEnd);
-  $("#billingRenewalState").textContent = row.cancelAtCycleEnd
-    ? (row.payuMandateStatus === "cancel_pending" ? "Cancellation pending" : "Mandate cancelled")
-    : renewalAuthorised ? "Authorised with PayU" : row.payuMandateStatus ? `PayU: ${row.payuMandateStatus}` : "Not authorised";
-  $("#billingSubscriptionRef").textContent = row.payuMandateId ? `PayU mandate: ${row.payuMandateId}` : (row.provider === "legacy" ? "Legacy billing record retained" : "");
-  const subscribe = $("#billingSubscribeBtn");
-  const pendingCancellation = Boolean(row.cancelAtCycleEnd) && row.payuMandateStatus === "cancel_pending";
-  const needsAuthorisation = !renewalAuthorised && !cancelledAndPaidThrough && !pendingCancellation;
-  if (subscribe) {
-    subscribe.hidden = !needsAuthorisation;
-    subscribe.disabled = false;
-    subscribe.textContent = entitlement.source === "trial" ? "Authorise PayU automatic renewal" : "Continue with PayU · ₹30/month";
-  }
-  const cancel = $("#billingCancelBtn");
-  if (cancel) cancel.hidden = !row.payuMandateId || row.payuMandateStatus !== "active" || Boolean(row.cancelAtCycleEnd);
-  const history = $("#billingHistory");
-  const payments = Array.isArray(data?.payments) ? data.payments : [];
-  if (history) history.innerHTML = payments.length ? payments.map(payment => {
-    const state = String(payment.status || "").toLowerCase();
-    const ok = ["captured", "authorized", "refunded", "success"].includes(state);
-    const kind = payment.transaction_type === "authorization" ? "Payment-method authorisation" : "Recurring payment";
-    const amount = (Number(payment.amount || 0) / 100).toLocaleString(undefined, { style: "currency", currency: payment.currency || "INR" });
-    const providerRef = payment.payment_id || "";
-    const providerLabel = payment.provider ? ` · ${payment.provider}` : "";
-    return `<div class="billing-history-row"><div><b>${esc(kind)}</b><small>${esc(billingFormatDate(payment.paid_at || payment.created_at, true))} · ${esc(providerRef)}${esc(providerLabel)}</small></div><span class="billing-amount">${esc(amount)}</span><span class="billing-payment-status ${ok ? "" : "failed"}">${esc(payment.status || "recorded")}</span></div>`;
-  }).join("") : '<p class="empty-note">No confirmed payment records yet.</p>';
-}
-
-async function loadBillingStatus({ silent = false } = {}) {
-  if (!currentUser) return null;
-  const payuResult = new URLSearchParams(location.search).get("payu");
-  if (payuResult) {
-    history.replaceState({}, "", "/billing");
-    if (payuResult === "success") toast("PayU returned successfully. Refreshing verified billing status.");
-    else if (payuResult === "failed") toast("PayU did not complete the authorisation. Your trial remains available if it has not expired.");
-    else toast("PayU authorisation is not verified yet. Refresh billing status shortly.");
-  }
-  if (billingLoadPromise) return billingLoadPromise;
-  billingLoadPromise = (async () => {
-    const errorNode = $("#billingError");
-    if (errorNode) { errorNode.hidden = true; errorNode.textContent = ""; }
-    try {
-      const data = await billingRequest("/api/billing/status");
-      billingData = data; billingLoaded = true; billingErrorMessage = "";
-      renderBillingStatus(data);
-      if (["career", "aiwish"].includes(currentRouteName()) && !data?.entitlement?.allowed) {
-        toast("Your trial or subscription is not active. Manage your plan in Billing.");
-        navigateToRoute("billing", { replace: true });
-      }
-      return data;
-    } catch (error) {
-      billingData = null; billingLoaded = true; billingErrorMessage = error.message;
-      if (errorNode) { errorNode.hidden = false; errorNode.textContent = error.message; }
-      const statusMessage = $("#billingStatusMessage");
-      if (statusMessage) statusMessage.textContent = "Billing status could not be verified. Complete the Supabase setup and check Vercel billing environment variables.";
-      if (["career", "aiwish"].includes(currentRouteName())) {
-        toast("Premium access could not be verified. Please check Billing setup.");
-        navigateToRoute("billing", { replace: true });
-      }
-      if (!silent) toast(error.message);
-      return null;
-    } finally {
-      billingLoadPromise = null;
-    }
-  })();
-  return billingLoadPromise;
-}
-
-async function startBillingCheckout() {
-  if (!requireAccount()) return;
-  const button = $("#billingSubscribeBtn");
-  const phone = String($("#billingPhone")?.value || "").replace(/[^0-9]/g, "");
-  const consent = Boolean($("#billingRecurringConsent")?.checked);
-  if (!/^\d{10,15}$/.test(phone)) { toast("Enter a valid mobile number for PayU."); $("#billingPhone")?.focus(); return; }
-  if (!consent) { toast("Please confirm the recurring ₹30/month mandate terms before continuing."); $("#billingRecurringConsent")?.focus(); return; }
-  if (button) { button.disabled = true; button.textContent = "Preparing secure PayU checkout…"; }
-  try {
-    const created = await billingRequest("/api/billing/create-subscription", {
-      method: "POST",
-      body: { phone, acceptRecurringConsent: true }
-    });
-    if (!created.checkoutUrl || !created.fields || !created.fields.hash) throw new Error("PayU checkout details were incomplete. Please refresh and retry.");
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.action = created.checkoutUrl;
-    form.acceptCharset = "UTF-8";
-    form.style.display = "none";
-    for (const [name, value] of Object.entries(created.fields)) {
-      const input = document.createElement("input");
-      input.type = "hidden"; input.name = name; input.value = String(value ?? "");
-      form.append(input);
-    }
-    document.body.append(form);
-    form.submit();
-  } catch (error) {
-    if (button) { button.disabled = false; button.textContent = "Try PayU again"; }
-    toast(error.message);
-    const errorNode = $("#billingError");
-    if (errorNode) { errorNode.hidden = false; errorNode.textContent = error.message; }
-  }
-}
-
-async function cancelBillingSubscription() {
-  if (!requireAccount()) return;
-  if (!(await confirmInApp("Cancel your PayU automatic renewal mandate now? Your current eligible trial or paid-through access remains available until its confirmed end date.", "Cancel automatic renewal"))) return;
-  const button = $("#billingCancelBtn"); if (button) button.disabled = true;
-  try {
-    const result = await billingRequest("/api/billing/cancel-subscription", { method: "POST", body: {} });
-    await loadBillingStatus({ silent: true });
-    toast(result.cancellationPending
-      ? "PayU accepted the cancellation request. Waiting for final mandate confirmation."
-      : "PayU mandate cancellation confirmed.");
-  } catch (error) { toast(error.message); }
-  finally { if (button) button.disabled = false; }
-}
-
 function handleRoute({ force = false } = {}) {
   // Unknown paths fall back to home with a clean URL instead of staying on a broken address.
   if (!isAppRoutePath(location.pathname)) history.replaceState({}, "", "/");
@@ -4808,10 +4629,6 @@ function handleRoute({ force = false } = {}) {
   const profileMatch = pathname.match(/^\/@([A-Za-z0-9_]{3,24})$/);
   const postMatch = pathname.match(/^\/post\/([0-9a-f-]{36})$/i);
   const view = profileMatch ? "public-profile" : postMatch ? "post-detail" : currentRouteName();
-  if (currentUser && ["career", "aiwish", "pitch-arena"].includes(view) && billingLoaded && !billingData?.entitlement?.allowed) {
-    history.replaceState({}, "", "/billing");
-    return handleRoute({ force: true });
-  }
   const aiPanel = $("#aiPanel"), wishMount = $("#aiWishMount"), aiAssistant = $("#aiAssistant");
   if (view === "aiwish") {
     if (aiPanel.parentElement !== wishMount) wishMount.append(aiPanel);
@@ -4861,7 +4678,7 @@ function handleRoute({ force = false } = {}) {
   $("#navMoreBtn").setAttribute("aria-expanded", "false");
   const hasMoreActiveRoute = Boolean($("#navMoreMenu [data-route].active"));
   $("#navMoreBtn")?.classList.toggle("active", hasMoreActiveRoute);
-  const titles = { billing: "Billing & subscription", career: "Career Match", "pitch-arena": "AI Pitch Arena", home: "HackTheta", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
+  const titles = { career: "Career Match", "pitch-arena": "AI Pitch Arena", home: "HackTheta", news: "Tech News", posts: "Community posts", feed: "Builder feed", opportunities: "Explore opportunities", people: "Builders", messages: "Messages", aiwish: "AI Wish", profile: "Your profile", saved: "Saved opportunities", reports: "Safety & reports", notifications: "Activity", settings: "Settings", "public-profile": "Builder profile", "post-detail": "Post" };
   document.title = `${titles[view] || "HackTheta"} — HackTheta`;
   if (freshRoute) window.scrollTo({ top: 0, behavior: "auto" });
   if (blocked || !freshRoute) return;
@@ -4878,7 +4695,6 @@ function handleRoute({ force = false } = {}) {
   if (view === "notifications") { renderNotificationCenter(); void loadSocialNotifications(); }
   if (view === "settings") loadSettingsUI();
   if (view === "career") initCareerWorkspace();
-  if (view === "billing") void loadBillingStatus({ silent: true });
   if (view === "pitch-arena") window.dispatchEvent(new CustomEvent("hackverse:pitch-arena:route"));
 }
 
@@ -4959,9 +4775,6 @@ function bindUI() {
   $("#saveGroupInfoBtn").onclick=saveGroupInfo;
   $("#viewMembersBtn").onclick=()=>{const grid=$("#peopleGrid");const open=grid.hidden;grid.hidden=!open;$("#viewMembersBtn").textContent=open?"Hide members":"View members";$("#viewMembersBtn").setAttribute("aria-expanded",String(open));if(open&&currentUser)searchPeople();};
   $("#loadMorePeopleBtn").onclick=()=>searchPeople(true);
-  $("#billingSubscribeBtn")?.addEventListener("click", () => void startBillingCheckout());
-  $("#billingCancelBtn")?.addEventListener("click", () => void cancelBillingSubscription());
-  $("#billingRefreshBtn")?.addEventListener("click", () => void loadBillingStatus());
   $("#chatTitle").onclick=openChatIdentity;
   $("#conversationSearch").addEventListener("input",()=>renderConversationList(currentConversations));
   $("#messageSearch").addEventListener("input",()=>renderMessages(currentMessages));
